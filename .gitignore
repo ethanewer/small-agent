@@ -18,3 +18,5 @@ data/**/dataset_shuffled.jsonl
 
 outputs*
 .modelscope_cache*
+checkpoints*
+logs*
