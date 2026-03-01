@@ -22,8 +22,14 @@ IMAGE="/wbl-fast/usrs/shl/enroot/modelscope-torch2.8.sqsh"
 RUN_ID="locooperator4b_balanced_65k_${SLURM_JOB_ID}"
 export RUN_ID
 
-SUBMIT_DIR="${SLURM_SUBMIT_DIR:-$PWD}"
-RUN_ROOT="${SUBMIT_DIR}"
+JOB_COMMAND="$(scontrol show job "${SLURM_JOB_ID}" | sed -n "s/.* Command=\([^ ]*\).*/\1/p")"
+if [[ "${JOB_COMMAND}" = /* ]]; then
+  SCRIPT_PATH="${JOB_COMMAND}"
+else
+  SCRIPT_PATH="${SLURM_SUBMIT_DIR}/${JOB_COMMAND}"
+fi
+SCRIPT_DIR="$(cd "$(dirname "${SCRIPT_PATH}")" && pwd)"
+RUN_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 LOG_DIR="${RUN_ROOT}/logs"
 OUTPUT_BASE="${RUN_ROOT}/outputs"
 OUTPUT_DIR="${OUTPUT_BASE}/${RUN_ID}"
@@ -120,6 +126,8 @@ srun --mpi=pmix \
       --num_train_epochs "${NUM_TRAIN_EPOCHS}" \
       --max_steps "${MAX_STEPS}" \
       --learning_rate "${LEARNING_RATE}" \
+      --warmup_steps 1000 \
+      --lr_scheduler_type constant_with_warmup \
       --logging_steps 1 \
       --save_steps "${SAVE_STEPS}" \
       --save_total_limit 100 \
