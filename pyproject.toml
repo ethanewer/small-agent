@@ -1,0 +1,40 @@
+[project]
+name = "small-agent"
+version = "0.1.0"
+description = "Qwen dataset preprocessing pipeline"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "datasets>=3.0.0",
+    "huggingface-hub>=0.30.0",
+    "jinja2>=3.1.0",
+    "orjson>=3.10.0",
+    "pyarrow>=19.0.0",
+    "transformers>=4.55.0",
+    "typer>=0.16.0",
+]
+
+[project.scripts]
+qwen-dataset-build = "data.pipeline.build_qwen_dataset:app"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.uv]
+package = true
+
+[tool.hatch.build]
+exclude = [
+    "data/demo-dataset/**",
+    "data/full-dataset/**",
+    "data/balanced-dataset/**",
+    "data/remote-partials/**",
+    "data/**/dataset_shuffled.jsonl",
+    "logs/**",
+    "outputs/**",
+    ".modelscope_cache/**",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["data"]
