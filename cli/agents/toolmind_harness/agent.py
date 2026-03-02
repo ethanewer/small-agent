@@ -10,6 +10,7 @@ from rich.panel import Panel
 from rich.text import Text
 
 from agents.interface import AgentRuntimeConfig
+from agents.openai_compat import normalize_openai_compatible_model
 from agents.toolmind_harness.harness import HarnessCallbacks, ToolCall, run_harness
 
 
@@ -46,6 +47,10 @@ def _tool_result_preview(result: dict[str, Any]) -> str:
 class ToolmindAgent:
     def run(self, instruction: str, cfg: AgentRuntimeConfig, console: Console) -> int:
         options = cfg.agent_config
+        normalized_model = normalize_openai_compatible_model(
+            model=cfg.model.model,
+            api_base=cfg.model.api_base,
+        )
         verbosity = int(options.get("verbosity", 1))
         max_turns = int(
             options.get("max_assistant_turns", options.get("max_turns", 50))
@@ -122,7 +127,7 @@ class ToolmindAgent:
             try:
                 run_harness(
                     question=instruction,
-                    model=cfg.model.model,
+                    model=normalized_model,
                     output_path=output_path,
                     key=key,
                     row_id=row_id,

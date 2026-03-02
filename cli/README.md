@@ -52,33 +52,41 @@ This file is tracked, so prefer env-var references for `api_key` values instead 
 ## Install
 
 ```bash
-pip install -e .
+./setup
 ```
 
-This installs the `terminus2-cli` command from the project entrypoint.
+This installs agent CLIs locally under `cli/.bin` and `cli/.tools` (no global npm/pipx installs).
 
-For optional headless agents, install these CLIs and ensure they are on `PATH`:
+Add local wrappers to your shell path:
 
-- `qwen` (from `@qwen-code/qwen-code`)
+```bash
+export PATH="$PWD/.bin:$PATH"
+```
+
+To remove all locally installed CLI artifacts:
+
+```bash
+./clean
+```
 
 ## Usage
 
 Run with a positional instruction:
 
 ```bash
-terminus2-cli "List files in current directory, then explain what you see."
+./.bin/terminus2-cli "List files in current directory, then explain what you see."
 ```
 
 Or run without instruction and enter it interactively when prompted:
 
 ```bash
-terminus2-cli
+./.bin/terminus2-cli
 ```
 
 Optional flags:
 
 ```bash
-terminus2-cli --verbosity 1 --max-turns 10 --model openai_codex --config ./config.json "Your instruction"
+./.bin/terminus2-cli --verbosity 1 --max-turns 10 --model openai_codex --config ./config.json "Your instruction"
 ```
 
 - `--model <key>` selects a model key from `config.models`.
@@ -89,6 +97,8 @@ terminus2-cli --verbosity 1 --max-turns 10 --model openai_codex --config ./confi
 - `terminus-2`: interactive terminal-driving JSON agent
 - `toolmind-harness`: tool-call protocol harness agent
 - `qwen`: runs `qwen -p "<instruction>" -y` with OpenAI-compatible env
+- `claude`: runs Claude Code headless mode (`claude -p ...`)
+- `opencode`: runs OpenCode non-interactive mode (`opencode run ...`)
 
 ### Interactive Commands
 
@@ -105,7 +115,7 @@ If you omit a value (for example, `/verbosity`), the CLI prompts you for one.
 Example:
 
 ```bash
-terminus2-cli
+./.bin/terminus2-cli
 # Enter instruction: /model
 # Available Models:
 # 1. openrouter_qwen (...)
@@ -125,16 +135,39 @@ terminus2-cli
 
 ## Headless Agent Environment
 
-`qwen` relies on model profile values from `config.json`:
+`qwen`, `claude`, and `opencode` rely on model profile values from `config.json`:
 
 - `model` -> `OPENAI_MODEL`
 - `api_base` -> `OPENAI_BASE_URL`
 - `api_key` -> `OPENAI_API_KEY` (resolved from env var name or literal)
 
+Compatibility behavior:
+
+- OpenRouter and local OpenAI-compatible endpoints are first-class targets.
+- OpenAI models are allowed when the selected agent/CLI supports the model type.
+- Known incompatible combinations fail fast with an explicit compatibility error.
+- `opencode` model args are provider-qualified automatically (`openrouter/...` or `openai/...`).
+  By default, the wrapper lets OpenCode resolve model from env. Set
+  `agents.opencode.pass_model_arg=true` if you need explicit `--model` forwarding.
+- `claude` agent is restricted to Claude-family model IDs.
+
 Examples:
 
 ```bash
-terminus2-cli --agent qwen --model openrouter_qwen "Summarize this repository"
+./.bin/terminus2-cli --agent qwen --model openrouter_qwen "Summarize this repository"
+./.bin/terminus2-cli --agent claude --model openrouter_qwen "Summarize this repository"
+./.bin/terminus2-cli --agent opencode --model openrouter_qwen "Summarize this repository"
+```
+
+You can override the executable per agent if needed:
+
+```json
+{
+  "agents": {
+    "claude": { "binary": "claude" },
+    "opencode": { "binary": "opencode" }
+  }
+}
 ```
 
 ## Completion Message

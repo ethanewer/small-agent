@@ -12,7 +12,14 @@ from rich.console import Console
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
+from agents.claude.claude_agent import ClaudeCodeAgent  # noqa: E402
 from agents.interface import AgentModelConfig, AgentRuntimeConfig  # noqa: E402
+from agents.opencode.opencode_agent import OpencodeAgent  # noqa: E402
+from agents.openai_compat import (  # noqa: E402
+    detect_provider_kind,
+    opencode_model_arg,
+    preflight_agent_model_compatibility,
+)
 from agents.qwen.qwen_agent import QwenHeadlessAgent  # noqa: E402
 from agents.registry import get_agent  # noqa: E402
 from agents.terminus2 import agent as terminus_agent  # noqa: E402
@@ -98,12 +105,40 @@ class TestToolmindAgentConfigCoercion(unittest.TestCase):
         self.assertFalse(captured_kwargs["internal_protocol_retry"])
         self.assertTrue(captured_kwargs["record_protocol_repairs"])
 
+    def test_run_normalizes_openai_prefixed_model_for_openai_apis(self) -> None:
+        runtime = AgentRuntimeConfig(
+            agent_key="toolmind-harness",
+            model=AgentModelConfig(
+                model="openai/local-model",
+                api_base="http://127.0.0.1:1234/v1",
+                api_key="k",
+            ),
+            agent_config={},
+        )
+        captured_kwargs: dict[str, object] = {}
+
+        def fake_run_harness(**kwargs):  # type: ignore[no-untyped-def]
+            captured_kwargs.update(kwargs)
+            return {"conversations": []}
+
+        with patch(
+            "agents.toolmind_harness.agent.run_harness", side_effect=fake_run_harness
+        ):
+            exit_code = ToolmindAgent().run(
+                instruction="test",
+                cfg=runtime,
+                console=Console(record=True),
+            )
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(captured_kwargs["model"], "local-model")
+
 
 class TestRegistryAndParser(unittest.TestCase):
     def test_get_agent_unknown_lists_available_agents(self) -> None:
         with self.assertRaisesRegex(
             ValueError,
-            "Available agents: qwen, terminus-2, toolmind-harness",
+            "Available agents: claude, opencode, qwen, terminus-2, toolmind-harness",
         ):
             get_agent("missing-agent")
 
@@ -120,6 +155,43 @@ class TestRegistryAndParser(unittest.TestCase):
         self.assertEqual(len(calls), 2)
         self.assertEqual(calls[0].arguments["sandbox_id"], "s1")
         self.assertIn("_raw_arguments", calls[1].arguments)
+
+
+class TestOpenAiCompat(unittest.TestCase):
+    def test_detect_provider_kind_distinguishes_openrouter_and_local(self) -> None:
+        self.assertEqual(
+            detect_provider_kind(api_base="https://openrouter.ai/api/v1"),
+            "openrouter",
+        )
+        self.assertEqual(
+            detect_provider_kind(api_base="http://127.0.0.1:1234/v1"),
+            "openai_compatible_local",
+        )
+
+    def test_opencode_model_arg_prefixes_for_provider(self) -> None:
+        self.assertEqual(
+            opencode_model_arg(
+                model="qwen/qwen3.5-35b-a3b",
+                api_base="https://openrouter.ai/api/v1",
+            ),
+            "openrouter/qwen/qwen3.5-35b-a3b",
+        )
+        self.assertEqual(
+            opencode_model_arg(
+                model="openai/local-model",
+                api_base="http://127.0.0.1:1234/v1",
+            ),
+            "openai/local-model",
+        )
+
+    def test_preflight_rejects_known_qwen_codex_openai_mismatch(self) -> None:
+        message = preflight_agent_model_compatibility(
+            agent_key="qwen",
+            model="gpt-5.3-codex",
+            api_base="https://api.openai.com/v1",
+        )
+        self.assertIsNotNone(message)
+        self.assertIn("incompatible", str(message).lower())
 
 
 class TestToolExecutor(unittest.TestCase):
@@ -188,6 +260,7 @@ class TestHeadlessAgents(unittest.TestCase):
                 temperature=0.0,
             ),
             agent_config={
+                "binary": "qwen-custom",
                 "token_limit": 4096,
                 "sampling_params": {"temperature": 0.1},
                 "mcp_servers": {
@@ -219,16 +292,263 @@ class TestHeadlessAgents(unittest.TestCase):
             )
 
         self.assertEqual(code, 0)
-        self.assertEqual(captured["args"], ["qwen", "-p", "do a quick check", "-y"])
+        self.assertEqual(
+            captured["args"],
+            ["qwen-custom", "-p", "do a quick check", "-y"],
+        )
         env = cast(dict[str, str], captured["env"])
         self.assertEqual(env["OPENAI_MODEL"], "qwen/qwen3.5-35b-a3b")
         self.assertEqual(env["OPENAI_BASE_URL"], "https://openrouter.ai/api/v1")
+        self.assertEqual(env["OPENAI_API_BASE"], "https://openrouter.ai/api/v1")
         self.assertEqual(env["OPENAI_API_KEY"], "test-key")
         self.assertEqual(env["CUSTOM_ENV"], "1")
         self.assertTrue(env["QWEN_CODE_SYSTEM_SETTINGS_PATH"].endswith(".json"))
         self.assertTrue(env["GEMINI_CLI_SYSTEM_SETTINGS_PATH"].endswith(".json"))
         self.assertNotEqual(env["HOME"], str(Path.cwd()))
         self.assertTrue(env["XDG_CONFIG_HOME"].startswith(env["HOME"]))
+
+    def test_claude_builds_expected_env_and_args(self) -> None:
+        runtime = AgentRuntimeConfig(
+            agent_key="claude",
+            model=AgentModelConfig(
+                model="claude-sonnet-4-6",
+                api_base="https://openrouter.ai/api/v1",
+                api_key="test-key",
+                temperature=0.0,
+            ),
+            agent_config={
+                "binary": "claude-custom",
+                "output_format": "json",
+                "skip_permissions": True,
+                "allowed_tools": ["Bash(ls:*)"],
+                "env": {"CUSTOM_ENV": "1"},
+            },
+        )
+        captured: dict[str, object] = {}
+
+        def fake_run_subprocess(**kwargs):  # type: ignore[no-untyped-def]
+            captured.update(kwargs)
+            return 0
+
+        with patch(
+            "agents.claude.claude_agent.run_subprocess",
+            side_effect=fake_run_subprocess,
+        ):
+            code = ClaudeCodeAgent().run(
+                instruction="do a quick check",
+                cfg=runtime,
+                console=Console(record=True),
+            )
+
+        self.assertEqual(code, 0)
+        args = cast(list[str], captured["args"])
+        self.assertEqual(args[0], "claude-custom")
+        self.assertIn("--model", args)
+        model_idx = args.index("--model")
+        self.assertEqual(args[model_idx + 1], "claude-sonnet-4-6")
+        self.assertIn("--dangerously-skip-permissions", args)
+        self.assertIn("--allowedTools", args)
+        env = cast(dict[str, str], captured["env"])
+        self.assertEqual(env["OPENAI_MODEL"], "claude-sonnet-4-6")
+        self.assertEqual(env["OPENAI_BASE_URL"], "https://openrouter.ai/api/v1")
+        self.assertEqual(env["OPENAI_API_BASE"], "https://openrouter.ai/api/v1")
+        self.assertEqual(env["OPENAI_API_KEY"], "test-key")
+        self.assertEqual(env["ANTHROPIC_API_KEY"], "test-key")
+        self.assertEqual(env["CUSTOM_ENV"], "1")
+        self.assertNotEqual(env["HOME"], str(Path.cwd()))
+
+    def test_opencode_builds_expected_env_and_args(self) -> None:
+        runtime = AgentRuntimeConfig(
+            agent_key="opencode",
+            model=AgentModelConfig(
+                model="qwen/qwen3.5-35b-a3b",
+                api_base="https://openrouter.ai/api/v1",
+                api_key="test-key",
+                temperature=0.0,
+            ),
+            agent_config={
+                "binary": "opencode-custom",
+                "output_format": "json",
+                "env": {"CUSTOM_ENV": "1"},
+            },
+        )
+        captured: dict[str, object] = {}
+
+        def fake_run_subprocess(**kwargs):  # type: ignore[no-untyped-def]
+            captured.update(kwargs)
+            return 0
+
+        with patch(
+            "agents.opencode.opencode_agent.run_subprocess",
+            side_effect=fake_run_subprocess,
+        ):
+            code = OpencodeAgent().run(
+                instruction="do a quick check",
+                cfg=runtime,
+                console=Console(record=True),
+            )
+
+        self.assertEqual(code, 0)
+        args = cast(list[str], captured["args"])
+        self.assertEqual(args[0], "opencode-custom")
+        self.assertEqual(args[1:3], ["run", "do a quick check"])
+        self.assertNotIn("--model", args)
+        self.assertIn("--format", args)
+        env = cast(dict[str, str], captured["env"])
+        self.assertEqual(env["OPENAI_MODEL"], "qwen/qwen3.5-35b-a3b")
+        self.assertEqual(env["OPENAI_BASE_URL"], "https://openrouter.ai/api/v1")
+        self.assertEqual(env["OPENAI_API_BASE"], "https://openrouter.ai/api/v1")
+        self.assertEqual(env["OPENAI_API_KEY"], "test-key")
+        self.assertEqual(env["CUSTOM_ENV"], "1")
+
+    def test_opencode_can_force_provider_qualified_model_arg(self) -> None:
+        runtime = AgentRuntimeConfig(
+            agent_key="opencode",
+            model=AgentModelConfig(
+                model="qwen/qwen3.5-35b-a3b",
+                api_base="https://openrouter.ai/api/v1",
+                api_key="test-key",
+            ),
+            agent_config={
+                "binary": "opencode-custom",
+                "pass_model_arg": True,
+            },
+        )
+        captured: dict[str, object] = {}
+
+        def fake_run_subprocess(**kwargs):  # type: ignore[no-untyped-def]
+            captured.update(kwargs)
+            return 0
+
+        with patch(
+            "agents.opencode.opencode_agent.run_subprocess",
+            side_effect=fake_run_subprocess,
+        ):
+            code = OpencodeAgent().run(
+                instruction="do a quick check",
+                cfg=runtime,
+                console=Console(record=True),
+            )
+
+        self.assertEqual(code, 0)
+        args = cast(list[str], captured["args"])
+        self.assertIn("--model", args)
+        model_idx = args.index("--model")
+        self.assertEqual(args[model_idx + 1], "openrouter/qwen/qwen3.5-35b-a3b")
+
+    def test_headless_agents_normalize_openai_prefixed_model(self) -> None:
+        runtime = AgentRuntimeConfig(
+            agent_key="qwen",
+            model=AgentModelConfig(
+                model="openai/local-model",
+                api_base="http://127.0.0.1:1234/v1",
+                api_key="test-key",
+            ),
+        )
+        qwen_captured: dict[str, object] = {}
+        opencode_captured: dict[str, object] = {}
+
+        with (
+            patch(
+                "agents.qwen.qwen_agent.run_subprocess",
+                side_effect=lambda **kwargs: qwen_captured.update(kwargs) or 0,
+            ),
+            patch(
+                "agents.opencode.opencode_agent.run_subprocess",
+                side_effect=lambda **kwargs: opencode_captured.update(kwargs) or 0,
+            ),
+        ):
+            self.assertEqual(
+                QwenHeadlessAgent().run(
+                    instruction="test",
+                    cfg=runtime,
+                    console=Console(record=True),
+                ),
+                0,
+            )
+            self.assertEqual(
+                OpencodeAgent().run(
+                    instruction="test",
+                    cfg=runtime,
+                    console=Console(record=True),
+                ),
+                0,
+            )
+
+        self.assertEqual(
+            cast(dict[str, str], qwen_captured["env"])["OPENAI_MODEL"],
+            "local-model",
+        )
+        self.assertEqual(
+            cast(dict[str, str], opencode_captured["env"])["OPENAI_MODEL"],
+            "local-model",
+        )
+        opencode_args = cast(list[str], opencode_captured["args"])
+        self.assertNotIn("--model", opencode_args)
+
+    def test_new_agent_error_paths_return_nonzero(self) -> None:
+        runtime = AgentRuntimeConfig(
+            agent_key="claude",
+            model=AgentModelConfig(
+                model="claude-sonnet-4-6",
+                api_base="https://example.invalid/v1",
+                api_key="k",
+            ),
+        )
+        console = Console(record=True)
+        with patch(
+            "agents.claude.claude_agent.run_subprocess",
+            side_effect=FileNotFoundError(),
+        ):
+            code = ClaudeCodeAgent().run(
+                instruction="test",
+                cfg=runtime,
+                console=console,
+            )
+        self.assertEqual(code, 1)
+        self.assertIn("claude CLI not found", console.export_text())
+
+    def test_qwen_fails_fast_for_incompatible_openai_codex_model(self) -> None:
+        runtime = AgentRuntimeConfig(
+            agent_key="qwen",
+            model=AgentModelConfig(
+                model="gpt-5.3-codex",
+                api_base="https://api.openai.com/v1",
+                api_key="k",
+            ),
+            agent_config={"binary": "qwen-custom"},
+        )
+        console = Console(record=True)
+        with patch("agents.qwen.qwen_agent.run_subprocess") as run_mock:
+            code = QwenHeadlessAgent().run(
+                instruction="test",
+                cfg=runtime,
+                console=console,
+            )
+        self.assertEqual(code, 1)
+        self.assertIn("compatibility", console.export_text().lower())
+        run_mock.assert_not_called()
+
+    def test_claude_fails_fast_for_non_claude_model(self) -> None:
+        runtime = AgentRuntimeConfig(
+            agent_key="claude",
+            model=AgentModelConfig(
+                model="qwen/qwen3.5-35b-a3b",
+                api_base="https://openrouter.ai/api/v1",
+                api_key="k",
+            ),
+            agent_config={"binary": "claude-custom"},
+        )
+        console = Console(record=True)
+        with patch("agents.claude.claude_agent.run_subprocess") as run_mock:
+            code = ClaudeCodeAgent().run(
+                instruction="test",
+                cfg=runtime,
+                console=console,
+            )
+        self.assertEqual(code, 1)
+        self.assertIn("claude-family", console.export_text().lower())
+        run_mock.assert_not_called()
 
 
 class TestHarnessLoop(unittest.TestCase):

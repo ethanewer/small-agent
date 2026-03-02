@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import os
 import shutil
 import subprocess
 import sys
@@ -16,12 +17,22 @@ sys.modules["cli_live"] = cli
 CLI_SPEC.loader.exec_module(cli)
 
 
+def _local_or_path_binary(name: str) -> str | None:
+    local_path = PROJECT_ROOT / ".bin" / name
+    if local_path.exists():
+        return str(local_path)
+
+    return shutil.which(name)
+
+
 class TestHeadlessLive(unittest.TestCase):
     def test_qwen_headless_live_if_available(self) -> None:
-        if shutil.which("qwen") is None:
+        if _local_or_path_binary("qwen") is None:
             self.skipTest("qwen binary not found on PATH")
         if not cli.resolve_api_key("OPENROUTER_API_KEY"):
             self.skipTest("OPENROUTER_API_KEY not set")
+        env = os.environ.copy()
+        env["PATH"] = f"{PROJECT_ROOT / '.bin'}:{env.get('PATH', '')}"
 
         proc = subprocess.run(
             [
@@ -38,10 +49,69 @@ class TestHeadlessLive(unittest.TestCase):
             text=True,
             timeout=300,
             check=False,
+            env=env,
         )
         combined_output = f"{proc.stdout}\n{proc.stderr}"
         self.assertEqual(proc.returncode, 0, msg=combined_output)
         self.assertIn("Agent: qwen", combined_output)
+
+    def test_claude_live_if_available(self) -> None:
+        if _local_or_path_binary("claude") is None:
+            self.skipTest("claude binary not found on PATH")
+        if not cli.resolve_api_key("OPENROUTER_API_KEY"):
+            self.skipTest("OPENROUTER_API_KEY not set")
+        env = os.environ.copy()
+        env["PATH"] = f"{PROJECT_ROOT / '.bin'}:{env.get('PATH', '')}"
+
+        proc = subprocess.run(
+            [
+                sys.executable,
+                str(CLI_PATH),
+                "--agent",
+                "claude",
+                "--model",
+                "qwen3.5-35b-a3b",
+                "Reply with exactly: OK",
+            ],
+            cwd=str(PROJECT_ROOT),
+            capture_output=True,
+            text=True,
+            timeout=300,
+            check=False,
+            env=env,
+        )
+        combined_output = f"{proc.stdout}\n{proc.stderr}"
+        self.assertEqual(proc.returncode, 0, msg=combined_output)
+        self.assertIn("Agent: claude", combined_output)
+
+    def test_opencode_live_if_available(self) -> None:
+        if _local_or_path_binary("opencode") is None:
+            self.skipTest("opencode binary not found on PATH")
+        if not cli.resolve_api_key("OPENROUTER_API_KEY"):
+            self.skipTest("OPENROUTER_API_KEY not set")
+        env = os.environ.copy()
+        env["PATH"] = f"{PROJECT_ROOT / '.bin'}:{env.get('PATH', '')}"
+
+        proc = subprocess.run(
+            [
+                sys.executable,
+                str(CLI_PATH),
+                "--agent",
+                "opencode",
+                "--model",
+                "qwen3.5-35b-a3b",
+                "Reply with exactly: OK",
+            ],
+            cwd=str(PROJECT_ROOT),
+            capture_output=True,
+            text=True,
+            timeout=300,
+            check=False,
+            env=env,
+        )
+        combined_output = f"{proc.stdout}\n{proc.stderr}"
+        self.assertEqual(proc.returncode, 0, msg=combined_output)
+        self.assertIn("Agent: opencode", combined_output)
 
 
 if __name__ == "__main__":

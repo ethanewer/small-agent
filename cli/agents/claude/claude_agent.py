@@ -1,45 +1,37 @@
 from __future__ import annotations
 
-import json
 import os
 import subprocess
 import tempfile
 from pathlib import Path
-from typing import Any
 
 from rich.console import Console
 from rich.panel import Panel
 
+from agents.claude.util import run_subprocess
 from agents.interface import AgentRuntimeConfig
 from agents.local_binary import resolve_agent_binary
 from agents.openai_compat import (
     normalize_openai_compatible_model,
     preflight_agent_model_compatibility,
 )
-from agents.qwen.util import run_subprocess
 
 
-def _coerce_int(value: Any, default: int) -> int:
-    if value is None:
-        return default
-    return int(value)
-
-
-class QwenHeadlessAgent:
+class ClaudeCodeAgent:
     def run(self, instruction: str, cfg: AgentRuntimeConfig, console: Console) -> int:
         options = cfg.agent_config
         binary = str(
-            options.get("binary") or resolve_agent_binary(default_binary="qwen")
+            options.get("binary") or resolve_agent_binary(default_binary="claude")
         )
-        token_limit = _coerce_int(value=options.get("token_limit"), default=131072)
-        sampling_params = dict(options.get("sampling_params", {}))
-        mcp_servers = dict(options.get("mcp_servers", {}))
+        output_format = str(options.get("output_format", "text"))
+        skip_permissions = bool(options.get("skip_permissions", True))
+        allowed_tools = list(options.get("allowed_tools", []))
         normalized_model = normalize_openai_compatible_model(
             model=cfg.model.model,
             api_base=cfg.model.api_base,
         )
         compatibility_error = preflight_agent_model_compatibility(
-            agent_key="qwen",
+            agent_key="claude",
             model=cfg.model.model,
             api_base=cfg.model.api_base,
         )
@@ -53,45 +45,35 @@ class QwenHeadlessAgent:
             )
             return 1
 
-        settings: dict[str, Any] = {
-            "selectedAuthType": "openai",
-            "sessionTokenLimit": token_limit,
-        }
-        if sampling_params:
-            settings["sampling_params"] = sampling_params
-        if mcp_servers:
-            settings["mcpServers"] = mcp_servers
+        args = [binary, "-p", instruction, "--output-format", output_format]
+        args.extend(["--model", normalized_model])
+        if skip_permissions:
+            args.append("--dangerously-skip-permissions")
+        for tool in allowed_tools:
+            args.extend(["--allowedTools", str(tool)])
 
         env = {
             "OPENAI_MODEL": normalized_model,
             "OPENAI_BASE_URL": cfg.model.api_base,
             "OPENAI_API_BASE": cfg.model.api_base,
             "OPENAI_API_KEY": cfg.model.api_key,
+            "ANTHROPIC_API_KEY": cfg.model.api_key,
+            "ANTHROPIC_BASE_URL": cfg.model.api_base,
             "PATH": os.environ.get("PATH", ""),
             "NODE_NO_WARNINGS": "1",
             **{key: str(val) for key, val in dict(options.get("env", {})).items()},
         }
 
         try:
-            with tempfile.TemporaryDirectory(prefix="qwen-") as tmp_dir:
+            with tempfile.TemporaryDirectory(prefix="claude-headless-") as tmp_dir:
                 tmp_home = Path(tmp_dir)
-                qwen_settings_path = tmp_home / "qwen-settings.json"
-                qwen_settings_path.write_text(
-                    json.dumps(settings, indent=2),
-                    encoding="utf-8",
-                )
-
-                # Force stateless execution by isolating all runtime state to temp dirs.
                 env["HOME"] = str(tmp_home)
                 env["XDG_CONFIG_HOME"] = str(tmp_home / ".config")
                 env["XDG_CACHE_HOME"] = str(tmp_home / ".cache")
                 env["XDG_STATE_HOME"] = str(tmp_home / ".state")
-                env["QWEN_CODE_SYSTEM_SETTINGS_PATH"] = str(qwen_settings_path)
-                # Compatibility: older qwen-code used GEMINI_* naming.
-                env["GEMINI_CLI_SYSTEM_SETTINGS_PATH"] = str(qwen_settings_path)
 
                 run_subprocess(
-                    args=[binary, "-p", instruction, "-y"],
+                    args=args,
                     cwd=str(Path.cwd()),
                     env=env,
                     check=True,
@@ -99,7 +81,7 @@ class QwenHeadlessAgent:
         except FileNotFoundError:
             console.print(
                 Panel(
-                    "qwen CLI not found. Install @qwen-code/qwen-code and ensure `qwen` is on PATH.",
+                    "claude CLI not found. Install @anthropic-ai/claude-code and ensure `claude` is on PATH.",
                     title="Agent Error",
                     border_style="red",
                 )

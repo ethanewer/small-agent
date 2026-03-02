@@ -3,7 +3,9 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CLI_DIR="${SCRIPT_DIR}"
-PIPX_BIN=""
+LOCAL_BIN_DIR="${CLI_DIR}/.bin"
+LOCAL_NPM_PREFIX="${CLI_DIR}/.tools"
+LOCAL_NODE_BIN="${LOCAL_NPM_PREFIX}/node_modules/.bin"
 
 log() {
   printf '[setup] %s\n' "$*"
@@ -17,28 +19,60 @@ have_cmd() {
   command -v "$1" >/dev/null 2>&1
 }
 
-add_common_user_bins_to_path() {
-  local candidate=""
-  for candidate in \
-    "${HOME}/.local/bin" \
-    "${HOME}/Library/Python/3.13/bin" \
-    "${HOME}/Library/Python/3.12/bin" \
-    "${HOME}/Library/Python/3.11/bin" \
-    "${HOME}/Library/Python/3.10/bin" \
-    "${HOME}/Library/Python/3.9/bin"
-  do
-    if [ -d "${candidate}" ] && [[ ":$PATH:" != *":${candidate}:"* ]]; then
-      export PATH="${PATH}:${candidate}"
-    fi
-  done
+ensure_dirs() {
+  mkdir -p "${LOCAL_BIN_DIR}" "${LOCAL_NPM_PREFIX}"
 }
 
-pipx_exec() {
-  if [ -n "${PIPX_BIN}" ]; then
-    "${PIPX_BIN}" "$@"
+write_wrapper() {
+  local name="${1}"
+  local target="${2}"
+  cat > "${LOCAL_BIN_DIR}/${name}" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+exec "${target}" "\$@"
+EOF
+  chmod +x "${LOCAL_BIN_DIR}/${name}"
+}
+
+install_terminus2_wrapper() {
+  cat > "${LOCAL_BIN_DIR}/terminus2-cli" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+CLI_DIR="${CLI_DIR}"
+if [ -x "\${CLI_DIR}/.venv/bin/python" ]; then
+  exec "\${CLI_DIR}/.venv/bin/python" "\${CLI_DIR}/cli.py" "\$@"
+fi
+if command -v uv >/dev/null 2>&1; then
+  exec uv run --directory "\${CLI_DIR}" python "\${CLI_DIR}/cli.py" "\$@"
+fi
+exec python3 "\${CLI_DIR}/cli.py" "\$@"
+EOF
+  chmod +x "${LOCAL_BIN_DIR}/terminus2-cli"
+}
+
+install_local_npm_cli() {
+  local command_name="${1}"
+  local package_name="${2}"
+
+  if [ -x "${LOCAL_NODE_BIN}/${command_name}" ]; then
+    log "${command_name} already installed locally: ${LOCAL_NODE_BIN}/${command_name}"
     return
   fi
-  pipx "$@"
+
+  if ! have_cmd npm; then
+    warn "npm is required to install ${command_name}."
+    exit 1
+  fi
+
+  log "Installing ${command_name} locally via npm (${package_name})."
+  npm install --prefix "${LOCAL_NPM_PREFIX}" "${package_name}"
+
+  if [ ! -x "${LOCAL_NODE_BIN}/${command_name}" ]; then
+    warn "Install finished but ${command_name} was not found at ${LOCAL_NODE_BIN}/${command_name}."
+    exit 1
+  fi
+
+  write_wrapper "${command_name}" "${LOCAL_NODE_BIN}/${command_name}"
 }
 
 ensure_python() {
@@ -48,86 +82,25 @@ ensure_python() {
   fi
 }
 
-ensure_pipx() {
-  add_common_user_bins_to_path
-
-  if have_cmd pipx; then
-    PIPX_BIN="$(command -v pipx)"
-    return
-  fi
-
-  log "pipx not found; installing with python3 --user."
-  python3 -m pip install --user pipx
-  add_common_user_bins_to_path
-
-  if ! have_cmd pipx; then
-    warn "pipx install completed but pipx is still not on PATH."
-    warn "Add your user Python bin directory to PATH, then re-run cli/setup."
-    exit 1
-  fi
-
-  PIPX_BIN="$(command -v pipx)"
-}
-
-pipx_python() {
-  if [ -x "${CLI_DIR}/.venv/bin/python" ]; then
-    printf '%s' "${CLI_DIR}/.venv/bin/python"
-    return
-  fi
-  command -v python3
-}
-
-ensure_uv() {
-  if have_cmd uv; then
-    return
-  fi
-
-  log "Installing uv via pipx."
-  pipx_exec install --python "$(pipx_python)" uv
-}
-
-install_local_cli() {
-  if [ ! -d "${CLI_DIR}" ]; then
-    warn "Expected CLI project at ${CLI_DIR}, but directory was not found."
-    exit 1
-  fi
-
-  log "Installing local terminus2-cli from ${CLI_DIR}"
-  pipx_exec install --force --python "$(pipx_python)" "${CLI_DIR}"
-}
-
 install_qwen_cli() {
-  if have_cmd qwen; then
-    log "qwen already installed: $(command -v qwen)"
-    return
-  fi
+  install_local_npm_cli "qwen" "@qwen-code/qwen-code"
+}
 
-  log "Attempting pipx install for qwen code agent CLI."
-  if pipx_exec install --python "$(pipx_python)" qwen-code >/dev/null 2>&1; then
-    return
-  fi
+install_claude_cli() {
+  install_local_npm_cli "claude" "@anthropic-ai/claude-code"
+}
 
-  warn "pipx package 'qwen-code' not available; falling back to npm package @qwen-code/qwen-code."
-  if ! have_cmd npm; then
-    warn "npm is required for qwen CLI fallback install."
-    exit 1
-  fi
-  npm install -g @qwen-code/qwen-code || {
-    if have_cmd qwen; then
-      warn "npm install reported an issue, but qwen is available on PATH."
-      return
-    fi
-    exit 1
-  }
+install_opencode_cli() {
+  install_local_npm_cli "opencode" "opencode-ai"
 }
 
 verify_clis() {
   local missing=0
-  for cmd in terminus2-cli qwen; do
-    if have_cmd "${cmd}"; then
-      log "Found CLI: ${cmd}"
+  for cmd in terminus2-cli qwen claude opencode; do
+    if [ -x "${LOCAL_BIN_DIR}/${cmd}" ]; then
+      log "Found local CLI wrapper: ${LOCAL_BIN_DIR}/${cmd}"
     else
-      warn "Missing CLI after setup: ${cmd}"
+      warn "Missing local CLI wrapper after setup: ${LOCAL_BIN_DIR}/${cmd}"
       missing=1
     fi
   done
@@ -138,27 +111,35 @@ verify_clis() {
 }
 
 print_next_steps() {
-  cat <<'EOF'
+  cat <<EOF
 [setup] Install complete.
 
-[setup] Ensure these env vars are set for model providers:
+[setup] Local binaries are in:
+  ${LOCAL_BIN_DIR}
+
+[setup] Add this to your shell profile:
+  export PATH="${LOCAL_BIN_DIR}:\$PATH"
+
+[setup] Set model provider env vars as needed:
   - OPENAI_API_KEY
   - OPENROUTER_API_KEY
   - OPENAI_BASE_URL (optional; needed for custom OpenAI-compatible endpoints)
 
 [setup] Quick checks:
-  terminus2-cli --help
-  qwen --help
+  ${LOCAL_BIN_DIR}/terminus2-cli --help
+  ${LOCAL_BIN_DIR}/qwen --help
+  ${LOCAL_BIN_DIR}/claude --help
+  ${LOCAL_BIN_DIR}/opencode --help
 EOF
 }
 
 main() {
   ensure_python
-  ensure_pipx
-  add_common_user_bins_to_path
-  ensure_uv
-  install_local_cli
+  ensure_dirs
+  install_terminus2_wrapper
   install_qwen_cli
+  install_claude_cli
+  install_opencode_cli
   verify_clis
   print_next_steps
 }
