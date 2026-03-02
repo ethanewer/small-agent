@@ -8,8 +8,8 @@
 #SBATCH -p b200
 #SBATCH -N 1
 #SBATCH --ntasks=1
-#SBATCH --gpus-per-task=1
-#SBATCH --cpus-per-task=24
+#SBATCH --gpus-per-task=8
+#SBATCH --cpus-per-task=192
 #SBATCH --time=04:00:00
 #SBATCH --exclusive
 #SBATCH -o logs/train_%j.out
@@ -79,8 +79,8 @@ fi
 srun --mpi=pmix \
   --nodes=1 \
   --ntasks=1 \
-  --gpus-per-task=1 \
-  --cpus-per-task=24 \
+  --gpus-per-task=8 \
+  --cpus-per-task=192 \
   --container-image="${IMAGE}" \
   --container-mounts="${RUN_ROOT}:${CONTAINER_WORKDIR},/opt/amazon/efa:/opt/amazon/efa,/opt/amazon/ofi-nccl:/opt/amazon/ofi-nccl,/wbl-fast/usrs/dongwon/efa_overlay:/workspace/efa_overlay,/wbl:/wbl,/wbl-fast:/wbl-fast,/dev/shm:/dev/shm" \
   --container-workdir="${CONTAINER_WORKDIR}" \
@@ -99,6 +99,9 @@ srun --mpi=pmix \
     export TE_DISABLE_UB=1
     export NCCL_NVLS_ENABLE=0
     export MODELSCOPE_CACHE="${CONTAINER_WORKDIR}/.modelscope_cache"
+    export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
+    export NPROC_PER_NODE=8
+    export NNODES=1
 
     mkdir -p "${CONTAINER_WORKDIR}/logs" "${CONTAINER_WORKDIR}/outputs" "${CONTAINER_OUTPUT_DIR}" "${MODELSCOPE_CACHE}"
 

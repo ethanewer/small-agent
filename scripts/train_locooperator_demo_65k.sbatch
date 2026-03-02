@@ -2,9 +2,9 @@
 
 # NOTE: Ensure these exist before submit so Slurm can open stdout/stderr:
 #   mkdir -p logs outputs
-#   sbatch scripts/train_locooperator_balanced_65k_b200.sbatch
+#   sbatch scripts/train_locooperator_full_65k_b200.sbatch
 
-#SBATCH -J ee-locoop-4b-balanced-65k
+#SBATCH -J ee-locoop-4b-demo-65k-ddp8
 #SBATCH -p b200
 #SBATCH -N 1
 #SBATCH --ntasks=1
@@ -19,7 +19,7 @@ set -euo pipefail
 set -x
 
 IMAGE="/wbl-fast/usrs/shl/enroot/modelscope-torch2.8.sqsh"
-RUN_ID="locooperator4b_balanced_65k_${SLURM_JOB_ID}"
+RUN_ID="locooperator4b_demo_65k_ddp8_${SLURM_JOB_ID}"
 export RUN_ID
 
 JOB_COMMAND="$(scontrol show job "${SLURM_JOB_ID}" | sed -n "s/.* Command=\([^ ]*\).*/\1/p")"
@@ -36,11 +36,11 @@ OUTPUT_DIR="${OUTPUT_BASE}/${RUN_ID}"
 mkdir -p "${LOG_DIR}" "${OUTPUT_BASE}" "${OUTPUT_DIR}"
 
 MODEL_ID="/workspace/run/checkpoints/LocoreMind-LocoOperator-4B"
-DATASET_REL_PATH="data/balanced-dataset/dataset_shuffled.jsonl"
+DATASET_REL_PATH="data/demo-dataset/train_ddp_debug.jsonl"
 CONTEXT_LENGTH="65536"
 NUM_TRAIN_EPOCHS="1"
-MAX_STEPS="100000"
-SAVE_STEPS="1000"
+MAX_STEPS="10"
+SAVE_STEPS="5"
 PER_DEVICE_TRAIN_BATCH_SIZE="1"
 GRADIENT_ACCUMULATION_STEPS="1"
 LEARNING_RATE="1e-6"
@@ -133,7 +133,7 @@ srun --mpi=pmix \
       --lr_scheduler_type constant_with_warmup \
       --logging_steps 1 \
       --save_steps "${SAVE_STEPS}" \
-      --save_total_limit 100 \
+      --save_total_limit 2 \
       --dataloader_num_workers 4 \
       --output_dir "${CONTAINER_OUTPUT_DIR}"
   '
