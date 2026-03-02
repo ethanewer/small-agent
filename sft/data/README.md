@@ -19,7 +19,7 @@ This directory contains all dataset pipeline code and generated dataset outputs.
 
 ## Rebuild from scratch
 
-From repo root:
+From the `sft/` directory:
 
 ```bash
 uv sync
@@ -30,14 +30,14 @@ uv sync
 ```bash
 uv run qwen-dataset-build --mode demo \
   --rows-per-source 100 \
-  --demo-output-dir "/wbl-fast/usrs/ethan/small-agent/data/demo-dataset"
+  --demo-output-dir "/wbl-fast/usrs/ethan/small-agent/sft/data/demo-dataset"
 ```
 
 ### Full dataset
 
 ```bash
 uv run qwen-dataset-build --mode full \
-  --full-output-dir "/wbl-fast/usrs/ethan/small-agent/data/full-dataset"
+  --full-output-dir "/wbl-fast/usrs/ethan/small-agent/sft/data/full-dataset"
 ```
 
 ### Additional Nemotron dataset (one-off, capped)
@@ -50,7 +50,7 @@ Build up to 10k rows per split from:
 ```bash
 uv run qwen-dataset-build --mode additional \
   --additional-rows-per-split 10000 \
-  --additional-output-dir "/wbl-fast/usrs/ethan/small-agent/data/additional-data"
+  --additional-output-dir "/wbl-fast/usrs/ethan/small-agent/sft/data/additional-data"
 ```
 
 By default this keeps memory lower by writing only `dataset_shuffled.jsonl` + `metadata.json`.
@@ -62,9 +62,9 @@ Merge existing full JSONL with additional JSONL into a new output directory:
 
 ```bash
 uv run qwen-dataset-build --mode extended_full \
-  --base-full-input-jsonl "/wbl-fast/usrs/ethan/small-agent/data/full-dataset/dataset_shuffled.jsonl" \
-  --additional-input-jsonl "/wbl-fast/usrs/ethan/small-agent/data/additional-data/dataset_shuffled.jsonl" \
-  --extended-output-dir "/wbl-fast/usrs/ethan/small-agent/data/full-dataset-extended"
+  --base-full-input-jsonl "/wbl-fast/usrs/ethan/small-agent/sft/data/full-dataset/dataset_shuffled.jsonl" \
+  --additional-input-jsonl "/wbl-fast/usrs/ethan/small-agent/sft/data/additional-data/dataset_shuffled.jsonl" \
+  --extended-output-dir "/wbl-fast/usrs/ethan/small-agent/sft/data/full-dataset-extended"
 ```
 
 This mode also defaults to JSONL-only output to avoid OOM risk on large merges.
@@ -73,7 +73,7 @@ This mode also defaults to JSONL-only output to avoid OOM risk on large merges.
 
 ```bash
 uv run qwen-dataset-build --mode balanced \
-  --balanced-output-dir "/wbl-fast/usrs/ethan/small-agent/data/balanced-dataset"
+  --balanced-output-dir "/wbl-fast/usrs/ethan/small-agent/sft/data/balanced-dataset"
 ```
 
 ## Output artifacts

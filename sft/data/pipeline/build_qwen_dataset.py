@@ -17,11 +17,11 @@ from transformers import AutoTokenizer
 
 app = typer.Typer(add_completion=False, help="Build Qwen SFT datasets in messages format.")
 
-DEFAULT_DEMO_OUTPUT = Path("/wbl-fast/usrs/ethan/small-agent/data/demo-dataset")
-DEFAULT_FULL_OUTPUT = Path("/wbl-fast/usrs/ethan/small-agent/data/full-dataset")
-DEFAULT_BALANCED_OUTPUT = Path("/wbl-fast/usrs/ethan/small-agent/data/balanced-dataset")
-DEFAULT_ADDITIONAL_OUTPUT = Path("/wbl-fast/usrs/ethan/small-agent/data/additional-data")
-DEFAULT_EXTENDED_FULL_OUTPUT = Path("/wbl-fast/usrs/ethan/small-agent/data/full-dataset-extended")
+DEFAULT_DEMO_OUTPUT = Path("/wbl-fast/usrs/ethan/small-agent/sft/data/demo-dataset")
+DEFAULT_FULL_OUTPUT = Path("/wbl-fast/usrs/ethan/small-agent/sft/data/full-dataset")
+DEFAULT_BALANCED_OUTPUT = Path("/wbl-fast/usrs/ethan/small-agent/sft/data/balanced-dataset")
+DEFAULT_ADDITIONAL_OUTPUT = Path("/wbl-fast/usrs/ethan/small-agent/sft/data/additional-data")
+DEFAULT_EXTENDED_FULL_OUTPUT = Path("/wbl-fast/usrs/ethan/small-agent/sft/data/full-dataset-extended")
 DEFAULT_SEED = 42
 THINK_BLOCK_RE = re.compile(r"<think>.*?</think>", flags=re.DOTALL | re.IGNORECASE)
 THINK_ESCAPED_BLOCK_RE = re.compile(r"&lt;think&gt;.*?&lt;/think&gt;", flags=re.DOTALL | re.IGNORECASE)
