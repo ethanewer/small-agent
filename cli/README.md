@@ -145,11 +145,24 @@ Compatibility behavior:
 
 - OpenRouter and local OpenAI-compatible endpoints are first-class targets.
 - OpenAI models are allowed when the selected agent/CLI supports the model type.
-- Known incompatible combinations fail fast with an explicit compatibility error.
+- Known incompatible combinations are surfaced with explicit agent errors.
 - `opencode` model args are provider-qualified automatically (`openrouter/...` or `openai/...`).
   By default, the wrapper lets OpenCode resolve model from env. Set
   `agents.opencode.pass_model_arg=true` if you need explicit `--model` forwarding.
-- `claude` agent is restricted to Claude-family model IDs.
+- `claude` supports OpenRouter/OpenAI-compatible open models via
+  `ANTHROPIC_BASE_URL` + `ANTHROPIC_AUTH_TOKEN` + `ANTHROPIC_MODEL`.
+  By default, the wrapper also forwards `--model`; set
+  `agents.claude.pass_model_arg=false` if your gateway expects env-only model selection.
+  Home isolation is disabled by default for auth stability; set
+  `agents.claude.isolate_home=true` for stateless runs.
+
+OpenCode provider/model compatibility:
+
+| Route | Profile `model` in `config.json` | OpenCode provider/model used |
+| --- | --- | --- |
+| OpenRouter | `qwen/qwen3.5-35b-a3b` | `openrouter/qwen/qwen3.5-35b-a3b` |
+| OpenAI | `gpt-5.3-codex` | `openai/gpt-5.3-codex` |
+| Local OpenAI-compatible | `openai/local-model` (or `local-model`) | `openai/local-model` |
 
 Examples:
 

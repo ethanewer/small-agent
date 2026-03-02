@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import tempfile
+import subprocess
 import unittest
 from pathlib import Path
 import sys
@@ -18,6 +19,7 @@ from agents.opencode.opencode_agent import OpencodeAgent  # noqa: E402
 from agents.openai_compat import (  # noqa: E402
     detect_provider_kind,
     opencode_model_arg,
+    opencode_provider_id,
     preflight_agent_model_compatibility,
 )
 from agents.qwen.qwen_agent import QwenHeadlessAgent  # noqa: E402
@@ -184,14 +186,27 @@ class TestOpenAiCompat(unittest.TestCase):
             "openai/local-model",
         )
 
-    def test_preflight_rejects_known_qwen_codex_openai_mismatch(self) -> None:
+    def test_opencode_provider_id_maps_openrouter_and_openai_compatible(self) -> None:
+        self.assertEqual(
+            opencode_provider_id(api_base="https://openrouter.ai/api/v1"),
+            "openrouter",
+        )
+        self.assertEqual(
+            opencode_provider_id(api_base="https://api.openai.com/v1"),
+            "openai",
+        )
+        self.assertEqual(
+            opencode_provider_id(api_base="http://127.0.0.1:1234/v1"),
+            "openai",
+        )
+
+    def test_preflight_keeps_qwen_model_checks_runtime_based(self) -> None:
         message = preflight_agent_model_compatibility(
             agent_key="qwen",
             model="gpt-5.3-codex",
             api_base="https://api.openai.com/v1",
         )
-        self.assertIsNotNone(message)
-        self.assertIn("incompatible", str(message).lower())
+        self.assertIsNone(message)
 
 
 class TestToolExecutor(unittest.TestCase):
@@ -320,6 +335,8 @@ class TestHeadlessAgents(unittest.TestCase):
                 "binary": "claude-custom",
                 "output_format": "json",
                 "skip_permissions": True,
+                "pass_model_arg": True,
+                "isolate_home": True,
                 "allowed_tools": ["Bash(ls:*)"],
                 "env": {"CUSTOM_ENV": "1"},
             },
@@ -353,9 +370,49 @@ class TestHeadlessAgents(unittest.TestCase):
         self.assertEqual(env["OPENAI_BASE_URL"], "https://openrouter.ai/api/v1")
         self.assertEqual(env["OPENAI_API_BASE"], "https://openrouter.ai/api/v1")
         self.assertEqual(env["OPENAI_API_KEY"], "test-key")
+        self.assertEqual(env["ANTHROPIC_AUTH_TOKEN"], "test-key")
+        self.assertEqual(env["ANTHROPIC_MODEL"], "claude-sonnet-4-6")
         self.assertEqual(env["ANTHROPIC_API_KEY"], "test-key")
+        self.assertEqual(env["ANTHROPIC_BASE_URL"], "https://openrouter.ai/api/v1")
         self.assertEqual(env["CUSTOM_ENV"], "1")
         self.assertNotEqual(env["HOME"], str(Path.cwd()))
+
+    def test_claude_can_disable_model_arg_and_home_isolation(self) -> None:
+        runtime = AgentRuntimeConfig(
+            agent_key="claude",
+            model=AgentModelConfig(
+                model="qwen/qwen3.5-35b-a3b",
+                api_base="https://openrouter.ai/api/v1",
+                api_key="test-key",
+            ),
+            agent_config={
+                "binary": "claude-custom",
+                "pass_model_arg": False,
+                "isolate_home": False,
+            },
+        )
+        captured: dict[str, object] = {}
+
+        def fake_run_subprocess(**kwargs):  # type: ignore[no-untyped-def]
+            captured.update(kwargs)
+            return 0
+
+        with patch(
+            "agents.claude.claude_agent.run_subprocess",
+            side_effect=fake_run_subprocess,
+        ):
+            code = ClaudeCodeAgent().run(
+                instruction="do a quick check",
+                cfg=runtime,
+                console=Console(record=True),
+            )
+        self.assertEqual(code, 0)
+        args = cast(list[str], captured["args"])
+        self.assertNotIn("--model", args)
+        env = cast(dict[str, str], captured["env"])
+        self.assertEqual(env["ANTHROPIC_MODEL"], "qwen/qwen3.5-35b-a3b")
+        self.assertEqual(env["ANTHROPIC_AUTH_TOKEN"], "test-key")
+        self.assertNotIn("XDG_CONFIG_HOME", env)
 
     def test_opencode_builds_expected_env_and_args(self) -> None:
         runtime = AgentRuntimeConfig(
@@ -399,6 +456,7 @@ class TestHeadlessAgents(unittest.TestCase):
         self.assertEqual(env["OPENAI_BASE_URL"], "https://openrouter.ai/api/v1")
         self.assertEqual(env["OPENAI_API_BASE"], "https://openrouter.ai/api/v1")
         self.assertEqual(env["OPENAI_API_KEY"], "test-key")
+        self.assertIn("OPENCODE_CONFIG_CONTENT", env)
         self.assertEqual(env["CUSTOM_ENV"], "1")
 
     def test_opencode_can_force_provider_qualified_model_arg(self) -> None:
@@ -508,7 +566,40 @@ class TestHeadlessAgents(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("claude CLI not found", console.export_text())
 
-    def test_qwen_fails_fast_for_incompatible_openai_codex_model(self) -> None:
+    def test_opencode_model_catalog_mismatch_shows_refresh_hint(self) -> None:
+        runtime = AgentRuntimeConfig(
+            agent_key="opencode",
+            model=AgentModelConfig(
+                model="missing-model",
+                api_base="https://openrouter.ai/api/v1",
+                api_key="k",
+            ),
+            agent_config={"binary": "opencode-custom"},
+        )
+        console = Console(record=True)
+        model_error = (
+            "ProviderModelNotFoundError: Model not found: openrouter/missing-model"
+        )
+        with patch(
+            "agents.opencode.opencode_agent.run_subprocess",
+            side_effect=subprocess.CalledProcessError(
+                1,
+                ["opencode-custom", "run", "test"],
+                stderr=model_error,
+            ),
+        ):
+            code = OpencodeAgent().run(
+                instruction="test",
+                cfg=runtime,
+                console=console,
+            )
+
+        text = console.export_text()
+        self.assertEqual(code, 1)
+        self.assertIn("ProviderModelNotFoundError", text)
+        self.assertIn("opencode models --refresh", text)
+
+    def test_qwen_reports_actionable_chat_compat_error_for_non_chat_model(self) -> None:
         runtime = AgentRuntimeConfig(
             agent_key="qwen",
             model=AgentModelConfig(
@@ -519,17 +610,29 @@ class TestHeadlessAgents(unittest.TestCase):
             agent_config={"binary": "qwen-custom"},
         )
         console = Console(record=True)
-        with patch("agents.qwen.qwen_agent.run_subprocess") as run_mock:
+        with patch(
+            "agents.qwen.qwen_agent.run_subprocess",
+            side_effect=subprocess.CalledProcessError(
+                returncode=1,
+                cmd=["qwen-custom", "-p", "test", "-y"],
+                stderr=(
+                    "This is not a chat model and thus not supported in the v1/chat/"
+                    "completions endpoint. Did you mean to use v1/completions?"
+                ),
+            ),
+        ) as run_mock:
             code = QwenHeadlessAgent().run(
                 instruction="test",
                 cfg=runtime,
                 console=console,
             )
         self.assertEqual(code, 1)
-        self.assertIn("compatibility", console.export_text().lower())
-        run_mock.assert_not_called()
+        run_mock.assert_called_once()
+        output = console.export_text()
+        self.assertIn("Qwen Code cannot use model 'gpt-5.3-codex'", output)
+        self.assertIn("terminus-2", output)
 
-    def test_claude_fails_fast_for_non_claude_model(self) -> None:
+    def test_claude_accepts_non_claude_model_for_openrouter_proxy(self) -> None:
         runtime = AgentRuntimeConfig(
             agent_key="claude",
             model=AgentModelConfig(
@@ -539,16 +642,54 @@ class TestHeadlessAgents(unittest.TestCase):
             ),
             agent_config={"binary": "claude-custom"},
         )
+        captured: dict[str, object] = {}
+
+        def fake_run_subprocess(**kwargs):  # type: ignore[no-untyped-def]
+            captured.update(kwargs)
+            return 0
+
+        with patch(
+            "agents.claude.claude_agent.run_subprocess",
+            side_effect=fake_run_subprocess,
+        ):
+            code = ClaudeCodeAgent().run(
+                instruction="test",
+                cfg=runtime,
+                console=Console(record=True),
+            )
+        self.assertEqual(code, 0)
+        env = cast(dict[str, str], captured["env"])
+        self.assertEqual(env["ANTHROPIC_MODEL"], "qwen/qwen3.5-35b-a3b")
+        self.assertEqual(env["ANTHROPIC_AUTH_TOKEN"], "k")
+
+    def test_claude_surfaces_actionable_message_on_subprocess_failure(self) -> None:
+        runtime = AgentRuntimeConfig(
+            agent_key="claude",
+            model=AgentModelConfig(
+                model="gpt-5.3-codex",
+                api_base="https://api.openai.com/v1",
+                api_key="k",
+            ),
+            agent_config={
+                "pass_model_arg": True,
+                "isolate_home": False,
+            },
+        )
         console = Console(record=True)
-        with patch("agents.claude.claude_agent.run_subprocess") as run_mock:
+        with patch(
+            "agents.claude.claude_agent.run_subprocess",
+            side_effect=subprocess.CalledProcessError(2, ["claude"]),
+        ):
             code = ClaudeCodeAgent().run(
                 instruction="test",
                 cfg=runtime,
                 console=console,
             )
         self.assertEqual(code, 1)
-        self.assertIn("claude-family", console.export_text().lower())
-        run_mock.assert_not_called()
+        output = console.export_text()
+        self.assertIn("claude CLI exited with status 2", output)
+        self.assertIn("agents.claude.pass_model_arg", output)
+        self.assertIn("agents.claude.isolate_home", output)
 
 
 class TestHarnessLoop(unittest.TestCase):

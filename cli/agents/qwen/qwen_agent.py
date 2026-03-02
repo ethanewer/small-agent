@@ -25,6 +25,31 @@ def _coerce_int(value: Any, default: int) -> int:
     return int(value)
 
 
+def _qwen_actionable_error_message(
+    *,
+    model: str,
+    process_error: subprocess.CalledProcessError,
+) -> str | None:
+    stderr = str(process_error.stderr or "")
+    stdout = str(process_error.output or "")
+    combined = f"{stdout}\n{stderr}".lower()
+    is_chat_mismatch = (
+        "not a chat model" in combined
+        or "use v1/completions" in combined
+        or "chat.completions" in combined
+        and "not supported" in combined
+    )
+    if not is_chat_mismatch:
+        return None
+
+    return (
+        f"Qwen Code cannot use model '{model}' via Chat Completions on this endpoint.\n"
+        "Pick a chat-completions-compatible model (for example: gpt-4.1, gpt-4o-mini, "
+        "or an OpenRouter qwen/* chat route), or run this model with the "
+        "`terminus-2` agent if you need completion-style workflows."
+    )
+
+
 class QwenHeadlessAgent:
     def run(self, instruction: str, cfg: AgentRuntimeConfig, console: Console) -> int:
         options = cfg.agent_config
@@ -105,7 +130,24 @@ class QwenHeadlessAgent:
                 )
             )
             return 1
-        except (subprocess.CalledProcessError, ValueError, TypeError) as err:
+        except subprocess.CalledProcessError as err:
+            actionable_error = _qwen_actionable_error_message(
+                model=cfg.model.model,
+                process_error=err,
+            )
+            if actionable_error:
+                console.print(
+                    Panel(
+                        actionable_error,
+                        title="Agent Compatibility Error",
+                        border_style="red",
+                    )
+                )
+                return 1
+
+            console.print(Panel(str(err), title="Agent Error", border_style="red"))
+            return 1
+        except (ValueError, TypeError) as err:
             console.print(Panel(str(err), title="Agent Error", border_style="red"))
             return 1
 

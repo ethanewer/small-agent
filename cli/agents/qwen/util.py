@@ -70,6 +70,9 @@ def run_subprocess(
     if proc.stderr is not None:
         selector.register(proc.stderr, selectors.EVENT_READ, data=sys.stderr)
 
+    captured_stdout_chunks: list[str] = []
+    captured_stderr_chunks: list[str] = []
+
     try:
         while selector.get_map():
             events = selector.select(timeout=1.0)
@@ -97,6 +100,11 @@ def run_subprocess(
                     continue
 
                 _safe_write(stream=key.data, data=chunk)
+                decoded_chunk = chunk.decode(errors="replace")
+                if key.data is sys.stdout:
+                    captured_stdout_chunks.append(decoded_chunk)
+                else:
+                    captured_stderr_chunks.append(decoded_chunk)
 
         rc = proc.wait()
     except KeyboardInterrupt:
@@ -123,5 +131,10 @@ def run_subprocess(
             proc.stderr.close()
 
     if check and rc != 0:
-        raise subprocess.CalledProcessError(rc, list(args))
+        raise subprocess.CalledProcessError(
+            returncode=rc,
+            cmd=list(args),
+            output="".join(captured_stdout_chunks),
+            stderr="".join(captured_stderr_chunks),
+        )
     return rc

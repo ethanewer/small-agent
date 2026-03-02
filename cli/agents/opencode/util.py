@@ -128,7 +128,11 @@ def run_subprocess(
 
     captured_text = "".join(captured_chunks) if captured_chunks else ""
     if fail_patterns and any(pattern in captured_text for pattern in fail_patterns):
-        raise subprocess.CalledProcessError(1, list(args))
+        raise subprocess.CalledProcessError(
+            1,
+            list(args),
+            stderr=captured_text,
+        )
 
     if check and rc != 0:
         raise subprocess.CalledProcessError(rc, list(args))

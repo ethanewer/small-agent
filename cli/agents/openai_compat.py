@@ -48,30 +48,19 @@ def opencode_model_arg(*, model: str, api_base: str) -> str:
     return f"openai/{normalized_model}"
 
 
+def opencode_provider_id(*, api_base: str) -> str:
+    provider_kind = detect_provider_kind(api_base=api_base)
+    if provider_kind == "openrouter":
+        return "openrouter"
+
+    return "openai"
+
+
 def preflight_agent_model_compatibility(
     *,
     agent_key: str,
     model: str,
     api_base: str,
 ) -> str | None:
-    provider_kind = detect_provider_kind(api_base=api_base)
-    normalized_model = normalize_openai_compatible_model(model=model, api_base=api_base)
-
-    if agent_key == "qwen" and provider_kind == "openai":
-        lowered = normalized_model.lower()
-        if "codex" in lowered:
-            return (
-                "qwen agent is incompatible with OpenAI Codex-style models on "
-                "chat-completions endpoints. Choose a chat-completions-capable model "
-                "or use terminus-2 for this model."
-            )
-
-    if agent_key == "claude":
-        if "claude" not in normalized_model.lower():
-            return (
-                "claude agent only supports Claude-family model IDs. "
-                "Choose a Claude model (for example claude-sonnet-4-6) "
-                "or use qwen/opencode/terminus-2 for non-Claude models."
-            )
-
+    del agent_key, model, api_base
     return None
