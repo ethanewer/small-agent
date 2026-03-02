@@ -1,6 +1,6 @@
 {
   "default_agent": "terminus-2",
-  "default_model": "qwen3.5-35b-a3b",
+  "default_model": "qwen3-coder-next",
   "agents": {
     "terminus-2": {
       "final_message": false
@@ -18,8 +18,28 @@
     }
   },
   "models": {
+    "qwen3-coder-next": {
+      "model": "qwen/qwen3-coder-next",
+      "api_base": "https://openrouter.ai/api/v1",
+      "api_key": "OPENROUTER_API_KEY"
+    },
     "qwen3.5-35b-a3b": {
       "model": "qwen/qwen3.5-35b-a3b",
+      "api_base": "https://openrouter.ai/api/v1",
+      "api_key": "OPENROUTER_API_KEY"
+    },
+    "minimax-m2.5": {
+      "model": "minimax/minimax-m2.5",
+      "api_base": "https://openrouter.ai/api/v1",
+      "api_key": "OPENROUTER_API_KEY"
+    },
+    "glm-5": {
+      "model": "z-ai/glm-5",
+      "api_base": "https://openrouter.ai/api/v1",
+      "api_key": "OPENROUTER_API_KEY"
+    },
+    "kimi-k2.5": {
+      "model": "moonshotai/kimi-k2.5",
       "api_base": "https://openrouter.ai/api/v1",
       "api_key": "OPENROUTER_API_KEY"
     },
