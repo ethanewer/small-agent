@@ -69,6 +69,30 @@ uv run qwen-dataset-build --mode extended_full \
 
 This mode also defaults to JSONL-only output to avoid OOM risk on large merges.
 
+## Agent-format canonicalization (additional + extended_full)
+
+To match inference-time agent behavior with ms-swift `agent_template`, the additional
+Nemotron sources are canonicalized before writing:
+
+- role aliases are normalized to canonical agent roles (`tool` -> `tool_response`, etc.)
+- `tool_call` and `tool_response` content is forced to JSON-string payloads
+- rows with unrecoverable tool format issues are dropped (for example, tool response without
+  a valid preceding tool call)
+
+Audit artifacts are written during rebuild:
+
+- `rows_changed_canonicalization.jsonl`: rows rewritten during canonicalization
+- `rows_removed_canonicalization.jsonl`: rows dropped with reason
+- `rebuild_row_diff.json`: old-vs-new row ID diff (`added_row_ids`, `removed_row_ids`, `changed_row_ids`)
+
+Metadata includes:
+
+- `rows_dropped_invalid_agent_format`
+- `rows_dropped_by_split`
+- `rows_dropped_by_split_and_reason`
+- `agent_preflight_validation`
+- `row_audit_logs`
+
 ### Balanced dataset (~50% NVIDIA bytes)
 
 ```bash

@@ -6,9 +6,10 @@ import random
 import re
 import shutil
 import requests
+from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable, Optional
 
 import orjson
 import typer
@@ -247,6 +248,240 @@ def use_lightweight_normalization(spec: DatasetSpec) -> bool:
     }
 
 
+def use_agent_canonicalization(spec: DatasetSpec) -> bool:
+    return spec.name in {
+        "nvidia/Nemotron-Agentic-v1",
+        "nvidia/Nemotron-Instruction-Following-Chat-v1",
+    }
+
+
+def _canonical_agent_role(role: str) -> Optional[str]:
+    role_map = {
+        "system": "system",
+        "user": "user",
+        "assistant": "assistant",
+        "tool_call": "tool_call",
+        "function_call": "tool_call",
+        "tool_response": "tool_response",
+        "tool": "tool_response",
+        "function_response": "tool_response",
+        "observation": "tool_response",
+        "observations": "tool_response",
+    }
+    key = role.strip().lower().replace("-", "_")
+    return role_map.get(key)
+
+
+def _canonicalize_tools_field(tools: Any) -> tuple[Optional[str], Optional[str]]:
+    if tools is None:
+        return None, None
+    parsed: Any
+    if isinstance(tools, str):
+        try:
+            parsed = orjson.loads(tools)
+        except Exception:
+            return None, "invalid_tools_json"
+    elif isinstance(tools, (list, tuple)):
+        parsed = list(tools)
+    elif isinstance(tools, dict):
+        parsed = [tools]
+    else:
+        return None, "invalid_tools_type"
+
+    if isinstance(parsed, dict):
+        parsed = [parsed]
+    if not isinstance(parsed, list):
+        return None, "invalid_tools_payload"
+    try:
+        return json.dumps(parsed, ensure_ascii=False), None
+    except Exception:
+        return None, "invalid_tools_payload"
+
+
+def _canonicalize_tool_content(content: Any, role: str) -> tuple[Optional[str], Optional[str]]:
+    payload: Any = content
+    if isinstance(content, str):
+        try:
+            payload = orjson.loads(content)
+        except Exception:
+            if role == "tool_response":
+                payload = {"raw_output": content}
+            else:
+                return None, "invalid_tool_call_json"
+    elif isinstance(content, (dict, list)):
+        payload = content
+    else:
+        if role == "tool_response":
+            payload = {"raw_output": str(content)}
+        else:
+            return None, "invalid_tool_call_payload"
+
+    if role == "tool_call":
+        if not isinstance(payload, dict):
+            return None, "invalid_tool_call_payload"
+        tool_name = payload.get("name")
+        if not isinstance(tool_name, str) or not tool_name.strip():
+            return None, "missing_tool_name"
+        arguments = payload.get("arguments", {})
+        if isinstance(arguments, str):
+            try:
+                arguments = orjson.loads(arguments)
+            except Exception:
+                return None, "invalid_tool_arguments"
+        if not isinstance(arguments, dict):
+            return None, "invalid_tool_arguments"
+        payload = {"name": tool_name, "arguments": arguments}
+
+    try:
+        return json.dumps(payload, ensure_ascii=False), None
+    except Exception:
+        return None, "invalid_tool_content"
+
+
+def canonicalize_agent_row(
+    messages: list[dict[str, str]], tools: Any
+) -> tuple[Optional[list[dict[str, str]]], Optional[str], Optional[str]]:
+    has_tool_messages = False
+    canonical_messages: list[dict[str, str]] = []
+    pending_tool_call = False
+
+    for idx, message in enumerate(messages):
+        role_raw = str(message.get("role", ""))
+        role = _canonical_agent_role(role_raw)
+        if role is None:
+            return None, None, f"unsupported_role:{role_raw}"
+
+        content: Any = message.get("content", "")
+        if role in {"tool_call", "tool_response"}:
+            has_tool_messages = True
+            content, content_err = _canonicalize_tool_content(content, role)
+            if content_err:
+                return None, None, content_err
+        else:
+            content = to_text(content).strip()
+
+        if not content:
+            continue
+
+        if role == "system" and idx != 0:
+            return None, None, "system_role_not_first"
+        if role == "tool_call":
+            pending_tool_call = True
+        elif role == "tool_response":
+            if not pending_tool_call:
+                return None, None, "missing_tool_call_before_tool_response"
+        elif role == "user":
+            pending_tool_call = False
+        elif role == "assistant":
+            pending_tool_call = False
+
+        canonical_messages.append({"role": role, "content": content})
+
+    normalized_tools: Any = tools
+    tools_err: Optional[str] = None
+    if has_tool_messages:
+        normalized_tools, tools_err = _canonicalize_tools_field(tools)
+    if has_tool_messages and normalized_tools is None:
+        reason = tools_err or "missing_tools_for_tool_messages"
+        return None, None, reason
+    if not canonical_messages:
+        return None, None, "empty_messages_after_canonicalization"
+    return canonical_messages, normalized_tools, None
+
+
+def _summarize_agent_row_changes(
+    before_messages: list[dict[str, str]],
+    after_messages: list[dict[str, str]],
+    before_tools: Any,
+    after_tools: Any,
+) -> Optional[dict[str, Any]]:
+    before_roles = [str(m.get("role", "")) for m in before_messages if isinstance(m, dict)]
+    after_roles = [str(m.get("role", "")) for m in after_messages if isinstance(m, dict)]
+    role_changed = before_roles != after_roles
+    message_count_changed = len(before_messages) != len(after_messages)
+    tool_field_changed = before_tools != after_tools
+
+    if not role_changed and not message_count_changed and not tool_field_changed:
+        return None
+    return {
+        "before_roles": before_roles,
+        "after_roles": after_roles,
+        "before_message_count": len(before_messages),
+        "after_message_count": len(after_messages),
+        "tool_field_changed": tool_field_changed,
+    }
+
+
+def validate_row_for_megatron_agent_training(row: dict[str, Any]) -> Optional[str]:
+    messages = deepcopy(row.get("messages", []))
+    if not isinstance(messages, list) or not messages:
+        return "invalid_messages"
+
+    for message in messages:
+        role = message.get("role")
+        if role in {"tool_call", "tool_response", "tool"}:
+            content = message.get("content")
+            if not isinstance(content, str):
+                return "non_string_tool_content"
+            try:
+                orjson.loads(content)
+            except Exception:
+                return "non_json_tool_content"
+
+    if messages and messages[0].get("role") == "system":
+        messages = messages[1:]
+
+    compact: list[dict[str, Any]] = []
+    i = 0
+    while i < len(messages):
+        msg = messages[i]
+        role = msg.get("role")
+        if role == "tool_call":
+            j = i
+            while j + 1 < len(messages) and messages[j + 1].get("role") == "tool_call":
+                j += 1
+            compact.append({"role": "assistant", "content": "<tool_call_block>"})
+            i = j + 1
+            continue
+        if role == "tool_response":
+            role = "tool"
+        compact.append({"role": role, "content": msg.get("content")})
+        i += 1
+
+    i = 1
+    while i < len(compact):
+        pre_role = compact[i - 1].get("role")
+        role = compact[i].get("role")
+        if pre_role == "assistant" and role == "tool":
+            j = i
+            while j + 1 < len(compact) and compact[j + 1].get("role") == "tool":
+                j += 1
+            compact[i : j + 1] = [{"role": "tool", "content": "<tool_response_block>"}]
+            i += 1
+            continue
+        if (pre_role, role) in {("assistant", "assistant"), ("user", "user")}:
+            compact[i - 1]["content"] = (
+                f"{compact[i - 1].get('content', '')}{compact[i].get('content', '')}"
+            )
+            compact.pop(i)
+            continue
+        i += 1
+
+    if compact and compact[0].get("role") == "assistant":
+        compact.insert(0, {"role": "user", "content": ""})
+    if len(compact) % 2 == 1:
+        compact.append({"role": "assistant", "content": None})
+
+    for query_message, response_message in zip(compact[::2], compact[1::2]):
+        query_role = query_message.get("role")
+        response_role = response_message.get("role")
+        if query_role not in {"user", "tool"}:
+            return f"invalid_query_role:{query_role}"
+        if response_role != "assistant":
+            return f"invalid_response_role:{response_role}"
+    return None
+
+
 def additional_spec_jsonl_url(spec: DatasetSpec) -> str | None:
     urls = {
         ("nvidia/Nemotron-Agentic-v1", "interactive_agent"): (
@@ -266,7 +501,12 @@ def additional_spec_jsonl_url(spec: DatasetSpec) -> str | None:
 
 
 def iter_rows_from_jsonl_url(
-    spec: DatasetSpec, seed: int, limit: int | None = None
+    spec: DatasetSpec,
+    seed: int,
+    limit: int | None = None,
+    enforce_agent_canonical: bool = False,
+    on_row_dropped: Optional[Callable[[DatasetSpec, str, str], None]] = None,
+    on_row_changed: Optional[Callable[[DatasetSpec, str, dict[str, Any]], None]] = None,
 ) -> Iterable[dict[str, Any]]:
     url = additional_spec_jsonl_url(spec)
     if url is None:
@@ -291,17 +531,43 @@ def iter_rows_from_jsonl_url(
             messages = normalize(row.get(spec.messages_key))
             if not messages:
                 continue
+            tools = row.get("tools")
             source_config = spec.config or "default"
-            yield {
+            generated_row_id = f"{spec.name}:{source_config}:{spec.split}:{row_id}"
+            if enforce_agent_canonical and use_agent_canonicalization(spec):
+                before_messages = deepcopy(messages)
+                before_tools = tools
+                messages, tools, drop_reason = canonicalize_agent_row(messages, tools)
+                if drop_reason is not None:
+                    if on_row_dropped is not None:
+                        on_row_dropped(spec, generated_row_id, drop_reason)
+                    continue
+                assert messages is not None
+                if on_row_changed is not None:
+                    change_summary = _summarize_agent_row_changes(
+                        before_messages, messages, before_tools, tools
+                    )
+                    if change_summary is not None:
+                        on_row_changed(spec, generated_row_id, change_summary)
+            row_payload: dict[str, Any] = {
                 "source_dataset": spec.name,
                 "source_config": source_config,
                 "source_split": spec.split,
-                "row_id": f"{spec.name}:{source_config}:{spec.split}:{row_id}",
+                "row_id": generated_row_id,
                 "shuffle_key": _shuffle_key(
                     seed, spec.name, source_config, spec.split, row_id
                 ),
                 "messages": messages,
             }
+            if tools is not None:
+                row_payload["tools"] = tools
+            if enforce_agent_canonical and use_agent_canonicalization(spec):
+                validation_error = validate_row_for_megatron_agent_training(row_payload)
+                if validation_error is not None:
+                    if on_row_dropped is not None:
+                        on_row_dropped(spec, generated_row_id, validation_error)
+                    continue
+            yield row_payload
             accepted += 1
             if limit is not None and accepted >= limit:
                 break
@@ -317,11 +583,23 @@ def _shuffle_key(
 
 
 def iter_rows(
-    spec: DatasetSpec, seed: int, limit: int | None = None
+    spec: DatasetSpec,
+    seed: int,
+    limit: int | None = None,
+    enforce_agent_canonical: bool = False,
+    on_row_dropped: Optional[Callable[[DatasetSpec, str, str], None]] = None,
+    on_row_changed: Optional[Callable[[DatasetSpec, str, dict[str, Any]], None]] = None,
 ) -> Iterable[dict[str, Any]]:
     direct_jsonl_url = additional_spec_jsonl_url(spec)
     if direct_jsonl_url is not None:
-        yield from iter_rows_from_jsonl_url(spec, seed=seed, limit=limit)
+        yield from iter_rows_from_jsonl_url(
+            spec,
+            seed=seed,
+            limit=limit,
+            enforce_agent_canonical=enforce_agent_canonical,
+            on_row_dropped=on_row_dropped,
+            on_row_changed=on_row_changed,
+        )
         return
 
     ds = get_streaming_dataset(spec)
@@ -335,17 +613,43 @@ def iter_rows(
         messages = normalize(row.get(spec.messages_key))
         if not messages:
             continue
+        tools = row.get("tools")
         source_config = spec.config or "default"
-        yield {
+        generated_row_id = f"{spec.name}:{source_config}:{spec.split}:{row_id}"
+        if enforce_agent_canonical and use_agent_canonicalization(spec):
+            before_messages = deepcopy(messages)
+            before_tools = tools
+            messages, tools, drop_reason = canonicalize_agent_row(messages, tools)
+            if drop_reason is not None:
+                if on_row_dropped is not None:
+                    on_row_dropped(spec, generated_row_id, drop_reason)
+                continue
+            assert messages is not None
+            if on_row_changed is not None:
+                change_summary = _summarize_agent_row_changes(
+                    before_messages, messages, before_tools, tools
+                )
+                if change_summary is not None:
+                    on_row_changed(spec, generated_row_id, change_summary)
+        row_payload: dict[str, Any] = {
             "source_dataset": spec.name,
             "source_config": source_config,
             "source_split": spec.split,
-            "row_id": f"{spec.name}:{source_config}:{spec.split}:{row_id}",
+            "row_id": generated_row_id,
             "shuffle_key": _shuffle_key(
                 seed, spec.name, source_config, spec.split, row_id
             ),
             "messages": messages,
         }
+        if tools is not None:
+            row_payload["tools"] = tools
+        if enforce_agent_canonical and use_agent_canonicalization(spec):
+            validation_error = validate_row_for_megatron_agent_training(row_payload)
+            if validation_error is not None:
+                if on_row_dropped is not None:
+                    on_row_dropped(spec, generated_row_id, validation_error)
+                continue
+        yield row_payload
         accepted += 1
         if limit is not None and accepted >= limit:
             break
@@ -387,6 +691,12 @@ def save_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
         for row in rows:
             f.write(orjson.dumps(row))
             f.write(b"\n")
+
+
+def append_jsonl(path: Path, row: dict[str, Any]) -> None:
+    with path.open("ab") as f:
+        f.write(orjson.dumps(row))
+        f.write(b"\n")
 
 
 def row_messages_bytes(row: dict[str, Any]) -> int:
@@ -458,6 +768,12 @@ def _write_shuffled_dataset_jsonl(
     try:
         for rows in row_iterables:
             for row in rows:
+                # Keep a stable JSON schema for HF loader: always emit `tools` as JSON string.
+                tools_value = row.get("tools", None)
+                if tools_value is None:
+                    row["tools"] = "[]"
+                elif not isinstance(tools_value, str):
+                    row["tools"] = json.dumps(tools_value, ensure_ascii=False)
                 source = row["source_dataset"]
                 row_bytes = row_messages_bytes(row)
                 rows_by_source[source] = rows_by_source.get(source, 0) + 1
@@ -512,6 +828,79 @@ def summarize_jsonl(path: Path) -> dict[str, Any]:
     }
 
 
+def _load_json_if_exists(path: Path) -> Optional[dict[str, Any]]:
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
+def validate_agent_jsonl(path: Path) -> dict[str, Any]:
+    checked_rows = 0
+    agent_rows = 0
+    for row in iter_rows_from_jsonl(path):
+        checked_rows += 1
+        messages = row.get("messages")
+        if not isinstance(messages, list):
+            raise ValueError(f"Invalid messages field in {path}: row={checked_rows}")
+        if not any(
+            m.get("role") in {"tool", "tool_response", "tool_call"} for m in messages if isinstance(m, dict)
+        ):
+            continue
+        agent_rows += 1
+        validation_error = validate_row_for_megatron_agent_training(row)
+        if validation_error is not None:
+            row_id = row.get("row_id", f"line_{checked_rows}")
+            raise ValueError(
+                f"Agent preflight validation failed for {path} row_id={row_id}: {validation_error}"
+            )
+    return {"checked_rows": checked_rows, "agent_rows": agent_rows}
+
+
+def _row_signature(row: dict[str, Any]) -> str:
+    payload = {
+        "messages": row.get("messages"),
+        "tools": row.get("tools"),
+    }
+    return hashlib.sha1(orjson.dumps(payload, option=orjson.OPT_SORT_KEYS)).hexdigest()
+
+
+def diff_jsonl_by_row_id(
+    old_path: Optional[Path], new_path: Path
+) -> dict[str, Any]:
+    old_rows: dict[str, str] = {}
+    if old_path is not None and old_path.exists():
+        for row in iter_rows_from_jsonl(old_path):
+            row_id = str(row.get("row_id", ""))
+            if row_id:
+                old_rows[row_id] = _row_signature(row)
+
+    new_rows: dict[str, str] = {}
+    for row in iter_rows_from_jsonl(new_path):
+        row_id = str(row.get("row_id", ""))
+        if row_id:
+            new_rows[row_id] = _row_signature(row)
+
+    removed = sorted([row_id for row_id in old_rows.keys() if row_id not in new_rows])
+    added = sorted([row_id for row_id in new_rows.keys() if row_id not in old_rows])
+    changed = sorted(
+        [
+            row_id
+            for row_id in old_rows.keys() & new_rows.keys()
+            if old_rows[row_id] != new_rows[row_id]
+        ]
+    )
+    return {
+        "old_row_count": len(old_rows),
+        "new_row_count": len(new_rows),
+        "removed_row_ids": removed,
+        "added_row_ids": added,
+        "changed_row_ids": changed,
+    }
+
+
 def build_additional(
     output_dir: Path,
     seed: int,
@@ -521,19 +910,63 @@ def build_additional(
     if additional_rows_per_split <= 0:
         raise typer.BadParameter("additional_rows_per_split must be > 0")
 
+    previous_jsonl = output_dir / "dataset_shuffled.jsonl"
+    previous_jsonl_backup: Optional[Path] = None
+    if previous_jsonl.exists():
+        previous_jsonl_backup = output_dir.parent / f".{output_dir.name}.previous.dataset_shuffled.jsonl"
+        shutil.copy2(previous_jsonl, previous_jsonl_backup)
     if output_dir.exists():
         shutil.rmtree(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+    changed_rows_log = output_dir / "rows_changed_canonicalization.jsonl"
+    removed_rows_log = output_dir / "rows_removed_canonicalization.jsonl"
 
     rows_by_source: dict[str, int] = {}
     bytes_by_source: dict[str, int] = {}
     rows_by_split: dict[str, int] = {}
     bytes_by_split: dict[str, int] = {}
+    dropped_rows_by_split: dict[str, int] = {}
+    dropped_rows_by_split_and_reason: dict[str, dict[str, int]] = {}
+
+    def on_row_dropped(spec: DatasetSpec, row_id: str, reason: str) -> None:
+        spec_key = f"{spec.name}|{spec.config or 'default'}|{spec.split}"
+        dropped_rows_by_split[spec_key] = dropped_rows_by_split.get(spec_key, 0) + 1
+        by_reason = dropped_rows_by_split_and_reason.setdefault(spec_key, {})
+        by_reason[reason] = by_reason.get(reason, 0) + 1
+        append_jsonl(
+            removed_rows_log,
+            {
+                "row_id": row_id,
+                "source_dataset": spec.name,
+                "source_config": spec.config or "default",
+                "source_split": spec.split,
+                "reason": reason,
+            },
+        )
+
+    def on_row_changed(spec: DatasetSpec, row_id: str, change_summary: dict[str, Any]) -> None:
+        append_jsonl(
+            changed_rows_log,
+            {
+                "row_id": row_id,
+                "source_dataset": spec.name,
+                "source_config": spec.config or "default",
+                "source_split": spec.split,
+                **change_summary,
+            },
+        )
 
     def iter_spec_rows(spec: DatasetSpec) -> Iterable[dict[str, Any]]:
         spec_key = f"{spec.name}|{spec.config or 'default'}|{spec.split}"
         accepted = 0
-        for row in iter_rows(spec, seed=seed, limit=additional_rows_per_split):
+        for row in iter_rows(
+            spec,
+            seed=seed,
+            limit=additional_rows_per_split,
+            enforce_agent_canonical=True,
+            on_row_dropped=on_row_dropped,
+            on_row_changed=on_row_changed,
+        ):
             row_bytes = row_messages_bytes(row)
             rows_by_split[spec_key] = rows_by_split.get(spec_key, 0) + 1
             bytes_by_split[spec_key] = bytes_by_split.get(spec_key, 0) + row_bytes
@@ -553,8 +986,19 @@ def build_additional(
 
     if materialize_hf_dataset:
         ds = load_dataset("json", data_files=str(shuffled_jsonl), split="train")
-        ds.save_to_disk(str(output_dir / "dataset"))
+        ds.save_to_disk(str(output_dir / "dataset"))  # type: ignore
 
+    preflight_summary = validate_agent_jsonl(shuffled_jsonl)
+    rebuild_diff = diff_jsonl_by_row_id(
+        old_path=previous_jsonl_backup if previous_jsonl_backup and previous_jsonl_backup.exists() else None,
+        new_path=shuffled_jsonl,
+    )
+    if previous_jsonl_backup is not None and previous_jsonl_backup.exists():
+        previous_jsonl_backup.unlink()
+    save_json(
+        output_dir / "rebuild_row_diff.json",
+        rebuild_diff,
+    )
     save_json(
         output_dir / "metadata.json",
         {
@@ -566,6 +1010,15 @@ def build_additional(
             "bytes_by_source": bytes_by_source,
             "rows_by_split": rows_by_split,
             "bytes_by_split": bytes_by_split,
+            "rows_dropped_invalid_agent_format": sum(dropped_rows_by_split.values()),
+            "rows_dropped_by_split": dropped_rows_by_split,
+            "rows_dropped_by_split_and_reason": dropped_rows_by_split_and_reason,
+            "row_audit_logs": {
+                "rows_changed_canonicalization": str(changed_rows_log),
+                "rows_removed_canonicalization": str(removed_rows_log),
+                "rebuild_row_diff": str(output_dir / "rebuild_row_diff.json"),
+            },
+            "agent_preflight_validation": preflight_summary,
             "source_specs": [spec.__dict__ for spec in ADDITIONAL_NEMOTRON_SPECS],
             "materialize_hf_dataset": materialize_hf_dataset,
             "schema": {
@@ -576,6 +1029,7 @@ def build_additional(
                     "row_id",
                     "shuffle_key",
                     "messages",
+                    "tools (optional)",
                 ]
             },
         },
@@ -596,6 +1050,11 @@ def build_extended_full(
             f"additional_input_jsonl not found: {additional_jsonl}"
         )
 
+    previous_jsonl = output_dir / "dataset_shuffled.jsonl"
+    previous_jsonl_backup: Optional[Path] = None
+    if previous_jsonl.exists():
+        previous_jsonl_backup = output_dir.parent / f".{output_dir.name}.previous.dataset_shuffled.jsonl"
+        shutil.copy2(previous_jsonl, previous_jsonl_backup)
     if output_dir.exists():
         shutil.rmtree(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -615,7 +1074,16 @@ def build_extended_full(
 
     if materialize_hf_dataset:
         ds = load_dataset("json", data_files=str(shuffled_jsonl), split="train")
-        ds.save_to_disk(str(output_dir / "dataset"))
+        ds.save_to_disk(str(output_dir / "dataset"))  # type: ignore
+
+    preflight_summary = validate_agent_jsonl(shuffled_jsonl)
+    rebuild_diff = diff_jsonl_by_row_id(
+        old_path=previous_jsonl_backup if previous_jsonl_backup and previous_jsonl_backup.exists() else None,
+        new_path=shuffled_jsonl,
+    )
+    if previous_jsonl_backup is not None and previous_jsonl_backup.exists():
+        previous_jsonl_backup.unlink()
+    save_json(output_dir / "rebuild_row_diff.json", rebuild_diff)
 
     base_summary = summarize_jsonl(base_full_jsonl)
     additional_summary = summarize_jsonl(additional_jsonl)
@@ -632,6 +1100,10 @@ def build_extended_full(
             "bytes_by_source": bytes_by_source,
             "base_full_summary": base_summary,
             "additional_summary": additional_summary,
+            "agent_preflight_validation": preflight_summary,
+            "row_audit_logs": {
+                "rebuild_row_diff": str(output_dir / "rebuild_row_diff.json"),
+            },
             "schema": {
                 "fields": [
                     "source_dataset",
@@ -640,6 +1112,7 @@ def build_extended_full(
                     "row_id",
                     "shuffle_key",
                     "messages",
+                    "tools (optional)",
                 ]
             },
         },
@@ -683,7 +1156,7 @@ def build_full(output_dir: Path, seed: int) -> None:
     )
 
     ds = load_dataset("json", data_files=str(shuffled_jsonl), split="train")
-    ds.save_to_disk(str(output_dir / "dataset"))
+    ds.save_to_disk(str(output_dir / "dataset"))  # type: ignore
 
     total_rows = sum(rows_by_source.values())
     total_bytes = sum(bytes_by_source.values())
@@ -798,7 +1271,7 @@ def build_balanced(output_dir: Path, seed: int) -> None:
     )
 
     ds = load_dataset("json", data_files=str(shuffled_jsonl), split="train")
-    ds.save_to_disk(str(output_dir / "dataset"))
+    ds.save_to_disk(str(output_dir / "dataset"))  # type: ignore
 
     total_rows = sum(rows_by_source.values())
     total_bytes = sum(bytes_by_source.values())
