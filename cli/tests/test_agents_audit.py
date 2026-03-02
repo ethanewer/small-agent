@@ -15,11 +15,8 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from agents.claude.claude_agent import ClaudeCodeAgent  # noqa: E402
 from agents.interface import AgentModelConfig, AgentRuntimeConfig  # noqa: E402
-from agents.opencode.opencode_agent import OpencodeAgent  # noqa: E402
 from agents.openai_compat import (  # noqa: E402
     detect_provider_kind,
-    opencode_model_arg,
-    opencode_provider_id,
     preflight_agent_model_compatibility,
 )
 from agents.qwen.qwen_agent import QwenHeadlessAgent  # noqa: E402
@@ -140,7 +137,7 @@ class TestRegistryAndParser(unittest.TestCase):
     def test_get_agent_unknown_lists_available_agents(self) -> None:
         with self.assertRaisesRegex(
             ValueError,
-            "Available agents: claude, opencode, qwen, terminus-2, toolmind-harness",
+            "Available agents: claude, qwen, terminus-2, toolmind-harness",
         ):
             get_agent("missing-agent")
 
@@ -168,36 +165,6 @@ class TestOpenAiCompat(unittest.TestCase):
         self.assertEqual(
             detect_provider_kind(api_base="http://127.0.0.1:1234/v1"),
             "openai_compatible_local",
-        )
-
-    def test_opencode_model_arg_prefixes_for_provider(self) -> None:
-        self.assertEqual(
-            opencode_model_arg(
-                model="qwen/qwen3.5-35b-a3b",
-                api_base="https://openrouter.ai/api/v1",
-            ),
-            "openrouter/qwen/qwen3.5-35b-a3b",
-        )
-        self.assertEqual(
-            opencode_model_arg(
-                model="openai/local-model",
-                api_base="http://127.0.0.1:1234/v1",
-            ),
-            "openai/local-model",
-        )
-
-    def test_opencode_provider_id_maps_openrouter_and_openai_compatible(self) -> None:
-        self.assertEqual(
-            opencode_provider_id(api_base="https://openrouter.ai/api/v1"),
-            "openrouter",
-        )
-        self.assertEqual(
-            opencode_provider_id(api_base="https://api.openai.com/v1"),
-            "openai",
-        )
-        self.assertEqual(
-            opencode_provider_id(api_base="http://127.0.0.1:1234/v1"),
-            "openai",
         )
 
     def test_preflight_keeps_qwen_model_checks_runtime_based(self) -> None:
@@ -414,86 +381,6 @@ class TestHeadlessAgents(unittest.TestCase):
         self.assertEqual(env["ANTHROPIC_AUTH_TOKEN"], "test-key")
         self.assertNotIn("XDG_CONFIG_HOME", env)
 
-    def test_opencode_builds_expected_env_and_args(self) -> None:
-        runtime = AgentRuntimeConfig(
-            agent_key="opencode",
-            model=AgentModelConfig(
-                model="qwen/qwen3.5-35b-a3b",
-                api_base="https://openrouter.ai/api/v1",
-                api_key="test-key",
-                temperature=0.0,
-            ),
-            agent_config={
-                "binary": "opencode-custom",
-                "output_format": "json",
-                "env": {"CUSTOM_ENV": "1"},
-            },
-        )
-        captured: dict[str, object] = {}
-
-        def fake_run_subprocess(**kwargs):  # type: ignore[no-untyped-def]
-            captured.update(kwargs)
-            return 0
-
-        with patch(
-            "agents.opencode.opencode_agent.run_subprocess",
-            side_effect=fake_run_subprocess,
-        ):
-            code = OpencodeAgent().run(
-                instruction="do a quick check",
-                cfg=runtime,
-                console=Console(record=True),
-            )
-
-        self.assertEqual(code, 0)
-        args = cast(list[str], captured["args"])
-        self.assertEqual(args[0], "opencode-custom")
-        self.assertEqual(args[1:3], ["run", "do a quick check"])
-        self.assertNotIn("--model", args)
-        self.assertIn("--format", args)
-        env = cast(dict[str, str], captured["env"])
-        self.assertEqual(env["OPENAI_MODEL"], "qwen/qwen3.5-35b-a3b")
-        self.assertEqual(env["OPENAI_BASE_URL"], "https://openrouter.ai/api/v1")
-        self.assertEqual(env["OPENAI_API_BASE"], "https://openrouter.ai/api/v1")
-        self.assertEqual(env["OPENAI_API_KEY"], "test-key")
-        self.assertIn("OPENCODE_CONFIG_CONTENT", env)
-        self.assertEqual(env["CUSTOM_ENV"], "1")
-
-    def test_opencode_can_force_provider_qualified_model_arg(self) -> None:
-        runtime = AgentRuntimeConfig(
-            agent_key="opencode",
-            model=AgentModelConfig(
-                model="qwen/qwen3.5-35b-a3b",
-                api_base="https://openrouter.ai/api/v1",
-                api_key="test-key",
-            ),
-            agent_config={
-                "binary": "opencode-custom",
-                "pass_model_arg": True,
-            },
-        )
-        captured: dict[str, object] = {}
-
-        def fake_run_subprocess(**kwargs):  # type: ignore[no-untyped-def]
-            captured.update(kwargs)
-            return 0
-
-        with patch(
-            "agents.opencode.opencode_agent.run_subprocess",
-            side_effect=fake_run_subprocess,
-        ):
-            code = OpencodeAgent().run(
-                instruction="do a quick check",
-                cfg=runtime,
-                console=Console(record=True),
-            )
-
-        self.assertEqual(code, 0)
-        args = cast(list[str], captured["args"])
-        self.assertIn("--model", args)
-        model_idx = args.index("--model")
-        self.assertEqual(args[model_idx + 1], "openrouter/qwen/qwen3.5-35b-a3b")
-
     def test_headless_agents_normalize_openai_prefixed_model(self) -> None:
         runtime = AgentRuntimeConfig(
             agent_key="qwen",
@@ -504,28 +391,13 @@ class TestHeadlessAgents(unittest.TestCase):
             ),
         )
         qwen_captured: dict[str, object] = {}
-        opencode_captured: dict[str, object] = {}
 
-        with (
-            patch(
-                "agents.qwen.qwen_agent.run_subprocess",
-                side_effect=lambda **kwargs: qwen_captured.update(kwargs) or 0,
-            ),
-            patch(
-                "agents.opencode.opencode_agent.run_subprocess",
-                side_effect=lambda **kwargs: opencode_captured.update(kwargs) or 0,
-            ),
+        with patch(
+            "agents.qwen.qwen_agent.run_subprocess",
+            side_effect=lambda **kwargs: qwen_captured.update(kwargs) or 0,
         ):
             self.assertEqual(
                 QwenHeadlessAgent().run(
-                    instruction="test",
-                    cfg=runtime,
-                    console=Console(record=True),
-                ),
-                0,
-            )
-            self.assertEqual(
-                OpencodeAgent().run(
                     instruction="test",
                     cfg=runtime,
                     console=Console(record=True),
@@ -537,12 +409,6 @@ class TestHeadlessAgents(unittest.TestCase):
             cast(dict[str, str], qwen_captured["env"])["OPENAI_MODEL"],
             "local-model",
         )
-        self.assertEqual(
-            cast(dict[str, str], opencode_captured["env"])["OPENAI_MODEL"],
-            "local-model",
-        )
-        opencode_args = cast(list[str], opencode_captured["args"])
-        self.assertNotIn("--model", opencode_args)
 
     def test_new_agent_error_paths_return_nonzero(self) -> None:
         runtime = AgentRuntimeConfig(
@@ -565,39 +431,6 @@ class TestHeadlessAgents(unittest.TestCase):
             )
         self.assertEqual(code, 1)
         self.assertIn("claude CLI not found", console.export_text())
-
-    def test_opencode_model_catalog_mismatch_shows_refresh_hint(self) -> None:
-        runtime = AgentRuntimeConfig(
-            agent_key="opencode",
-            model=AgentModelConfig(
-                model="missing-model",
-                api_base="https://openrouter.ai/api/v1",
-                api_key="k",
-            ),
-            agent_config={"binary": "opencode-custom"},
-        )
-        console = Console(record=True)
-        model_error = (
-            "ProviderModelNotFoundError: Model not found: openrouter/missing-model"
-        )
-        with patch(
-            "agents.opencode.opencode_agent.run_subprocess",
-            side_effect=subprocess.CalledProcessError(
-                1,
-                ["opencode-custom", "run", "test"],
-                stderr=model_error,
-            ),
-        ):
-            code = OpencodeAgent().run(
-                instruction="test",
-                cfg=runtime,
-                console=console,
-            )
-
-        text = console.export_text()
-        self.assertEqual(code, 1)
-        self.assertIn("ProviderModelNotFoundError", text)
-        self.assertIn("opencode models --refresh", text)
 
     def test_qwen_reports_actionable_chat_compat_error_for_non_chat_model(self) -> None:
         runtime = AgentRuntimeConfig(

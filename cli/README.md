@@ -98,7 +98,6 @@ Optional flags:
 - `toolmind-harness`: tool-call protocol harness agent
 - `qwen`: runs `qwen -p "<instruction>" -y` with OpenAI-compatible env
 - `claude`: runs Claude Code headless mode (`claude -p ...`)
-- `opencode`: runs OpenCode non-interactive mode (`opencode run ...`)
 
 ### Interactive Commands
 
@@ -135,7 +134,7 @@ Example:
 
 ## Headless Agent Environment
 
-`qwen`, `claude`, and `opencode` rely on model profile values from `config.json`:
+`qwen` and `claude` rely on model profile values from `config.json`:
 
 - `model` -> `OPENAI_MODEL`
 - `api_base` -> `OPENAI_BASE_URL`
@@ -146,9 +145,6 @@ Compatibility behavior:
 - OpenRouter and local OpenAI-compatible endpoints are first-class targets.
 - OpenAI models are allowed when the selected agent/CLI supports the model type.
 - Known incompatible combinations are surfaced with explicit agent errors.
-- `opencode` model args are provider-qualified automatically (`openrouter/...` or `openai/...`).
-  By default, the wrapper lets OpenCode resolve model from env. Set
-  `agents.opencode.pass_model_arg=true` if you need explicit `--model` forwarding.
 - `claude` supports OpenRouter/OpenAI-compatible open models via
   `ANTHROPIC_BASE_URL` + `ANTHROPIC_AUTH_TOKEN` + `ANTHROPIC_MODEL`.
   By default, the wrapper also forwards `--model`; set
@@ -156,20 +152,11 @@ Compatibility behavior:
   Home isolation is disabled by default for auth stability; set
   `agents.claude.isolate_home=true` for stateless runs.
 
-OpenCode provider/model compatibility:
-
-| Route | Profile `model` in `config.json` | OpenCode provider/model used |
-| --- | --- | --- |
-| OpenRouter | `qwen/qwen3.5-35b-a3b` | `openrouter/qwen/qwen3.5-35b-a3b` |
-| OpenAI | `gpt-5.3-codex` | `openai/gpt-5.3-codex` |
-| Local OpenAI-compatible | `openai/local-model` (or `local-model`) | `openai/local-model` |
-
 Examples:
 
 ```bash
 ./.bin/terminus2-cli --agent qwen --model openrouter_qwen "Summarize this repository"
 ./.bin/terminus2-cli --agent claude --model openrouter_qwen "Summarize this repository"
-./.bin/terminus2-cli --agent opencode --model openrouter_qwen "Summarize this repository"
 ```
 
 You can override the executable per agent if needed:
@@ -177,8 +164,7 @@ You can override the executable per agent if needed:
 ```json
 {
   "agents": {
-    "claude": { "binary": "claude" },
-    "opencode": { "binary": "opencode" }
+    "claude": { "binary": "claude" }
   }
 }
 ```

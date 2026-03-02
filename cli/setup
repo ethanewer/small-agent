@@ -90,13 +90,9 @@ install_claude_cli() {
   install_local_npm_cli "claude" "@anthropic-ai/claude-code"
 }
 
-install_opencode_cli() {
-  install_local_npm_cli "opencode" "opencode-ai"
-}
-
 verify_clis() {
   local missing=0
-  for cmd in terminus2-cli qwen claude opencode; do
+  for cmd in terminus2-cli qwen claude; do
     if [ -x "${LOCAL_BIN_DIR}/${cmd}" ]; then
       log "Found local CLI wrapper: ${LOCAL_BIN_DIR}/${cmd}"
     else
@@ -129,7 +125,6 @@ print_next_steps() {
   ${LOCAL_BIN_DIR}/terminus2-cli --help
   ${LOCAL_BIN_DIR}/qwen --help
   ${LOCAL_BIN_DIR}/claude --help
-  ${LOCAL_BIN_DIR}/opencode --help
 EOF
 }
 
@@ -139,7 +134,6 @@ main() {
   install_terminus2_wrapper
   install_qwen_cli
   install_claude_cli
-  install_opencode_cli
   verify_clis
   print_next_steps
 }

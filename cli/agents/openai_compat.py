@@ -39,23 +39,6 @@ def normalize_openai_compatible_model(*, model: str, api_base: str) -> str:
     return normalized
 
 
-def opencode_model_arg(*, model: str, api_base: str) -> str:
-    provider_kind = detect_provider_kind(api_base=api_base)
-    normalized_model = normalize_openai_compatible_model(model=model, api_base=api_base)
-    if provider_kind == "openrouter":
-        return f"openrouter/{normalized_model}"
-
-    return f"openai/{normalized_model}"
-
-
-def opencode_provider_id(*, api_base: str) -> str:
-    provider_kind = detect_provider_kind(api_base=api_base)
-    if provider_kind == "openrouter":
-        return "openrouter"
-
-    return "openai"
-
-
 def preflight_agent_model_compatibility(
     *,
     agent_key: str,

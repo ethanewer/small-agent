@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from agents.claude import ClaudeCodeAgent
 from agents.interface import Agent
-from agents.opencode import OpencodeAgent
 from agents.qwen import QwenHeadlessAgent
 from agents.terminus2.agent import Terminus2Agent
 from agents.toolmind_harness.agent import ToolmindAgent
@@ -14,7 +13,6 @@ def available_agents() -> dict[str, Agent]:
         "toolmind-harness": ToolmindAgent(),
         "qwen": QwenHeadlessAgent(),
         "claude": ClaudeCodeAgent(),
-        "opencode": OpencodeAgent(),
     }
 
 

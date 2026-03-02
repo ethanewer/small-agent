@@ -84,35 +84,5 @@ class TestHeadlessLive(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, msg=combined_output)
         self.assertIn("Agent: claude", combined_output)
 
-    def test_opencode_live_if_available(self) -> None:
-        if _local_or_path_binary("opencode") is None:
-            self.skipTest("opencode binary not found on PATH")
-        if not cli.resolve_api_key("OPENROUTER_API_KEY"):
-            self.skipTest("OPENROUTER_API_KEY not set")
-        env = os.environ.copy()
-        env["PATH"] = f"{PROJECT_ROOT / '.bin'}:{env.get('PATH', '')}"
-
-        proc = subprocess.run(
-            [
-                sys.executable,
-                str(CLI_PATH),
-                "--agent",
-                "opencode",
-                "--model",
-                "qwen3.5-35b-a3b",
-                "Reply with exactly: OK",
-            ],
-            cwd=str(PROJECT_ROOT),
-            capture_output=True,
-            text=True,
-            timeout=300,
-            check=False,
-            env=env,
-        )
-        combined_output = f"{proc.stdout}\n{proc.stderr}"
-        self.assertEqual(proc.returncode, 0, msg=combined_output)
-        self.assertIn("Agent: opencode", combined_output)
-
-
 if __name__ == "__main__":
     unittest.main()

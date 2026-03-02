@@ -7,7 +7,6 @@
     },
     "qwen": {},
     "claude": {},
-    "opencode": {},
     "toolmind-harness": {
       "strict_protocol": true,
       "min_tool_turns": 8,
