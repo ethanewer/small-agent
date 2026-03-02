@@ -12,6 +12,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from agents.interface import AgentModelConfig, AgentRuntimeConfig  # noqa: E402
+from agents.headless.codex_agent import CodexHeadlessAgent  # noqa: E402
+from agents.headless.qwen_agent import QwenHeadlessAgent  # noqa: E402
 from agents.registry import get_agent  # noqa: E402
 from agents.terminus2 import agent as terminus_agent  # noqa: E402
 from agents.toolmind_harness import harness  # noqa: E402
@@ -100,7 +102,8 @@ class TestToolmindAgentConfigCoercion(unittest.TestCase):
 class TestRegistryAndParser(unittest.TestCase):
     def test_get_agent_unknown_lists_available_agents(self) -> None:
         with self.assertRaisesRegex(
-            ValueError, "Available agents: terminus-2, toolmind-harness"
+            ValueError,
+            "Available agents: codex-headless, qwen-headless, terminus-2, toolmind-harness",
         ):
             get_agent("missing-agent")
 
@@ -172,6 +175,125 @@ class TestToolExecutor(unittest.TestCase):
         self.assertIn(
             "Requested extraction target: founding year", result["extracted_info"]
         )
+
+
+class TestHeadlessAgents(unittest.TestCase):
+    def test_qwen_headless_builds_expected_env_and_args(self) -> None:
+        runtime = AgentRuntimeConfig(
+            agent_key="qwen-headless",
+            model=AgentModelConfig(
+                model="qwen/qwen3.5-35b-a3b",
+                api_base="https://openrouter.ai/api/v1",
+                api_key="test-key",
+                temperature=0.0,
+            ),
+            agent_config={
+                "token_limit": 4096,
+                "sampling_params": {"temperature": 0.1},
+                "mcp_servers": {
+                    "tool-python": {
+                        "command": "python3",
+                        "args": ["mcp.py"],
+                        "cwd": "/tmp",
+                        "env": {},
+                        "timeout": 30,
+                    }
+                },
+                "env": {"CUSTOM_ENV": "1"},
+            },
+        )
+        captured: dict[str, object] = {}
+
+        def fake_run_subprocess(**kwargs):  # type: ignore[no-untyped-def]
+            captured.update(kwargs)
+            return 0
+
+        with patch(
+            "agents.headless.qwen_agent.run_subprocess",
+            side_effect=fake_run_subprocess,
+        ):
+            code = QwenHeadlessAgent().run(
+                instruction="do a quick check",
+                cfg=runtime,
+                console=Console(record=True),
+            )
+
+        self.assertEqual(code, 0)
+        self.assertEqual(captured["args"], ["qwen", "-p", "do a quick check", "-y"])
+        env = captured["env"]
+        self.assertEqual(env["OPENAI_MODEL"], "qwen/qwen3.5-35b-a3b")
+        self.assertEqual(env["OPENAI_BASE_URL"], "https://openrouter.ai/api/v1")
+        self.assertEqual(env["OPENAI_API_KEY"], "test-key")
+        self.assertEqual(env["CUSTOM_ENV"], "1")
+        self.assertTrue(env["QWEN_CODE_SYSTEM_SETTINGS_PATH"].endswith(".json"))
+        self.assertTrue(env["GEMINI_CLI_SYSTEM_SETTINGS_PATH"].endswith(".json"))
+
+    def test_codex_headless_builds_expected_env_and_args(self) -> None:
+        runtime = AgentRuntimeConfig(
+            agent_key="codex-headless",
+            model=AgentModelConfig(
+                model="gpt-5.3-codex",
+                api_base="https://api.openai.com/v1",
+                api_key="openai-key",
+                temperature=None,
+            ),
+            agent_config={
+                "sampling_params": {"temperature": 0.7, "json_mode": False},
+                "env": {"CUSTOM_ENV": "yes"},
+            },
+        )
+        captured: dict[str, object] = {}
+
+        def fake_run_subprocess(**kwargs):  # type: ignore[no-untyped-def]
+            captured.update(kwargs)
+            return 0
+
+        with patch(
+            "agents.headless.codex_agent.run_subprocess",
+            side_effect=fake_run_subprocess,
+        ):
+            code = CodexHeadlessAgent().run(
+                instruction="inspect tests",
+                cfg=runtime,
+                console=Console(record=True),
+            )
+
+        self.assertEqual(code, 0)
+        args = captured["args"]
+        self.assertIn("--model", args)
+        self.assertIn("gpt-5.3-codex", args)
+        self.assertIn("--config", args)
+        self.assertIn("temperature=0.7", args)
+        self.assertIn("json_mode=false", args)
+        self.assertEqual(args[-1], "inspect tests")
+        env = captured["env"]
+        self.assertEqual(env["OPENAI_API_KEY"], "openai-key")
+        self.assertEqual(env["OPENAI_BASE_URL"], "https://api.openai.com/v1")
+        self.assertEqual(env["CUSTOM_ENV"], "yes")
+
+    def test_headless_agent_handles_subprocess_error(self) -> None:
+        runtime = AgentRuntimeConfig(
+            agent_key="codex-headless",
+            model=AgentModelConfig(
+                model="gpt-5.3-codex",
+                api_base="https://api.openai.com/v1",
+                api_key="openai-key",
+                temperature=None,
+            ),
+        )
+        console = Console(record=True)
+        with patch(
+            "agents.headless.codex_agent.run_subprocess",
+            side_effect=FileNotFoundError(),
+        ):
+            code = CodexHeadlessAgent().run(
+                instruction="inspect tests",
+                cfg=runtime,
+                console=console,
+            )
+
+        self.assertEqual(code, 1)
+        self.assertIn("codex CLI not found", console.export_text())
 
 
 class TestHarnessLoop(unittest.TestCase):

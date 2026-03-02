@@ -1,0 +1,74 @@
+from __future__ import annotations
+
+import os
+import shutil
+import subprocess
+import sys
+import unittest
+from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+CLI_PATH = PROJECT_ROOT / "cli.py"
+
+
+def _has_env(name: str) -> bool:
+    value = os.getenv(name)
+    return bool(value and value.strip())
+
+
+class TestHeadlessLive(unittest.TestCase):
+    def test_qwen_headless_live_if_available(self) -> None:
+        if shutil.which("qwen") is None:
+            self.skipTest("qwen binary not found on PATH")
+        if not _has_env("OPENROUTER_API_KEY"):
+            self.skipTest("OPENROUTER_API_KEY not set")
+
+        proc = subprocess.run(
+            [
+                sys.executable,
+                str(CLI_PATH),
+                "--agent",
+                "qwen-headless",
+                "--model",
+                "qwen3.5-35b-a3b",
+                "Reply with exactly: OK",
+            ],
+            cwd=str(PROJECT_ROOT),
+            capture_output=True,
+            text=True,
+            timeout=300,
+            check=False,
+        )
+        combined_output = f"{proc.stdout}\n{proc.stderr}"
+        self.assertEqual(proc.returncode, 0, msg=combined_output)
+        self.assertIn("Agent: qwen-headless", combined_output)
+
+    def test_codex_headless_live_if_available(self) -> None:
+        if shutil.which("codex") is None:
+            self.skipTest("codex binary not found on PATH")
+        if not _has_env("OPENAI_API_KEY"):
+            self.skipTest("OPENAI_API_KEY not set")
+
+        proc = subprocess.run(
+            [
+                sys.executable,
+                str(CLI_PATH),
+                "--agent",
+                "codex-headless",
+                "--model",
+                "gpt-5.3-codex",
+                "Reply with exactly: OK",
+            ],
+            cwd=str(PROJECT_ROOT),
+            capture_output=True,
+            text=True,
+            timeout=300,
+            check=False,
+        )
+        combined_output = f"{proc.stdout}\n{proc.stderr}"
+        self.assertEqual(proc.returncode, 0, msg=combined_output)
+        self.assertIn("Agent: codex-headless", combined_output)
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -57,6 +57,11 @@ pip install -e .
 
 This installs the `terminus2-cli` command from the project entrypoint.
 
+For optional headless agents, install these CLIs and ensure they are on `PATH`:
+
+- `qwen` (from `@qwen-code/qwen-code`)
+- `codex` (from `@openai/codex`)
+
 ## Usage
 
 Run with a positional instruction:
@@ -78,12 +83,21 @@ terminus2-cli --verbosity 1 --max-turns 10 --model openai_codex --config ./confi
 ```
 
 - `--model <key>` selects a model key from `config.models`.
+- `--agent <key>` selects an agent key from `config.agents`.
+
+### Available Agents
+
+- `terminus-2`: interactive terminal-driving JSON agent
+- `toolmind-harness`: tool-call protocol harness agent
+- `qwen-headless`: runs `qwen -p "<instruction>" -y` with OpenAI-compatible env
+- `codex-headless`: runs `codex exec --full-auto --sandbox danger-full-access ...`
 
 ### Interactive Commands
 
 When entering instruction interactively, you can use slash commands before starting the run:
 
 - `/model`: choose a model from a numbered list.
+- `/agent`: choose an agent from a numbered list.
 - `/verbosity [0|1|3]`: set runtime verbosity.
 - `/max_turns [N]`: set runtime max turns (`N >= 1`).
 - `/max_wait_seconds [S]`: set runtime max wait (`S > 0`).
@@ -110,6 +124,21 @@ terminus2-cli
 - `0`: one line per tool call
 - `1`: all tool call inputs and responses
 - `3`: all tool call inputs and responses, plus reasoning (`analysis` and `plan`)
+
+## Headless Agent Environment
+
+`qwen-headless` and `codex-headless` rely on model profile values from `config.json`:
+
+- `model` -> exported to agent runtime (`--model` for codex, `OPENAI_MODEL` for qwen)
+- `api_base` -> `OPENAI_BASE_URL`
+- `api_key` -> `OPENAI_API_KEY` (resolved from env var name or literal)
+
+Examples:
+
+```bash
+terminus2-cli --agent qwen-headless --model openrouter_qwen "Summarize this repository"
+terminus2-cli --agent codex-headless --model openai_codex "Run tests and explain failures"
+```
 
 ## Completion Message
 
