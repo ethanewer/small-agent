@@ -103,7 +103,7 @@ class TestRegistryAndParser(unittest.TestCase):
     def test_get_agent_unknown_lists_available_agents(self) -> None:
         with self.assertRaisesRegex(
             ValueError,
-            "Available agents: qwen-headless, terminus-2, toolmind-harness",
+            "Available agents: qwen, terminus-2, toolmind-harness",
         ):
             get_agent("missing-agent")
 
@@ -180,7 +180,7 @@ class TestToolExecutor(unittest.TestCase):
 class TestHeadlessAgents(unittest.TestCase):
     def test_qwen_headless_builds_expected_env_and_args(self) -> None:
         runtime = AgentRuntimeConfig(
-            agent_key="qwen-headless",
+            agent_key="qwen",
             model=AgentModelConfig(
                 model="qwen/qwen3.5-35b-a3b",
                 api_base="https://openrouter.ai/api/v1",
@@ -340,7 +340,12 @@ class TestTerminus2Agent(unittest.TestCase):
                 api_key="api",
                 temperature=0.5,
             ),
-            agent_config={"verbosity": 0, "max_turns": 7, "max_wait_seconds": 3.5},
+            agent_config={
+                "verbosity": 0,
+                "max_turns": 7,
+                "max_wait_seconds": 3.5,
+                "final_message": False,
+            },
         )
         captured: dict[str, object] = {}
 
@@ -359,6 +364,7 @@ class TestTerminus2Agent(unittest.TestCase):
         cfg = cast(terminus_agent.CoreConfig, captured["cfg"])
         self.assertEqual(cfg.max_turns, 7)
         self.assertEqual(cfg.max_wait_seconds, 3.5)
+        self.assertFalse(cfg.final_message_enabled)
         self.assertEqual(captured["instruction"], "inspect")
         self.assertEqual(captured["api_key"], "api")
 

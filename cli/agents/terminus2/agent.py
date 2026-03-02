@@ -17,6 +17,16 @@ from agents.terminus2.core_agent import (
 )
 
 
+def _coerce_final_message_enabled(value: object) -> bool:
+    if value is None:
+        return True
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() not in {"0", "false", "no", "off"}
+    return bool(value)
+
+
 def _display_width(console: Console) -> int:
     return max(20, console.width)
 
@@ -168,6 +178,9 @@ class Terminus2Agent:
         verbosity = int(cfg.agent_config.get("verbosity", 1))
         max_turns = int(cfg.agent_config.get("max_turns", 50))
         max_wait_seconds = float(cfg.agent_config.get("max_wait_seconds", 60.0))
+        final_message_enabled = _coerce_final_message_enabled(
+            cfg.agent_config.get("final_message")
+        )
         core_cfg = CoreConfig(
             active_model_key=cfg.model.model,
             active_model=CoreModelConfig(
@@ -179,6 +192,7 @@ class Terminus2Agent:
             verbosity=verbosity,
             max_turns=max_turns,
             max_wait_seconds=max_wait_seconds,
+            final_message_enabled=final_message_enabled,
         )
         callbacks = AgentCallbacks(
             on_reasoning=lambda turn, parsed: _render_response(

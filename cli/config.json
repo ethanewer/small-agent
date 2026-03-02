@@ -2,8 +2,10 @@
   "default_agent": "terminus-2",
   "default_model": "qwen3.5-35b-a3b",
   "agents": {
-    "terminus-2": {},
-    "qwen-headless": {},
+    "terminus-2": {
+      "final_message": false
+    },
+    "qwen": {},
     "toolmind-harness": {
       "strict_protocol": true,
       "min_tool_turns": 8,

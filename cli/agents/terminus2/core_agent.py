@@ -90,6 +90,7 @@ class Config:
     verbosity: int = 1
     max_turns: int = 50
     max_wait_seconds: float = 60.0
+    final_message_enabled: bool = True
 
 
 @dataclass
@@ -505,15 +506,16 @@ def run_agent(
                     pending_final_message = parsed.final_message.strip()
 
                 if pending_completion:
-                    done_text = build_done_text(
-                        call_model_fn=call_model,
-                        cfg=cfg,
-                        history=history,
-                        api_key=api_key,
-                        pending_final_message=pending_final_message,
-                    )
-                    if callbacks.on_done:
-                        callbacks.on_done(done_text)
+                    if cfg.final_message_enabled:
+                        done_text = build_done_text(
+                            call_model_fn=call_model,
+                            cfg=cfg,
+                            history=history,
+                            api_key=api_key,
+                            pending_final_message=pending_final_message,
+                        )
+                        if callbacks.on_done:
+                            callbacks.on_done(done_text)
 
                     return 0
                 pending_completion = True

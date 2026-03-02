@@ -46,7 +46,7 @@ class QwenHeadlessAgent:
         }
 
         try:
-            with tempfile.TemporaryDirectory(prefix="qwen-headless-") as tmp_dir:
+            with tempfile.TemporaryDirectory(prefix="qwen-") as tmp_dir:
                 tmp_home = Path(tmp_dir)
                 qwen_settings_path = tmp_home / "qwen-settings.json"
                 qwen_settings_path.write_text(

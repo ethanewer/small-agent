@@ -181,6 +181,7 @@ def load_config(path: Path) -> LoadedConfig:
     default_model = str(data.get("default_model", "")).strip()
     if not default_model:
         raise ValueError("config.json must define 'default_model'.")
+
     if default_model not in models:
         raise ValueError("default_model must match a key in models.")
 
@@ -196,10 +197,13 @@ def load_config(path: Path) -> LoadedConfig:
     for agent_key, agent_data in raw_agents.items():
         if not isinstance(agent_key, str) or not agent_key.strip():
             raise ValueError("Each key in 'agents' must be a non-empty string.")
+
         if agent_data is None:
             agent_data = {}
+
         if not isinstance(agent_data, dict):
             raise ValueError(f"Agent '{agent_key}' must be an object.")
+
         agents[agent_key] = dict(agent_data)
 
     if default_agent not in agents:

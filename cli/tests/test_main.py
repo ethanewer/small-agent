@@ -256,6 +256,55 @@ class TestExecutionAndLoop(unittest.TestCase):
         self.assertEqual(prompts[3], final_summary.post_run_summary_prompt())
         self.assertTrue(child.closed)
 
+    def test_run_agent_skips_final_summary_prompt_when_disabled(self) -> None:
+        cfg = core_agent.Config(
+            active_model_key="test",
+            active_model=core_agent.ModelConfig(model="x", api_base="y"),
+            max_turns=4,
+            final_message_enabled=False,
+        )
+        child = FakeChild()
+        prompts: list[str] = []
+        done_messages: list[str] = []
+        responses = iter(
+            [
+                '{"analysis":"a","plan":"p","commands":[],"task_complete":true}',
+                '{"analysis":"a2","plan":"p2","commands":[],"task_complete":true}',
+            ]
+        )
+
+        def fake_call_model(
+            cfg: Any,
+            prompt: str,
+            history: list[dict[str, str]],
+            api_key: str,
+        ) -> str:
+            del cfg, history, api_key
+            prompts.append(prompt)
+            return next(responses)
+
+        callbacks = core_agent.AgentCallbacks(
+            on_done=lambda done_text: done_messages.append(done_text)
+        )
+        with (
+            patch.object(core_agent, "start_shell", return_value=child),
+            patch.object(core_agent, "call_model", side_effect=fake_call_model),
+        ):
+            exit_code = core_agent.run_agent(
+                instruction="do thing",
+                cfg=cfg,
+                api_key="k",
+                callbacks=callbacks,
+            )
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(len(prompts), 2)
+        self.assertEqual(
+            prompts[1], core_agent.completion_confirmation_message("[no new output]")
+        )
+        self.assertEqual(done_messages, [])
+        self.assertTrue(child.closed)
+
 
 class TestFinalSummaryNormalization(unittest.TestCase):
     def test_normalize_summary_response_prefers_final_message_from_json(self) -> None:

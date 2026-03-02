@@ -88,7 +88,7 @@ terminus2-cli --verbosity 1 --max-turns 10 --model openai_codex --config ./confi
 
 - `terminus-2`: interactive terminal-driving JSON agent
 - `toolmind-harness`: tool-call protocol harness agent
-- `qwen-headless`: runs `qwen -p "<instruction>" -y` with OpenAI-compatible env
+- `qwen`: runs `qwen -p "<instruction>" -y` with OpenAI-compatible env
 
 ### Interactive Commands
 
@@ -125,7 +125,7 @@ terminus2-cli
 
 ## Headless Agent Environment
 
-`qwen-headless` relies on model profile values from `config.json`:
+`qwen` relies on model profile values from `config.json`:
 
 - `model` -> `OPENAI_MODEL`
 - `api_base` -> `OPENAI_BASE_URL`
@@ -134,15 +134,27 @@ terminus2-cli
 Examples:
 
 ```bash
-terminus2-cli --agent qwen-headless --model openrouter_qwen "Summarize this repository"
+terminus2-cli --agent qwen --model openrouter_qwen "Summarize this repository"
 ```
 
 ## Completion Message
 
-After `task_complete` is confirmed twice in a row, the CLI sends one extra
-post-run prompt to the model (using the same chat history) to generate a final
-user-facing summary message.
+By default, after `task_complete` is confirmed twice in a row, the CLI sends
+one extra post-run prompt to the model (using the same chat history) to
+generate a final user-facing summary message.
 
 If that post-run summary call fails or returns empty text, the CLI falls back
 to the optional `final_message` from the agent JSON response, and then to the
 default completion text.
+
+You can disable the final summary panel per agent:
+
+```json
+{
+  "agents": {
+    "terminus-2": {
+      "final_message": false
+    }
+  }
+}
+```

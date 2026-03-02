@@ -10,7 +10,7 @@ def available_agents() -> dict[str, Agent]:
     return {
         "terminus-2": Terminus2Agent(),
         "toolmind-harness": ToolmindAgent(),
-        "qwen-headless": QwenHeadlessAgent(),
+        "qwen": QwenHeadlessAgent(),
     }
 
 
