@@ -40,6 +40,35 @@ uv run qwen-dataset-build --mode full \
   --full-output-dir "/wbl-fast/usrs/ethan/small-agent/data/full-dataset"
 ```
 
+### Additional Nemotron dataset (one-off, capped)
+
+Build up to 10k rows per split from:
+
+- `nvidia/Nemotron-Agentic-v1` (`interactive_agent`, `tool_calling`)
+- `nvidia/Nemotron-Instruction-Following-Chat-v1` (`chat_if`, `structured_outputs`)
+
+```bash
+uv run qwen-dataset-build --mode additional \
+  --additional-rows-per-split 10000 \
+  --additional-output-dir "/wbl-fast/usrs/ethan/small-agent/data/additional-data"
+```
+
+By default this keeps memory lower by writing only `dataset_shuffled.jsonl` + `metadata.json`.
+Add `--materialize-hf-dataset true` only if you also need `dataset/`.
+
+### Extended full dataset (one-off merge)
+
+Merge existing full JSONL with additional JSONL into a new output directory:
+
+```bash
+uv run qwen-dataset-build --mode extended_full \
+  --base-full-input-jsonl "/wbl-fast/usrs/ethan/small-agent/data/full-dataset/dataset_shuffled.jsonl" \
+  --additional-input-jsonl "/wbl-fast/usrs/ethan/small-agent/data/additional-data/dataset_shuffled.jsonl" \
+  --extended-output-dir "/wbl-fast/usrs/ethan/small-agent/data/full-dataset-extended"
+```
+
+This mode also defaults to JSONL-only output to avoid OOM risk on large merges.
+
 ### Balanced dataset (~50% NVIDIA bytes)
 
 ```bash
@@ -54,6 +83,12 @@ Each dataset directory contains:
 - `dataset/` - Hugging Face dataset saved to disk.
 - `metadata.json` - source counts/bytes, policy details, and reproducibility fields.
 - `dataset_shuffled.jsonl` (full/balanced) - deterministic shuffled pre-load JSONL.
+
+Additional/extended one-off modes write:
+
+- `dataset_shuffled.jsonl` for `additional-data` and `full-dataset-extended`
+- `metadata.json`
+- optional `dataset/` when `--materialize-hf-dataset true` is set
 
 Demo mode also writes:
 
@@ -97,3 +132,4 @@ Remote helper notes:
 - Set `HF_TOKEN` for higher Hugging Face rate limits.
 - No token-length filtering is done here; filter at training time.
 - Think-tag cleanup is applied before writing rows.
+- `extended_full` mode expects `full-dataset/dataset_shuffled.jsonl` and `additional-data/dataset_shuffled.jsonl` to exist.

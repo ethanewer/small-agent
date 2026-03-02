@@ -5,6 +5,7 @@ import json
 import random
 import re
 import shutil
+import requests
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
@@ -19,6 +20,8 @@ app = typer.Typer(add_completion=False, help="Build Qwen SFT datasets in message
 DEFAULT_DEMO_OUTPUT = Path("/wbl-fast/usrs/ethan/small-agent/data/demo-dataset")
 DEFAULT_FULL_OUTPUT = Path("/wbl-fast/usrs/ethan/small-agent/data/full-dataset")
 DEFAULT_BALANCED_OUTPUT = Path("/wbl-fast/usrs/ethan/small-agent/data/balanced-dataset")
+DEFAULT_ADDITIONAL_OUTPUT = Path("/wbl-fast/usrs/ethan/small-agent/data/additional-data")
+DEFAULT_EXTENDED_FULL_OUTPUT = Path("/wbl-fast/usrs/ethan/small-agent/data/full-dataset-extended")
 DEFAULT_SEED = 42
 THINK_BLOCK_RE = re.compile(r"<think>.*?</think>", flags=re.DOTALL | re.IGNORECASE)
 THINK_ESCAPED_BLOCK_RE = re.compile(r"&lt;think&gt;.*?&lt;/think&gt;", flags=re.DOTALL | re.IGNORECASE)
@@ -46,6 +49,13 @@ NVIDIA_TERMINAL_SPECS: tuple[DatasetSpec, ...] = (
     DatasetSpec("nvidia/Nemotron-Terminal-Corpus", "skill_based_mixed", "train", "conversations"),
 )
 
+ADDITIONAL_NEMOTRON_SPECS: tuple[DatasetSpec, ...] = (
+    DatasetSpec("nvidia/Nemotron-Agentic-v1", "default", "interactive_agent", "messages"),
+    DatasetSpec("nvidia/Nemotron-Agentic-v1", "default", "tool_calling", "messages"),
+    DatasetSpec("nvidia/Nemotron-Instruction-Following-Chat-v1", "default", "chat_if", "messages"),
+    DatasetSpec("nvidia/Nemotron-Instruction-Following-Chat-v1", "default", "structured_outputs", "messages"),
+)
+
 
 def get_streaming_dataset(spec: DatasetSpec):
     if spec.name == "Nanbeige/ToolMind-Web-QA":
@@ -59,6 +69,24 @@ def get_streaming_dataset(spec: DatasetSpec):
             split="train",
             streaming=True,
         )
+    if spec.name == "nvidia/Nemotron-Agentic-v1":
+        split_to_file = {
+            "interactive_agent": "hf://datasets/nvidia/Nemotron-Agentic-v1/data/interactive_agent.jsonl",
+            "tool_calling": "hf://datasets/nvidia/Nemotron-Agentic-v1/data/tool_calling.jsonl",
+        }
+        data_file = split_to_file.get(spec.split)
+        if data_file is None:
+            raise ValueError(f"Unsupported split for {spec.name}: {spec.split}")
+        return load_dataset("json", data_files=[data_file], split="train", streaming=True)
+    if spec.name == "nvidia/Nemotron-Instruction-Following-Chat-v1":
+        split_to_file = {
+            "chat_if": "hf://datasets/nvidia/Nemotron-Instruction-Following-Chat-v1/data/chat_if.jsonl",
+            "structured_outputs": "hf://datasets/nvidia/Nemotron-Instruction-Following-Chat-v1/data/structured_outputs.jsonl",
+        }
+        data_file = split_to_file.get(spec.split)
+        if data_file is None:
+            raise ValueError(f"Unsupported split for {spec.name}: {spec.split}")
+        return load_dataset("json", data_files=[data_file], split="train", streaming=True)
     return load_dataset(spec.name, spec.config, split=spec.split, streaming=True)
 
 
@@ -134,24 +162,124 @@ def normalize_messages(messages: Any) -> list[dict[str, str]]:
     return normalized
 
 
-def _shuffle_key(seed: int, source_dataset: str, row_id: int) -> str:
-    payload = f"{seed}:{source_dataset}:{row_id}".encode("utf-8")
+def normalize_messages_lightweight(messages: Any) -> list[dict[str, str]]:
+    if not isinstance(messages, list):
+        return []
+
+    normalized: list[dict[str, str]] = []
+    for msg in messages:
+        if not isinstance(msg, dict):
+            continue
+        role = str(msg.get("role", "")).strip()
+        if not role:
+            continue
+
+        content_raw = msg.get("content", "")
+        if isinstance(content_raw, str):
+            content = remove_think_tags(content_raw)
+        elif isinstance(content_raw, list):
+            parts: list[str] = []
+            for item in content_raw:
+                if isinstance(item, str):
+                    parts.append(item)
+                elif isinstance(item, dict):
+                    if isinstance(item.get("text"), str):
+                        parts.append(item["text"])
+                    elif isinstance(item.get("content"), str):
+                        parts.append(item["content"])
+            content = remove_think_tags("\n".join(parts))
+        else:
+            content = ""
+
+        if not content:
+            continue
+        normalized.append({"role": role, "content": content})
+
+    return normalized
+
+
+def use_lightweight_normalization(spec: DatasetSpec) -> bool:
+    return spec.name in {
+        "nvidia/Nemotron-Agentic-v1",
+        "nvidia/Nemotron-Instruction-Following-Chat-v1",
+    }
+
+
+def additional_spec_jsonl_url(spec: DatasetSpec) -> str | None:
+    urls = {
+        ("nvidia/Nemotron-Agentic-v1", "interactive_agent"): (
+            "https://huggingface.co/datasets/nvidia/Nemotron-Agentic-v1/resolve/main/data/interactive_agent.jsonl?download=true"
+        ),
+        ("nvidia/Nemotron-Agentic-v1", "tool_calling"): (
+            "https://huggingface.co/datasets/nvidia/Nemotron-Agentic-v1/resolve/main/data/tool_calling.jsonl?download=true"
+        ),
+        ("nvidia/Nemotron-Instruction-Following-Chat-v1", "chat_if"): (
+            "https://huggingface.co/datasets/nvidia/Nemotron-Instruction-Following-Chat-v1/resolve/main/data/chat_if.jsonl?download=true"
+        ),
+        ("nvidia/Nemotron-Instruction-Following-Chat-v1", "structured_outputs"): (
+            "https://huggingface.co/datasets/nvidia/Nemotron-Instruction-Following-Chat-v1/resolve/main/data/structured_outputs.jsonl?download=true"
+        ),
+    }
+    return urls.get((spec.name, spec.split))
+
+
+def iter_rows_from_jsonl_url(spec: DatasetSpec, seed: int, limit: int | None = None) -> Iterable[dict[str, Any]]:
+    url = additional_spec_jsonl_url(spec)
+    if url is None:
+        raise ValueError(f"No JSONL URL mapping for dataset spec: {spec.name}/{spec.split}")
+
+    normalize = normalize_messages_lightweight if use_lightweight_normalization(spec) else normalize_messages
+    accepted = 0
+    with requests.get(url, stream=True, timeout=120) as response:
+        response.raise_for_status()
+        for row_id, line in enumerate(response.iter_lines()):
+            if not line:
+                continue
+            row = orjson.loads(line)
+            if not isinstance(row, dict):
+                continue
+            messages = normalize(row.get(spec.messages_key))
+            if not messages:
+                continue
+            source_config = spec.config or "default"
+            yield {
+                "source_dataset": spec.name,
+                "source_config": source_config,
+                "source_split": spec.split,
+                "row_id": f"{spec.name}:{source_config}:{spec.split}:{row_id}",
+                "shuffle_key": _shuffle_key(seed, spec.name, source_config, spec.split, row_id),
+                "messages": messages,
+            }
+            accepted += 1
+            if limit is not None and accepted >= limit:
+                break
+
+
+def _shuffle_key(seed: int, source_dataset: str, source_config: str, source_split: str, row_id: int) -> str:
+    payload = f"{seed}:{source_dataset}:{source_config}:{source_split}:{row_id}".encode("utf-8")
     return hashlib.sha1(payload).hexdigest()
 
 
 def iter_rows(spec: DatasetSpec, seed: int, limit: int | None = None) -> Iterable[dict[str, Any]]:
+    direct_jsonl_url = additional_spec_jsonl_url(spec)
+    if direct_jsonl_url is not None:
+        yield from iter_rows_from_jsonl_url(spec, seed=seed, limit=limit)
+        return
+
     ds = get_streaming_dataset(spec)
+    normalize = normalize_messages_lightweight if use_lightweight_normalization(spec) else normalize_messages
     accepted = 0
     for row_id, row in enumerate(ds):
-        messages = normalize_messages(row.get(spec.messages_key))
+        messages = normalize(row.get(spec.messages_key))
         if not messages:
             continue
+        source_config = spec.config or "default"
         yield {
             "source_dataset": spec.name,
-            "source_config": spec.config or "default",
+            "source_config": source_config,
             "source_split": spec.split,
-            "row_id": f"{spec.name}:{spec.config or 'default'}:{row_id}",
-            "shuffle_key": _shuffle_key(seed, spec.name, row_id),
+            "row_id": f"{spec.name}:{source_config}:{spec.split}:{row_id}",
+            "shuffle_key": _shuffle_key(seed, spec.name, source_config, spec.split, row_id),
             "messages": messages,
         }
         accepted += 1
@@ -285,6 +413,166 @@ def _write_shuffled_dataset_jsonl(
 
     shutil.rmtree(buckets_dir, ignore_errors=True)
     return shuffled_jsonl
+
+
+def iter_rows_from_jsonl(path: Path) -> Iterable[dict[str, Any]]:
+    with path.open("rb") as f:
+        for raw_line in f:
+            line = raw_line.strip()
+            if not line:
+                continue
+            row = orjson.loads(line)
+            if isinstance(row, dict):
+                yield row
+
+
+def summarize_jsonl(path: Path) -> dict[str, Any]:
+    rows_by_source: dict[str, int] = {}
+    bytes_by_source: dict[str, int] = {}
+    total_rows = 0
+    for row in iter_rows_from_jsonl(path):
+        source = str(row.get("source_dataset", "unknown"))
+        rows_by_source[source] = rows_by_source.get(source, 0) + 1
+        try:
+            row_bytes = row_messages_bytes(row)
+        except Exception:
+            row_bytes = len(orjson.dumps(row.get("messages", [])))
+        bytes_by_source[source] = bytes_by_source.get(source, 0) + row_bytes
+        total_rows += 1
+    return {
+        "total_rows": total_rows,
+        "rows_by_source": rows_by_source,
+        "bytes_by_source": bytes_by_source,
+    }
+
+
+def build_additional(
+    output_dir: Path,
+    seed: int,
+    additional_rows_per_split: int,
+    materialize_hf_dataset: bool,
+) -> None:
+    if additional_rows_per_split <= 0:
+        raise typer.BadParameter("additional_rows_per_split must be > 0")
+
+    if output_dir.exists():
+        shutil.rmtree(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    rows_by_source: dict[str, int] = {}
+    bytes_by_source: dict[str, int] = {}
+    rows_by_split: dict[str, int] = {}
+    bytes_by_split: dict[str, int] = {}
+
+    def iter_spec_rows(spec: DatasetSpec) -> Iterable[dict[str, Any]]:
+        spec_key = f"{spec.name}|{spec.config or 'default'}|{spec.split}"
+        accepted = 0
+        for row in iter_rows(spec, seed=seed, limit=additional_rows_per_split):
+            row_bytes = row_messages_bytes(row)
+            rows_by_split[spec_key] = rows_by_split.get(spec_key, 0) + 1
+            bytes_by_split[spec_key] = bytes_by_split.get(spec_key, 0) + row_bytes
+            accepted += 1
+            yield row
+        if accepted == 0:
+            rows_by_split.setdefault(spec_key, 0)
+            bytes_by_split.setdefault(spec_key, 0)
+
+    shuffled_jsonl = _write_shuffled_dataset_jsonl(
+        output_dir=output_dir,
+        seed=seed,
+        row_iterables=[iter_spec_rows(spec) for spec in ADDITIONAL_NEMOTRON_SPECS],
+        rows_by_source=rows_by_source,
+        bytes_by_source=bytes_by_source,
+    )
+
+    if materialize_hf_dataset:
+        ds = load_dataset("json", data_files=str(shuffled_jsonl), split="train")
+        ds.save_to_disk(str(output_dir / "dataset"))
+
+    save_json(
+        output_dir / "metadata.json",
+        {
+            "mode": "additional",
+            "seed": seed,
+            "additional_rows_per_split_requested": additional_rows_per_split,
+            "total_rows": sum(rows_by_source.values()),
+            "rows_by_source": rows_by_source,
+            "bytes_by_source": bytes_by_source,
+            "rows_by_split": rows_by_split,
+            "bytes_by_split": bytes_by_split,
+            "source_specs": [spec.__dict__ for spec in ADDITIONAL_NEMOTRON_SPECS],
+            "materialize_hf_dataset": materialize_hf_dataset,
+            "schema": {
+                "fields": [
+                    "source_dataset",
+                    "source_config",
+                    "source_split",
+                    "row_id",
+                    "shuffle_key",
+                    "messages",
+                ]
+            },
+        },
+    )
+
+
+def build_extended_full(
+    output_dir: Path,
+    seed: int,
+    base_full_jsonl: Path,
+    additional_jsonl: Path,
+    materialize_hf_dataset: bool,
+) -> None:
+    if not base_full_jsonl.exists():
+        raise typer.BadParameter(f"base_full_input_jsonl not found: {base_full_jsonl}")
+    if not additional_jsonl.exists():
+        raise typer.BadParameter(f"additional_input_jsonl not found: {additional_jsonl}")
+
+    if output_dir.exists():
+        shutil.rmtree(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    rows_by_source: dict[str, int] = {}
+    bytes_by_source: dict[str, int] = {}
+    shuffled_jsonl = _write_shuffled_dataset_jsonl(
+        output_dir=output_dir,
+        seed=seed,
+        row_iterables=[iter_rows_from_jsonl(base_full_jsonl), iter_rows_from_jsonl(additional_jsonl)],
+        rows_by_source=rows_by_source,
+        bytes_by_source=bytes_by_source,
+    )
+
+    if materialize_hf_dataset:
+        ds = load_dataset("json", data_files=str(shuffled_jsonl), split="train")
+        ds.save_to_disk(str(output_dir / "dataset"))
+
+    base_summary = summarize_jsonl(base_full_jsonl)
+    additional_summary = summarize_jsonl(additional_jsonl)
+    save_json(
+        output_dir / "metadata.json",
+        {
+            "mode": "extended_full",
+            "seed": seed,
+            "base_full_dataset_path": str(base_full_jsonl),
+            "additional_dataset_path": str(additional_jsonl),
+            "materialize_hf_dataset": materialize_hf_dataset,
+            "total_rows": sum(rows_by_source.values()),
+            "rows_by_source": rows_by_source,
+            "bytes_by_source": bytes_by_source,
+            "base_full_summary": base_summary,
+            "additional_summary": additional_summary,
+            "schema": {
+                "fields": [
+                    "source_dataset",
+                    "source_config",
+                    "source_split",
+                    "row_id",
+                    "shuffle_key",
+                    "messages",
+                ]
+            },
+        },
+    )
 
 
 def build_full(output_dir: Path, seed: int) -> None:
@@ -453,16 +741,33 @@ def build_balanced(output_dir: Path, seed: int) -> None:
 
 @app.command("build")
 def build(
-    mode: str = typer.Option("demo", help="demo, full, or balanced"),
+    mode: str = typer.Option("demo", help="demo, full, balanced, additional, or extended_full"),
     seed: int = typer.Option(DEFAULT_SEED, help="Shuffle seed"),
     rows_per_source: int = typer.Option(100, help="Rows per source in demo mode"),
     demo_output_dir: Path = typer.Option(DEFAULT_DEMO_OUTPUT, help="Demo output directory"),
     full_output_dir: Path = typer.Option(DEFAULT_FULL_OUTPUT, help="Full output directory"),
     balanced_output_dir: Path = typer.Option(DEFAULT_BALANCED_OUTPUT, help="Balanced output directory"),
+    additional_output_dir: Path = typer.Option(DEFAULT_ADDITIONAL_OUTPUT, help="Additional output directory"),
+    extended_output_dir: Path = typer.Option(
+        DEFAULT_EXTENDED_FULL_OUTPUT, help="Extended full output directory"
+    ),
+    additional_rows_per_split: int = typer.Option(10000, help="Rows per split in additional mode"),
+    base_full_input_jsonl: Path = typer.Option(
+        DEFAULT_FULL_OUTPUT / "dataset_shuffled.jsonl",
+        help="Input JSONL from base full dataset for extended_full mode",
+    ),
+    additional_input_jsonl: Path = typer.Option(
+        DEFAULT_ADDITIONAL_OUTPUT / "dataset_shuffled.jsonl",
+        help="Input JSONL from additional dataset for extended_full mode",
+    ),
+    materialize_hf_dataset: bool = typer.Option(
+        False,
+        help="If true, also save a Hugging Face dataset/ directory for additional and extended_full modes",
+    ),
 ) -> None:
     normalized_mode = mode.lower().strip()
-    if normalized_mode not in {"demo", "full", "balanced"}:
-        raise typer.BadParameter("mode must be one of: demo, full, balanced")
+    if normalized_mode not in {"demo", "full", "balanced", "additional", "extended_full"}:
+        raise typer.BadParameter("mode must be one of: demo, full, balanced, additional, extended_full")
 
     if normalized_mode == "demo":
         build_demo(output_dir=demo_output_dir, seed=seed, rows_per_source=rows_per_source)
@@ -472,6 +777,27 @@ def build(
     if normalized_mode == "balanced":
         build_balanced(output_dir=balanced_output_dir, seed=seed)
         typer.echo(f"Balanced dataset written to {balanced_output_dir}")
+        return
+
+    if normalized_mode == "additional":
+        build_additional(
+            output_dir=additional_output_dir,
+            seed=seed,
+            additional_rows_per_split=additional_rows_per_split,
+            materialize_hf_dataset=materialize_hf_dataset,
+        )
+        typer.echo(f"Additional dataset written to {additional_output_dir}")
+        return
+
+    if normalized_mode == "extended_full":
+        build_extended_full(
+            output_dir=extended_output_dir,
+            seed=seed,
+            base_full_jsonl=base_full_input_jsonl,
+            additional_jsonl=additional_input_jsonl,
+            materialize_hf_dataset=materialize_hf_dataset,
+        )
+        typer.echo(f"Extended full dataset written to {extended_output_dir}")
         return
 
     build_full(output_dir=full_output_dir, seed=seed)

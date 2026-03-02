@@ -1,0 +1,63 @@
+{
+  "mode": "additional",
+  "seed": 42,
+  "additional_rows_per_split_requested": 10000,
+  "total_rows": 34969,
+  "rows_by_source": {
+    "nvidia/Nemotron-Agentic-v1": 20000,
+    "nvidia/Nemotron-Instruction-Following-Chat-v1": 14969
+  },
+  "bytes_by_source": {
+    "nvidia/Nemotron-Agentic-v1": 99393880,
+    "nvidia/Nemotron-Instruction-Following-Chat-v1": 200845031
+  },
+  "rows_by_split": {
+    "nvidia/Nemotron-Agentic-v1|default|interactive_agent": 10000,
+    "nvidia/Nemotron-Agentic-v1|default|tool_calling": 10000,
+    "nvidia/Nemotron-Instruction-Following-Chat-v1|default|chat_if": 10000,
+    "nvidia/Nemotron-Instruction-Following-Chat-v1|default|structured_outputs": 4969
+  },
+  "bytes_by_split": {
+    "nvidia/Nemotron-Agentic-v1|default|interactive_agent": 73877490,
+    "nvidia/Nemotron-Agentic-v1|default|tool_calling": 25516390,
+    "nvidia/Nemotron-Instruction-Following-Chat-v1|default|chat_if": 145214331,
+    "nvidia/Nemotron-Instruction-Following-Chat-v1|default|structured_outputs": 55630700
+  },
+  "source_specs": [
+    {
+      "name": "nvidia/Nemotron-Agentic-v1",
+      "config": "default",
+      "split": "interactive_agent",
+      "messages_key": "messages"
+    },
+    {
+      "name": "nvidia/Nemotron-Agentic-v1",
+      "config": "default",
+      "split": "tool_calling",
+      "messages_key": "messages"
+    },
+    {
+      "name": "nvidia/Nemotron-Instruction-Following-Chat-v1",
+      "config": "default",
+      "split": "chat_if",
+      "messages_key": "messages"
+    },
+    {
+      "name": "nvidia/Nemotron-Instruction-Following-Chat-v1",
+      "config": "default",
+      "split": "structured_outputs",
+      "messages_key": "messages"
+    }
+  ],
+  "materialize_hf_dataset": false,
+  "schema": {
+    "fields": [
+      "source_dataset",
+      "source_config",
+      "source_split",
+      "row_id",
+      "shuffle_key",
+      "messages"
+    ]
+  }
+}

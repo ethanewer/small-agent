@@ -2,10 +2,10 @@
 
 # Usage:
 #   mkdir -p logs outputs checkpoints
-#   sbatch training-scripts/train_full_32k_b200_tp2.sbatch
+#   sbatch training-scripts/train_full_32k_h200_tp2.sbatch
 
 #SBATCH -J ee-full-32k
-#SBATCH -p b200
+#SBATCH -p h200
 #SBATCH -N 4
 #SBATCH --ntasks-per-node=1
 #SBATCH --gpus-per-task=8
@@ -50,10 +50,10 @@ CONTAINER_WORKDIR="/workspace/run"
 CONTAINER_OUTPUT_BASE="${CONTAINER_WORKDIR}/outputs-20260301"
 BASE_MODEL_DIR="${CONTAINER_WORKDIR}/checkpoints/LocoreMind-LocoOperator-4B"
 MCORE_MODEL_DIR="${CONTAINER_WORKDIR}/checkpoints/LocoreMind-LocoOperator-4B-mcore"
-DATASET_PATH="${CONTAINER_WORKDIR}/data/full-dataset/dataset_shuffled.jsonl"
+DATASET_PATH="${CONTAINER_WORKDIR}/data/full-dataset-extended/dataset_shuffled.jsonl"
 MAX_STEPS="${MAX_STEPS:-100000}"
-SAVE_STEPS="${SAVE_STEPS:-2000}"
-LEARNING_RATE="${LEARNING_RATE:-1e-6}"
+SAVE_STEPS="${SAVE_STEPS:-1000}"
+LEARNING_RATE="${LEARNING_RATE:-2e-7}"
 DATASET_NUM_PROC="${DATASET_NUM_PROC:-8}"
 NUM_WORKERS="${NUM_WORKERS:-0}"
 
@@ -151,8 +151,7 @@ srun --mpi=pmix \
           --finetune true \
           --cross_entropy_loss_fusion true \
           --lr "${LEARNING_RATE}" \
-          --lr_warmup_fraction 0.05 \
-          --min_lr 1e-7 \
+          --lr_warmup_fraction 0.01 \
           --train_iters "${MAX_STEPS}" \
           --log_interval 10 \
           --save "${CONTAINER_OUTPUT_BASE}/${RUN_ID}" \

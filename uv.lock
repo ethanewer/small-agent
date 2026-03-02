@@ -1064,6 +1064,7 @@ dependencies = [
     { name = "jinja2" },
     { name = "orjson" },
     { name = "pyarrow" },
+    { name = "requests" },
     { name = "transformers" },
     { name = "typer" },
 ]
@@ -1075,6 +1076,7 @@ requires-dist = [
     { name = "jinja2", specifier = ">=3.1.0" },
     { name = "orjson", specifier = ">=3.10.0" },
     { name = "pyarrow", specifier = ">=19.0.0" },
+    { name = "requests", specifier = ">=2.32.0" },
     { name = "transformers", specifier = ">=4.55.0" },
     { name = "typer", specifier = ">=0.16.0" },
 ]

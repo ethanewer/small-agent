@@ -1,0 +1,56 @@
+{
+  "mode": "extended_full",
+  "seed": 42,
+  "base_full_dataset_path": "/wbl-fast/usrs/ethan/small-agent/data/full-dataset/dataset_shuffled.jsonl",
+  "additional_dataset_path": "/wbl-fast/usrs/ethan/small-agent/data/additional-data/dataset_shuffled.jsonl",
+  "materialize_hf_dataset": false,
+  "total_rows": 183243,
+  "rows_by_source": {
+    "nvidia/Nemotron-Terminal-Corpus": 139841,
+    "Nanbeige/ToolMind-Web-QA": 5624,
+    "SWE-Factory/DeepSWE-Agent-Kimi-K2-Trajectories-2.8K": 2809,
+    "nvidia/Nemotron-Agentic-v1": 20000,
+    "nvidia/Nemotron-Instruction-Following-Chat-v1": 14969
+  },
+  "bytes_by_source": {
+    "nvidia/Nemotron-Terminal-Corpus": 6548881906,
+    "Nanbeige/ToolMind-Web-QA": 1207688798,
+    "SWE-Factory/DeepSWE-Agent-Kimi-K2-Trajectories-2.8K": 236669991,
+    "nvidia/Nemotron-Agentic-v1": 99393880,
+    "nvidia/Nemotron-Instruction-Following-Chat-v1": 200845031
+  },
+  "base_full_summary": {
+    "total_rows": 148274,
+    "rows_by_source": {
+      "nvidia/Nemotron-Terminal-Corpus": 139841,
+      "Nanbeige/ToolMind-Web-QA": 5624,
+      "SWE-Factory/DeepSWE-Agent-Kimi-K2-Trajectories-2.8K": 2809
+    },
+    "bytes_by_source": {
+      "nvidia/Nemotron-Terminal-Corpus": 6548881906,
+      "Nanbeige/ToolMind-Web-QA": 1207688798,
+      "SWE-Factory/DeepSWE-Agent-Kimi-K2-Trajectories-2.8K": 236669991
+    }
+  },
+  "additional_summary": {
+    "total_rows": 34969,
+    "rows_by_source": {
+      "nvidia/Nemotron-Agentic-v1": 20000,
+      "nvidia/Nemotron-Instruction-Following-Chat-v1": 14969
+    },
+    "bytes_by_source": {
+      "nvidia/Nemotron-Agentic-v1": 99393880,
+      "nvidia/Nemotron-Instruction-Following-Chat-v1": 200845031
+    }
+  },
+  "schema": {
+    "fields": [
+      "source_dataset",
+      "source_config",
+      "source_split",
+      "row_id",
+      "shuffle_key",
+      "messages"
+    ]
+  }
+}
