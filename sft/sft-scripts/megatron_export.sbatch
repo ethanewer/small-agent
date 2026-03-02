@@ -2,10 +2,10 @@
 
 # Usage:
 #   mkdir -p logs outputs checkpoints
-#   sbatch training-scripts/train_locooperator_balanced_65k_b200_megatron_export.sbatch
+#   sbatch training-scripts/train_locooperator_balanced_65k_h200_megatron_export.sbatch
 
 #SBATCH -J ee-locoop-4b-mega-export
-#SBATCH -p b200
+#SBATCH -p h200
 #SBATCH -N 1
 #SBATCH --ntasks=1
 #SBATCH --gpus-per-task=8
