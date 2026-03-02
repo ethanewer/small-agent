@@ -10,7 +10,7 @@
 #SBATCH --ntasks-per-node=1
 #SBATCH --gpus-per-task=8
 #SBATCH --cpus-per-task=192
-#SBATCH --time=04:00:00
+#SBATCH --time=7-00:00:00
 #SBATCH --exclusive
 #SBATCH -o logs-20260301/train_%j.out
 #SBATCH -e logs-20260301/train_%j.err
