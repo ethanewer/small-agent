@@ -13,6 +13,24 @@ from agents.interface import AgentRuntimeConfig
 from agents.toolmind_harness.harness import HarnessCallbacks, ToolCall, run_harness
 
 
+def _coerce_bool(value: Any, default: bool) -> bool:
+    if isinstance(value, bool):
+        return value
+
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+
+        if normalized in {"0", "false", "no", "off"}:
+            return False
+
+    if value is None:
+        return default
+
+    return bool(value)
+
+
 def _tool_call_line(call: ToolCall) -> str:
     return f"{call.server_name}.{call.tool_name}"
 
@@ -21,6 +39,7 @@ def _tool_result_preview(result: dict[str, Any]) -> str:
     compact = json.dumps(result, ensure_ascii=False, separators=(",", ":"))
     if len(compact) > 200:
         return compact[:197] + "..."
+
     return compact
 
 
@@ -31,18 +50,30 @@ class ToolmindAgent:
         max_turns = int(
             options.get("max_assistant_turns", options.get("max_turns", 50))
         )
-        temperature = float(options.get("temperature", cfg.model.temperature or 0.2))
-        strict_protocol = bool(options.get("strict_protocol", True))
+        default_temperature = (
+            cfg.model.temperature if cfg.model.temperature is not None else 0.2
+        )
+        temperature = float(options.get("temperature", default_temperature))
+        strict_protocol = _coerce_bool(options.get("strict_protocol"), default=True)
         min_tool_turns = int(options.get("min_tool_turns", 8))
         repair_attempts = int(options.get("repair_attempts", 3))
-        allow_fallback_search = bool(options.get("allow_fallback_search", False))
-        force_think_tag = bool(options.get("force_think_tag", False))
-        request_reasoning = bool(options.get("request_reasoning", True))
-        internal_protocol_retry = bool(options.get("internal_protocol_retry", True))
+        allow_fallback_search = _coerce_bool(
+            options.get("allow_fallback_search"),
+            default=False,
+        )
+        force_think_tag = _coerce_bool(options.get("force_think_tag"), default=False)
+        request_reasoning = _coerce_bool(options.get("request_reasoning"), default=True)
+        internal_protocol_retry = _coerce_bool(
+            options.get("internal_protocol_retry"),
+            default=True,
+        )
         max_internal_protocol_retries = int(
             options.get("max_internal_protocol_retries", 2)
         )
-        record_protocol_repairs = bool(options.get("record_protocol_repairs", False))
+        record_protocol_repairs = _coerce_bool(
+            options.get("record_protocol_repairs"),
+            default=False,
+        )
         key = str(options.get("key", "toolmind-local"))
         row_id = str(options.get("id", "cli-run"))
 
