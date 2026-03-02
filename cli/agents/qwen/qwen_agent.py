@@ -10,8 +10,8 @@ from typing import Any
 from rich.console import Console
 from rich.panel import Panel
 
-from agents.headless.util import run_subprocess
 from agents.interface import AgentRuntimeConfig
+from agents.qwen.util import run_subprocess
 
 
 def _coerce_int(value: Any, default: int) -> int:
@@ -46,17 +46,23 @@ class QwenHeadlessAgent:
         }
 
         try:
-            with tempfile.NamedTemporaryFile(
-                mode="w",
-                suffix=".json",
-                delete=True,
-                encoding="utf-8",
-            ) as handle:
-                handle.write(json.dumps(settings, indent=2))
-                handle.flush()
+            with tempfile.TemporaryDirectory(prefix="qwen-headless-") as tmp_dir:
+                tmp_home = Path(tmp_dir)
+                qwen_settings_path = tmp_home / "qwen-settings.json"
+                qwen_settings_path.write_text(
+                    json.dumps(settings, indent=2),
+                    encoding="utf-8",
+                )
+
+                # Force stateless execution by isolating all runtime state to temp dirs.
+                env["HOME"] = str(tmp_home)
+                env["XDG_CONFIG_HOME"] = str(tmp_home / ".config")
+                env["XDG_CACHE_HOME"] = str(tmp_home / ".cache")
+                env["XDG_STATE_HOME"] = str(tmp_home / ".state")
+                env["QWEN_CODE_SYSTEM_SETTINGS_PATH"] = str(qwen_settings_path)
                 # Compatibility: older qwen-code used GEMINI_* naming.
-                env["QWEN_CODE_SYSTEM_SETTINGS_PATH"] = handle.name
-                env["GEMINI_CLI_SYSTEM_SETTINGS_PATH"] = handle.name
+                env["GEMINI_CLI_SYSTEM_SETTINGS_PATH"] = str(qwen_settings_path)
+
                 run_subprocess(
                     args=["qwen", "-p", instruction, "-y"],
                     cwd=str(Path.cwd()),

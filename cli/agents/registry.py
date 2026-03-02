@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from agents.headless import CodexHeadlessAgent, QwenHeadlessAgent
 from agents.interface import Agent
+from agents.qwen import QwenHeadlessAgent
 from agents.terminus2.agent import Terminus2Agent
 from agents.toolmind_harness.agent import ToolmindAgent
 
@@ -11,7 +11,6 @@ def available_agents() -> dict[str, Agent]:
         "terminus-2": Terminus2Agent(),
         "toolmind-harness": ToolmindAgent(),
         "qwen-headless": QwenHeadlessAgent(),
-        "codex-headless": CodexHeadlessAgent(),
     }
 
 

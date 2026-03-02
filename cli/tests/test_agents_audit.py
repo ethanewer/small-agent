@@ -4,6 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 import sys
+from typing import cast
 from unittest.mock import patch
 
 from rich.console import Console
@@ -12,8 +13,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from agents.interface import AgentModelConfig, AgentRuntimeConfig  # noqa: E402
-from agents.headless.codex_agent import CodexHeadlessAgent  # noqa: E402
-from agents.headless.qwen_agent import QwenHeadlessAgent  # noqa: E402
+from agents.qwen.qwen_agent import QwenHeadlessAgent  # noqa: E402
 from agents.registry import get_agent  # noqa: E402
 from agents.terminus2 import agent as terminus_agent  # noqa: E402
 from agents.toolmind_harness import harness  # noqa: E402
@@ -103,7 +103,7 @@ class TestRegistryAndParser(unittest.TestCase):
     def test_get_agent_unknown_lists_available_agents(self) -> None:
         with self.assertRaisesRegex(
             ValueError,
-            "Available agents: codex-headless, qwen-headless, terminus-2, toolmind-harness",
+            "Available agents: qwen-headless, terminus-2, toolmind-harness",
         ):
             get_agent("missing-agent")
 
@@ -209,7 +209,7 @@ class TestHeadlessAgents(unittest.TestCase):
             return 0
 
         with patch(
-            "agents.headless.qwen_agent.run_subprocess",
+            "agents.qwen.qwen_agent.run_subprocess",
             side_effect=fake_run_subprocess,
         ):
             code = QwenHeadlessAgent().run(
@@ -220,80 +220,15 @@ class TestHeadlessAgents(unittest.TestCase):
 
         self.assertEqual(code, 0)
         self.assertEqual(captured["args"], ["qwen", "-p", "do a quick check", "-y"])
-        env = captured["env"]
+        env = cast(dict[str, str], captured["env"])
         self.assertEqual(env["OPENAI_MODEL"], "qwen/qwen3.5-35b-a3b")
         self.assertEqual(env["OPENAI_BASE_URL"], "https://openrouter.ai/api/v1")
         self.assertEqual(env["OPENAI_API_KEY"], "test-key")
         self.assertEqual(env["CUSTOM_ENV"], "1")
         self.assertTrue(env["QWEN_CODE_SYSTEM_SETTINGS_PATH"].endswith(".json"))
         self.assertTrue(env["GEMINI_CLI_SYSTEM_SETTINGS_PATH"].endswith(".json"))
-
-    def test_codex_headless_builds_expected_env_and_args(self) -> None:
-        runtime = AgentRuntimeConfig(
-            agent_key="codex-headless",
-            model=AgentModelConfig(
-                model="gpt-5.3-codex",
-                api_base="https://api.openai.com/v1",
-                api_key="openai-key",
-                temperature=None,
-            ),
-            agent_config={
-                "sampling_params": {"temperature": 0.7, "json_mode": False},
-                "env": {"CUSTOM_ENV": "yes"},
-            },
-        )
-        captured: dict[str, object] = {}
-
-        def fake_run_subprocess(**kwargs):  # type: ignore[no-untyped-def]
-            captured.update(kwargs)
-            return 0
-
-        with patch(
-            "agents.headless.codex_agent.run_subprocess",
-            side_effect=fake_run_subprocess,
-        ):
-            code = CodexHeadlessAgent().run(
-                instruction="inspect tests",
-                cfg=runtime,
-                console=Console(record=True),
-            )
-
-        self.assertEqual(code, 0)
-        args = captured["args"]
-        self.assertIn("--model", args)
-        self.assertIn("gpt-5.3-codex", args)
-        self.assertIn("--config", args)
-        self.assertIn("temperature=0.7", args)
-        self.assertIn("json_mode=false", args)
-        self.assertEqual(args[-1], "inspect tests")
-        env = captured["env"]
-        self.assertEqual(env["OPENAI_API_KEY"], "openai-key")
-        self.assertEqual(env["OPENAI_BASE_URL"], "https://api.openai.com/v1")
-        self.assertEqual(env["CUSTOM_ENV"], "yes")
-
-    def test_headless_agent_handles_subprocess_error(self) -> None:
-        runtime = AgentRuntimeConfig(
-            agent_key="codex-headless",
-            model=AgentModelConfig(
-                model="gpt-5.3-codex",
-                api_base="https://api.openai.com/v1",
-                api_key="openai-key",
-                temperature=None,
-            ),
-        )
-        console = Console(record=True)
-        with patch(
-            "agents.headless.codex_agent.run_subprocess",
-            side_effect=FileNotFoundError(),
-        ):
-            code = CodexHeadlessAgent().run(
-                instruction="inspect tests",
-                cfg=runtime,
-                console=console,
-            )
-
-        self.assertEqual(code, 1)
-        self.assertIn("codex CLI not found", console.export_text())
+        self.assertNotEqual(env["HOME"], str(Path.cwd()))
+        self.assertTrue(env["XDG_CONFIG_HOME"].startswith(env["HOME"]))
 
 
 class TestHarnessLoop(unittest.TestCase):
@@ -421,7 +356,7 @@ class TestTerminus2Agent(unittest.TestCase):
             )
 
         self.assertEqual(exit_code, 9)
-        cfg = captured["cfg"]
+        cfg = cast(terminus_agent.CoreConfig, captured["cfg"])
         self.assertEqual(cfg.max_turns, 7)
         self.assertEqual(cfg.max_wait_seconds, 3.5)
         self.assertEqual(captured["instruction"], "inspect")

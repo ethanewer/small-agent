@@ -60,7 +60,6 @@ This installs the `terminus2-cli` command from the project entrypoint.
 For optional headless agents, install these CLIs and ensure they are on `PATH`:
 
 - `qwen` (from `@qwen-code/qwen-code`)
-- `codex` (from `@openai/codex`)
 
 ## Usage
 
@@ -90,7 +89,6 @@ terminus2-cli --verbosity 1 --max-turns 10 --model openai_codex --config ./confi
 - `terminus-2`: interactive terminal-driving JSON agent
 - `toolmind-harness`: tool-call protocol harness agent
 - `qwen-headless`: runs `qwen -p "<instruction>" -y` with OpenAI-compatible env
-- `codex-headless`: runs `codex exec --full-auto --sandbox danger-full-access ...`
 
 ### Interactive Commands
 
@@ -127,9 +125,9 @@ terminus2-cli
 
 ## Headless Agent Environment
 
-`qwen-headless` and `codex-headless` rely on model profile values from `config.json`:
+`qwen-headless` relies on model profile values from `config.json`:
 
-- `model` -> exported to agent runtime (`--model` for codex, `OPENAI_MODEL` for qwen)
+- `model` -> `OPENAI_MODEL`
 - `api_base` -> `OPENAI_BASE_URL`
 - `api_key` -> `OPENAI_API_KEY` (resolved from env var name or literal)
 
@@ -137,7 +135,6 @@ Examples:
 
 ```bash
 terminus2-cli --agent qwen-headless --model openrouter_qwen "Summarize this repository"
-terminus2-cli --agent codex-headless --model openai_codex "Run tests and explain failures"
 ```
 
 ## Completion Message
