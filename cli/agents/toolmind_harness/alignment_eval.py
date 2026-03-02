@@ -20,6 +20,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List
 
+BASE_DIR = Path(__file__).resolve().parent
+DEFAULT_HARNESS_PATH = BASE_DIR / "harness.py"
+DEFAULT_REFERENCE_PATHS = [
+    BASE_DIR / "conversation_example_newid10.json",
+    BASE_DIR / "conversation_example_newid9.json",
+]
+DEFAULT_GENERATION_DIR = BASE_DIR / "generated_trajectories_eval"
+DEFAULT_REPORT_PATH = BASE_DIR / "alignment_report.md"
+
 
 @dataclass
 class TrajMetrics:
@@ -186,28 +195,23 @@ def main() -> None:
     p = argparse.ArgumentParser(
         description="Evaluate harness alignment against reference trajectories."
     )
-    p.add_argument(
-        "--harness", default="/Users/ethanewer/scratch/toolmind_harness/harness.py"
-    )
+    p.add_argument("--harness", default=str(DEFAULT_HARNESS_PATH))
     p.add_argument(
         "--reference",
         nargs="+",
-        default=[
-            "/Users/ethanewer/scratch/conversation_example_newid10.json",
-            "/Users/ethanewer/scratch/conversation_example_newid9.json",
-        ],
+        default=[str(path) for path in DEFAULT_REFERENCE_PATHS],
     )
     p.add_argument("--candidate", nargs="*", default=[])
     p.add_argument("--run-generation", action="store_true")
     p.add_argument(
         "--generation-dir",
-        default="/Users/ethanewer/scratch/generated_trajectories_eval",
+        default=str(DEFAULT_GENERATION_DIR),
     )
     p.add_argument("--model", default=os.getenv("OPENAI_MODEL", "qwen/qwen3.5-35b-a3b"))
     p.add_argument("--max-assistant-turns", type=int, default=24)
     p.add_argument(
         "--report",
-        default="/Users/ethanewer/scratch/toolmind_harness/alignment_report.md",
+        default=str(DEFAULT_REPORT_PATH),
     )
     args = p.parse_args()
 

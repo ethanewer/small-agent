@@ -15,16 +15,26 @@ import typer
 from datasets import Dataset, load_dataset
 from transformers import AutoTokenizer
 
-app = typer.Typer(add_completion=False, help="Build Qwen SFT datasets in messages format.")
+app = typer.Typer(
+    add_completion=False, help="Build Qwen SFT datasets in messages format."
+)
 
 DEFAULT_DEMO_OUTPUT = Path("/wbl-fast/usrs/ethan/small-agent/sft/data/demo-dataset")
 DEFAULT_FULL_OUTPUT = Path("/wbl-fast/usrs/ethan/small-agent/sft/data/full-dataset")
-DEFAULT_BALANCED_OUTPUT = Path("/wbl-fast/usrs/ethan/small-agent/sft/data/balanced-dataset")
-DEFAULT_ADDITIONAL_OUTPUT = Path("/wbl-fast/usrs/ethan/small-agent/sft/data/additional-data")
-DEFAULT_EXTENDED_FULL_OUTPUT = Path("/wbl-fast/usrs/ethan/small-agent/sft/data/full-dataset-extended")
+DEFAULT_BALANCED_OUTPUT = Path(
+    "/wbl-fast/usrs/ethan/small-agent/sft/data/balanced-dataset"
+)
+DEFAULT_ADDITIONAL_OUTPUT = Path(
+    "/wbl-fast/usrs/ethan/small-agent/sft/data/additional-data"
+)
+DEFAULT_EXTENDED_FULL_OUTPUT = Path(
+    "/wbl-fast/usrs/ethan/small-agent/sft/data/full-dataset-extended"
+)
 DEFAULT_SEED = 42
 THINK_BLOCK_RE = re.compile(r"<think>.*?</think>", flags=re.DOTALL | re.IGNORECASE)
-THINK_ESCAPED_BLOCK_RE = re.compile(r"&lt;think&gt;.*?&lt;/think&gt;", flags=re.DOTALL | re.IGNORECASE)
+THINK_ESCAPED_BLOCK_RE = re.compile(
+    r"&lt;think&gt;.*?&lt;/think&gt;", flags=re.DOTALL | re.IGNORECASE
+)
 THINK_OPEN_RE = re.compile(r"<think>|&lt;think&gt;", flags=re.IGNORECASE)
 THINK_CLOSE_RE = re.compile(r"</think>|&lt;/think&gt;", flags=re.IGNORECASE)
 
@@ -38,22 +48,50 @@ class DatasetSpec:
 
 
 DATASET_SPECS: tuple[DatasetSpec, ...] = (
-    DatasetSpec("nvidia/Nemotron-Terminal-Corpus", "skill_based_mixed", "train", "conversations"),
+    DatasetSpec(
+        "nvidia/Nemotron-Terminal-Corpus", "skill_based_mixed", "train", "conversations"
+    ),
     DatasetSpec("Nanbeige/ToolMind-Web-QA", "test", "train", "conversations"),
-    DatasetSpec("SWE-Factory/DeepSWE-Agent-Kimi-K2-Trajectories-2.8K", "default", "train", "messages"),
+    DatasetSpec(
+        "SWE-Factory/DeepSWE-Agent-Kimi-K2-Trajectories-2.8K",
+        "default",
+        "train",
+        "messages",
+    ),
 )
 
 NVIDIA_TERMINAL_SPECS: tuple[DatasetSpec, ...] = (
-    DatasetSpec("nvidia/Nemotron-Terminal-Corpus", "skill_based_easy", "train", "conversations"),
-    DatasetSpec("nvidia/Nemotron-Terminal-Corpus", "skill_based_medium", "train", "conversations"),
-    DatasetSpec("nvidia/Nemotron-Terminal-Corpus", "skill_based_mixed", "train", "conversations"),
+    DatasetSpec(
+        "nvidia/Nemotron-Terminal-Corpus", "skill_based_easy", "train", "conversations"
+    ),
+    DatasetSpec(
+        "nvidia/Nemotron-Terminal-Corpus",
+        "skill_based_medium",
+        "train",
+        "conversations",
+    ),
+    DatasetSpec(
+        "nvidia/Nemotron-Terminal-Corpus", "skill_based_mixed", "train", "conversations"
+    ),
 )
 
 ADDITIONAL_NEMOTRON_SPECS: tuple[DatasetSpec, ...] = (
-    DatasetSpec("nvidia/Nemotron-Agentic-v1", "default", "interactive_agent", "messages"),
+    DatasetSpec(
+        "nvidia/Nemotron-Agentic-v1", "default", "interactive_agent", "messages"
+    ),
     DatasetSpec("nvidia/Nemotron-Agentic-v1", "default", "tool_calling", "messages"),
-    DatasetSpec("nvidia/Nemotron-Instruction-Following-Chat-v1", "default", "chat_if", "messages"),
-    DatasetSpec("nvidia/Nemotron-Instruction-Following-Chat-v1", "default", "structured_outputs", "messages"),
+    DatasetSpec(
+        "nvidia/Nemotron-Instruction-Following-Chat-v1",
+        "default",
+        "chat_if",
+        "messages",
+    ),
+    DatasetSpec(
+        "nvidia/Nemotron-Instruction-Following-Chat-v1",
+        "default",
+        "structured_outputs",
+        "messages",
+    ),
 )
 
 
@@ -77,7 +115,9 @@ def get_streaming_dataset(spec: DatasetSpec):
         data_file = split_to_file.get(spec.split)
         if data_file is None:
             raise ValueError(f"Unsupported split for {spec.name}: {spec.split}")
-        return load_dataset("json", data_files=[data_file], split="train", streaming=True)
+        return load_dataset(
+            "json", data_files=[data_file], split="train", streaming=True
+        )
     if spec.name == "nvidia/Nemotron-Instruction-Following-Chat-v1":
         split_to_file = {
             "chat_if": "hf://datasets/nvidia/Nemotron-Instruction-Following-Chat-v1/data/chat_if.jsonl",
@@ -86,7 +126,9 @@ def get_streaming_dataset(spec: DatasetSpec):
         data_file = split_to_file.get(spec.split)
         if data_file is None:
             raise ValueError(f"Unsupported split for {spec.name}: {spec.split}")
-        return load_dataset("json", data_files=[data_file], split="train", streaming=True)
+        return load_dataset(
+            "json", data_files=[data_file], split="train", streaming=True
+        )
     return load_dataset(spec.name, spec.config, split=spec.split, streaming=True)
 
 
@@ -223,12 +265,20 @@ def additional_spec_jsonl_url(spec: DatasetSpec) -> str | None:
     return urls.get((spec.name, spec.split))
 
 
-def iter_rows_from_jsonl_url(spec: DatasetSpec, seed: int, limit: int | None = None) -> Iterable[dict[str, Any]]:
+def iter_rows_from_jsonl_url(
+    spec: DatasetSpec, seed: int, limit: int | None = None
+) -> Iterable[dict[str, Any]]:
     url = additional_spec_jsonl_url(spec)
     if url is None:
-        raise ValueError(f"No JSONL URL mapping for dataset spec: {spec.name}/{spec.split}")
+        raise ValueError(
+            f"No JSONL URL mapping for dataset spec: {spec.name}/{spec.split}"
+        )
 
-    normalize = normalize_messages_lightweight if use_lightweight_normalization(spec) else normalize_messages
+    normalize = (
+        normalize_messages_lightweight
+        if use_lightweight_normalization(spec)
+        else normalize_messages
+    )
     accepted = 0
     with requests.get(url, stream=True, timeout=120) as response:
         response.raise_for_status()
@@ -247,7 +297,9 @@ def iter_rows_from_jsonl_url(spec: DatasetSpec, seed: int, limit: int | None = N
                 "source_config": source_config,
                 "source_split": spec.split,
                 "row_id": f"{spec.name}:{source_config}:{spec.split}:{row_id}",
-                "shuffle_key": _shuffle_key(seed, spec.name, source_config, spec.split, row_id),
+                "shuffle_key": _shuffle_key(
+                    seed, spec.name, source_config, spec.split, row_id
+                ),
                 "messages": messages,
             }
             accepted += 1
@@ -255,19 +307,29 @@ def iter_rows_from_jsonl_url(spec: DatasetSpec, seed: int, limit: int | None = N
                 break
 
 
-def _shuffle_key(seed: int, source_dataset: str, source_config: str, source_split: str, row_id: int) -> str:
-    payload = f"{seed}:{source_dataset}:{source_config}:{source_split}:{row_id}".encode("utf-8")
+def _shuffle_key(
+    seed: int, source_dataset: str, source_config: str, source_split: str, row_id: int
+) -> str:
+    payload = f"{seed}:{source_dataset}:{source_config}:{source_split}:{row_id}".encode(
+        "utf-8"
+    )
     return hashlib.sha1(payload).hexdigest()
 
 
-def iter_rows(spec: DatasetSpec, seed: int, limit: int | None = None) -> Iterable[dict[str, Any]]:
+def iter_rows(
+    spec: DatasetSpec, seed: int, limit: int | None = None
+) -> Iterable[dict[str, Any]]:
     direct_jsonl_url = additional_spec_jsonl_url(spec)
     if direct_jsonl_url is not None:
         yield from iter_rows_from_jsonl_url(spec, seed=seed, limit=limit)
         return
 
     ds = get_streaming_dataset(spec)
-    normalize = normalize_messages_lightweight if use_lightweight_normalization(spec) else normalize_messages
+    normalize = (
+        normalize_messages_lightweight
+        if use_lightweight_normalization(spec)
+        else normalize_messages
+    )
     accepted = 0
     for row_id, row in enumerate(ds):
         messages = normalize(row.get(spec.messages_key))
@@ -279,7 +341,9 @@ def iter_rows(spec: DatasetSpec, seed: int, limit: int | None = None) -> Iterabl
             "source_config": source_config,
             "source_split": spec.split,
             "row_id": f"{spec.name}:{source_config}:{spec.split}:{row_id}",
-            "shuffle_key": _shuffle_key(seed, spec.name, source_config, spec.split, row_id),
+            "shuffle_key": _shuffle_key(
+                seed, spec.name, source_config, spec.split, row_id
+            ),
             "messages": messages,
         }
         accepted += 1
@@ -287,7 +351,9 @@ def iter_rows(spec: DatasetSpec, seed: int, limit: int | None = None) -> Iterabl
             break
 
 
-def render_examples(rows: list[dict[str, Any]], max_examples: int = 12) -> list[dict[str, Any]]:
+def render_examples(
+    rows: list[dict[str, Any]], max_examples: int = 12
+) -> list[dict[str, Any]]:
     tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen3-4B-Instruct-2507")
     examples: list[dict[str, Any]] = []
     for row in rows:
@@ -526,7 +592,9 @@ def build_extended_full(
     if not base_full_jsonl.exists():
         raise typer.BadParameter(f"base_full_input_jsonl not found: {base_full_jsonl}")
     if not additional_jsonl.exists():
-        raise typer.BadParameter(f"additional_input_jsonl not found: {additional_jsonl}")
+        raise typer.BadParameter(
+            f"additional_input_jsonl not found: {additional_jsonl}"
+        )
 
     if output_dir.exists():
         shutil.rmtree(output_dir)
@@ -537,7 +605,10 @@ def build_extended_full(
     shuffled_jsonl = _write_shuffled_dataset_jsonl(
         output_dir=output_dir,
         seed=seed,
-        row_iterables=[iter_rows_from_jsonl(base_full_jsonl), iter_rows_from_jsonl(additional_jsonl)],
+        row_iterables=[
+            iter_rows_from_jsonl(base_full_jsonl),
+            iter_rows_from_jsonl(additional_jsonl),
+        ],
         rows_by_source=rows_by_source,
         bytes_by_source=bytes_by_source,
     )
@@ -591,9 +662,21 @@ def build_full(output_dir: Path, seed: int) -> None:
         output_dir=output_dir,
         seed=seed,
         row_iterables=[
-            (row for spec in NVIDIA_TERMINAL_SPECS for row in iter_rows(spec, seed=seed, limit=None)),
-            iter_rows(DatasetSpec(nanbeige_source, "test", "train", "conversations"), seed=seed, limit=None),
-            iter_rows(DatasetSpec(swe_source, "default", "train", "messages"), seed=seed, limit=None),
+            (
+                row
+                for spec in NVIDIA_TERMINAL_SPECS
+                for row in iter_rows(spec, seed=seed, limit=None)
+            ),
+            iter_rows(
+                DatasetSpec(nanbeige_source, "test", "train", "conversations"),
+                seed=seed,
+                limit=None,
+            ),
+            iter_rows(
+                DatasetSpec(swe_source, "default", "train", "messages"),
+                seed=seed,
+                limit=None,
+            ),
         ],
         rows_by_source=rows_by_source,
         bytes_by_source=bytes_by_source,
@@ -604,7 +687,9 @@ def build_full(output_dir: Path, seed: int) -> None:
 
     total_rows = sum(rows_by_source.values())
     total_bytes = sum(bytes_by_source.values())
-    nvidia_byte_share = (bytes_by_source[nvidia_source] / total_bytes) if total_bytes else 0.0
+    nvidia_byte_share = (
+        (bytes_by_source[nvidia_source] / total_bytes) if total_bytes else 0.0
+    )
 
     balance_note = (
         "Included all NVIDIA terminal splits (easy/medium/mixed), all SWE rows, and all Nanbeige rows. "
@@ -621,7 +706,9 @@ def build_full(output_dir: Path, seed: int) -> None:
             "rows_by_source_before_balance": rows_by_source,
             "bytes_by_source": bytes_by_source,
             "bytes_by_source_before_balance": bytes_by_source,
-            "source_specs": [spec.__dict__ for spec in NVIDIA_TERMINAL_SPECS + DATASET_SPECS[1:]],
+            "source_specs": [
+                spec.__dict__ for spec in NVIDIA_TERMINAL_SPECS + DATASET_SPECS[1:]
+            ],
             "nvidia_minimum_byte_share": 0.5,
             "nvidia_actual_byte_share": nvidia_byte_share,
             "full_mode_balance_policy": "include_all_nvidia_all_swe_all_nanbeige",
@@ -650,8 +737,16 @@ def build_balanced(output_dir: Path, seed: int) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
 
     non_nvidia_rows: list[dict[str, Any]] = []
-    rows_by_source_before_balance = {nvidia_source: 0, nanbeige_source: 0, swe_source: 0}
-    bytes_by_source_before_balance = {nvidia_source: 0, nanbeige_source: 0, swe_source: 0}
+    rows_by_source_before_balance = {
+        nvidia_source: 0,
+        nanbeige_source: 0,
+        swe_source: 0,
+    }
+    bytes_by_source_before_balance = {
+        nvidia_source: 0,
+        nanbeige_source: 0,
+        swe_source: 0,
+    }
 
     for spec in [
         DatasetSpec(nanbeige_source, "test", "train", "conversations"),
@@ -683,7 +778,9 @@ def build_balanced(output_dir: Path, seed: int) -> None:
             nvidia_bytes += row_bytes
             best_distance = abs(non_nvidia_target_bytes - nvidia_bytes)
         else:
-            candidate_distance = abs(non_nvidia_target_bytes - (nvidia_bytes + row_bytes))
+            candidate_distance = abs(
+                non_nvidia_target_bytes - (nvidia_bytes + row_bytes)
+            )
             if candidate_distance < best_distance:
                 best_distance = candidate_distance
                 best_extra_row = row
@@ -705,7 +802,9 @@ def build_balanced(output_dir: Path, seed: int) -> None:
 
     total_rows = sum(rows_by_source.values())
     total_bytes = sum(bytes_by_source.values())
-    nvidia_byte_share = (bytes_by_source[nvidia_source] / total_bytes) if total_bytes else 0.0
+    nvidia_byte_share = (
+        (bytes_by_source[nvidia_source] / total_bytes) if total_bytes else 0.0
+    )
 
     save_json(
         output_dir / "metadata.json",
@@ -717,7 +816,9 @@ def build_balanced(output_dir: Path, seed: int) -> None:
             "rows_by_source_before_balance": rows_by_source_before_balance,
             "bytes_by_source": bytes_by_source,
             "bytes_by_source_before_balance": bytes_by_source_before_balance,
-            "source_specs": [spec.__dict__ for spec in NVIDIA_TERMINAL_SPECS + DATASET_SPECS[1:]],
+            "source_specs": [
+                spec.__dict__ for spec in NVIDIA_TERMINAL_SPECS + DATASET_SPECS[1:]
+            ],
             "nvidia_target_byte_share": 0.5,
             "nvidia_actual_byte_share": nvidia_byte_share,
             "full_mode_balance_policy": "all_swe_all_nanbeige_nvidia_to_50pct_bytes",
@@ -741,17 +842,29 @@ def build_balanced(output_dir: Path, seed: int) -> None:
 
 @app.command("build")
 def build(
-    mode: str = typer.Option("demo", help="demo, full, balanced, additional, or extended_full"),
+    mode: str = typer.Option(
+        "demo", help="demo, full, balanced, additional, or extended_full"
+    ),
     seed: int = typer.Option(DEFAULT_SEED, help="Shuffle seed"),
     rows_per_source: int = typer.Option(100, help="Rows per source in demo mode"),
-    demo_output_dir: Path = typer.Option(DEFAULT_DEMO_OUTPUT, help="Demo output directory"),
-    full_output_dir: Path = typer.Option(DEFAULT_FULL_OUTPUT, help="Full output directory"),
-    balanced_output_dir: Path = typer.Option(DEFAULT_BALANCED_OUTPUT, help="Balanced output directory"),
-    additional_output_dir: Path = typer.Option(DEFAULT_ADDITIONAL_OUTPUT, help="Additional output directory"),
+    demo_output_dir: Path = typer.Option(
+        DEFAULT_DEMO_OUTPUT, help="Demo output directory"
+    ),
+    full_output_dir: Path = typer.Option(
+        DEFAULT_FULL_OUTPUT, help="Full output directory"
+    ),
+    balanced_output_dir: Path = typer.Option(
+        DEFAULT_BALANCED_OUTPUT, help="Balanced output directory"
+    ),
+    additional_output_dir: Path = typer.Option(
+        DEFAULT_ADDITIONAL_OUTPUT, help="Additional output directory"
+    ),
     extended_output_dir: Path = typer.Option(
         DEFAULT_EXTENDED_FULL_OUTPUT, help="Extended full output directory"
     ),
-    additional_rows_per_split: int = typer.Option(10000, help="Rows per split in additional mode"),
+    additional_rows_per_split: int = typer.Option(
+        10000, help="Rows per split in additional mode"
+    ),
     base_full_input_jsonl: Path = typer.Option(
         DEFAULT_FULL_OUTPUT / "dataset_shuffled.jsonl",
         help="Input JSONL from base full dataset for extended_full mode",
@@ -766,11 +879,21 @@ def build(
     ),
 ) -> None:
     normalized_mode = mode.lower().strip()
-    if normalized_mode not in {"demo", "full", "balanced", "additional", "extended_full"}:
-        raise typer.BadParameter("mode must be one of: demo, full, balanced, additional, extended_full")
+    if normalized_mode not in {
+        "demo",
+        "full",
+        "balanced",
+        "additional",
+        "extended_full",
+    }:
+        raise typer.BadParameter(
+            "mode must be one of: demo, full, balanced, additional, extended_full"
+        )
 
     if normalized_mode == "demo":
-        build_demo(output_dir=demo_output_dir, seed=seed, rows_per_source=rows_per_source)
+        build_demo(
+            output_dir=demo_output_dir, seed=seed, rows_per_source=rows_per_source
+        )
         typer.echo(f"Demo dataset written to {demo_output_dir}")
         return
 

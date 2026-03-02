@@ -38,11 +38,11 @@ By default, if `SERPER_API_KEY` is missing, `google_search` returns an error (cl
 ## Quick start
 
 ```bash
-cd /Users/ethanewer/scratch/toolmind_harness
+cd cli/agents/toolmind_harness
 export OPENAI_API_KEY="..."
 python3 harness.py \
   --question "What rock band released the 2001 album Lateralus? Wrap final answer in \\boxed{}." \
-  --output "/Users/ethanewer/scratch/generated_traj_example.json" \
+  --output "./generated_traj_example.json" \
   --key "wikiQA-en-local" \
   --id "newid_local_1" \
   --max-assistant-turns 40 \
@@ -105,8 +105,8 @@ The harness now requests reasoning output by default and folds it into the traje
 Use `alignment_eval.py` for static alignment checks:
 
 ```bash
-cd /Users/ethanewer/scratch/toolmind_harness
-python3 alignment_eval.py --report "/Users/ethanewer/scratch/toolmind_harness/alignment_report.md"
+cd cli/agents/toolmind_harness
+python3 alignment_eval.py --report "./alignment_report.md"
 ```
 
 Optional model-in-the-loop checks:

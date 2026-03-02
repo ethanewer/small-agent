@@ -11,7 +11,7 @@ from typing import Any, Callable, cast
 
 import litellm
 import pexpect
-from final_summary import build_done_text
+from agents.terminus2.final_summary import build_done_text
 from litellm import completion
 
 litellm.suppress_debug_info = True

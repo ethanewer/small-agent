@@ -7,7 +7,7 @@ from typing import Any
 from unittest.mock import patch
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-CORE_PATH = PROJECT_ROOT / "core_agent.py"
+CORE_PATH = PROJECT_ROOT / "agents" / "terminus2" / "core_agent.py"
 CLI_PATH = PROJECT_ROOT / "cli.py"
 PROMPT_FIXTURE_PATH = PROJECT_ROOT / "tests" / "fixtures" / "terminus-json-plain.txt"
 
@@ -18,7 +18,7 @@ sys.modules["core_agent"] = core_agent
 core_spec.loader.exec_module(core_agent)
 
 summary_spec = importlib.util.spec_from_file_location(
-    "final_summary", PROJECT_ROOT / "final_summary.py"
+    "final_summary", PROJECT_ROOT / "agents" / "terminus2" / "final_summary.py"
 )
 assert summary_spec and summary_spec.loader
 final_summary = importlib.util.module_from_spec(summary_spec)
@@ -442,6 +442,17 @@ class TestInteractiveCommands(unittest.TestCase):
             instruction="/agent toolmind-harness",
             config=loaded,
         )
+        self.assertTrue(result.handled)
+        self.assertEqual(result.selected_agent, "toolmind-harness")
+
+    def test_parse_interactive_command_prompts_for_missing_agent(self) -> None:
+        loaded = self._loaded_config()
+        with patch.object(cli.Prompt, "ask", return_value="2"):
+            result = cli.parse_interactive_command(
+                console=cli.Console(record=True),
+                instruction="/agent",
+                config=loaded,
+            )
         self.assertTrue(result.handled)
         self.assertEqual(result.selected_agent, "toolmind-harness")
 

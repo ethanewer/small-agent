@@ -7,7 +7,7 @@ from rich.panel import Panel
 from rich.text import Text
 
 from agents.interface import AgentRuntimeConfig
-from agents.terminus2.core import (
+from agents.terminus2.core_agent import (
     AgentCallbacks,
     Command,
     Config as CoreConfig,

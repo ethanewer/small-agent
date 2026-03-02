@@ -4,10 +4,10 @@ import argparse
 from dataclasses import dataclass
 import json
 import os
+from pathlib import Path
 import re
 import subprocess
 import sys
-from pathlib import Path
 from typing import Any
 
 from agents.interface import AgentModelConfig, AgentRuntimeConfig
@@ -242,6 +242,32 @@ def select_model_dialog(console: Console, config: LoadedConfig) -> str:
         return model_keys[selected_index - 1]
 
 
+def select_agent_dialog(console: Console, config: LoadedConfig) -> str:
+    agent_keys = list(config.agents.keys())
+    numbered_lines = []
+    for index, agent_key in enumerate(agent_keys, start=1):
+        numbered_lines.append(f"{index}. {agent_key}")
+
+    console.print(
+        Panel("\n".join(numbered_lines), title="Available Agents", border_style="cyan")
+    )
+
+    while True:
+        raw_choice = Prompt.ask("[bold]Enter agent number[/bold]").strip()
+        if not raw_choice:
+            continue
+        if not raw_choice.isdigit():
+            console.print(Panel("Please enter a valid number.", border_style="yellow"))
+            continue
+
+        selected_index = int(raw_choice)
+        if selected_index < 1 or selected_index > len(agent_keys):
+            console.print(Panel("Agent number out of range.", border_style="yellow"))
+            continue
+
+        return agent_keys[selected_index - 1]
+
+
 def select_verbosity_dialog(console: Console) -> int:
     console.print(
         Panel(
@@ -266,7 +292,7 @@ def select_verbosity_dialog(console: Console) -> int:
 def _interactive_help_panel() -> Panel:
     return Panel(
         "/model - choose active model from a numbered list\n"
-        "/agent <name> - set active agent from config\n"
+        "/agent [name] - choose active agent or set by key\n"
         "/verbosity <0|1|3> - set output detail level\n"
         "  0: one line per tool call\n"
         "  1: full tool call inputs/responses\n"
@@ -377,14 +403,7 @@ def parse_interactive_command(
     if trimmed == "/agent" or trimmed.startswith("/agent "):
         remainder = trimmed.removeprefix("/agent").strip()
         if not remainder:
-            console.print(
-                Panel(
-                    f"Provide an agent key. Available: {', '.join(config.agents.keys())}",
-                    title="Invalid Command",
-                    border_style="yellow",
-                )
-            )
-            return InteractiveCommandResult(instruction="", handled=True)
+            remainder = select_agent_dialog(console=console, config=config)
 
         if remainder not in config.agents:
             console.print(
@@ -646,14 +665,21 @@ def main() -> None:
 
     runtime_cfg.agent_config["verbosity"] = args.verbosity
 
+    cwd = os.getcwd()
+
     if args.verbosity == 0:
-        panel_lines = [f"Agent: {active_agent_key}", f"Model: {active_model_key}"]
+        panel_lines = [
+            f"Agent: {active_agent_key}",
+            f"Model: {active_model_key}",
+            f"CWD: {cwd}",
+        ]
     else:
         panel_lines = [
             f"Agent: {active_agent_key}",
             f"Model Key: {active_model_key}",
             f"Model: {runtime_cfg.model.model}",
             f"API Base: {runtime_cfg.model.api_base}",
+            f"CWD: {cwd}",
             f"Verbosity: {args.verbosity}",
             f"Max Turns: {runtime_cfg.agent_config['max_turns']}",
             f"Max Wait: {runtime_cfg.agent_config['max_wait_seconds']}s",

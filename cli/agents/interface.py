@@ -23,5 +23,8 @@ class AgentRuntimeConfig:
 
 class Agent(Protocol):
     def run(
-        self, instruction: str, cfg: AgentRuntimeConfig, console: Console
+        self,
+        instruction: str,
+        cfg: AgentRuntimeConfig,
+        console: Console,
     ) -> int: ...
