@@ -2,11 +2,11 @@
 
 # Usage:
 #   mkdir -p logs outputs checkpoints
-#   sbatch training-scripts/train_balanced_32k_b200_tp2_2node.sbatch
+#   sbatch training-scripts/train_full_40k_b200_tp2.sbatch
 
-#SBATCH -J ee-balanced-32k-4b-tp2-2n
+#SBATCH -J ee-full-40k
 #SBATCH -p b200
-#SBATCH -N 2
+#SBATCH -N 4
 #SBATCH --ntasks-per-node=1
 #SBATCH --gpus-per-task=8
 #SBATCH --cpus-per-task=192
@@ -27,9 +27,9 @@ WORLD_SIZE="$((NNODES * NPROC_PER_NODE))"
 TP_SIZE=2
 PP_SIZE=1
 MICRO_BATCH_SIZE=1
-GLOBAL_BATCH_SIZE=8
-CONTEXT_LENGTH=32768
-RUN_ID="locooperator4b_balanced_32k_megatron_tp2_2node_${SLURM_JOB_ID}"
+GLOBAL_BATCH_SIZE=16
+CONTEXT_LENGTH=40960
+RUN_ID="ee_train_full_40k_megatron_tp2_${SLURM_JOB_ID}"
 export MASTER_PORT MASTER_ADDR NNODES NPROC_PER_NODE WORLD_SIZE RUN_ID
 
 JOB_COMMAND="$(scontrol show job "${SLURM_JOB_ID}" | sed -n "s/.* Command=\([^ ]*\).*/\1/p")"
@@ -50,7 +50,7 @@ CONTAINER_WORKDIR="/workspace/run"
 CONTAINER_OUTPUT_BASE="${CONTAINER_WORKDIR}/outputs-20260301"
 BASE_MODEL_DIR="${CONTAINER_WORKDIR}/checkpoints/LocoreMind-LocoOperator-4B"
 MCORE_MODEL_DIR="${CONTAINER_WORKDIR}/checkpoints/LocoreMind-LocoOperator-4B-mcore"
-DATASET_PATH="${CONTAINER_WORKDIR}/data/balanced-dataset/dataset_shuffled.jsonl"
+DATASET_PATH="${CONTAINER_WORKDIR}/data/full-dataset/dataset_shuffled.jsonl"
 MAX_STEPS="${MAX_STEPS:-100000}"
 SAVE_STEPS="${SAVE_STEPS:-2000}"
 LEARNING_RATE="${LEARNING_RATE:-1e-6}"
