@@ -2,9 +2,9 @@
 
 # Usage:
 #   mkdir -p logs outputs checkpoints
-#   sbatch training-scripts/train_full_40k_b200_tp2.sbatch
+#   sbatch training-scripts/train_full_32k_b200_tp2.sbatch
 
-#SBATCH -J ee-full-40k
+#SBATCH -J ee-full-32k
 #SBATCH -p b200
 #SBATCH -N 4
 #SBATCH --ntasks-per-node=1
@@ -28,8 +28,8 @@ TP_SIZE=2
 PP_SIZE=1
 MICRO_BATCH_SIZE=1
 GLOBAL_BATCH_SIZE=16
-CONTEXT_LENGTH=40960
-RUN_ID="ee_train_full_40k_megatron_tp2_${SLURM_JOB_ID}"
+CONTEXT_LENGTH=32768
+RUN_ID="ee_train_full_32k_megatron_tp2_${SLURM_JOB_ID}"
 export MASTER_PORT MASTER_ADDR NNODES NPROC_PER_NODE WORLD_SIZE RUN_ID
 
 JOB_COMMAND="$(scontrol show job "${SLURM_JOB_ID}" | sed -n "s/.* Command=\([^ ]*\).*/\1/p")"
@@ -148,9 +148,6 @@ srun --mpi=pmix \
           --micro_batch_size "${MICRO_BATCH_SIZE}" \
           --global_batch_size "${GLOBAL_BATCH_SIZE}" \
           --packing true \
-          --recompute_granularity full \
-          --recompute_method uniform \
-          --recompute_num_layers 1 \
           --finetune true \
           --cross_entropy_loss_fusion true \
           --lr "${LEARNING_RATE}" \
@@ -161,8 +158,10 @@ srun --mpi=pmix \
           --save "${CONTAINER_OUTPUT_BASE}/${RUN_ID}" \
           --save_interval "${SAVE_STEPS}" \
           --max_length "${CONTEXT_LENGTH}" \
+          --template qwen3_nothinking \
           --dataset_num_proc "${DATASET_NUM_PROC}" \
           --num_workers "${NUM_WORKERS}" \
+          --agent_template qwen_en \
           --no_save_optim true \
           --no_save_rng true \
           --attention_backend flash \
