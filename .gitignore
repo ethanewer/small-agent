@@ -15,7 +15,8 @@ sft/data/demo-dataset/
 sft/data/full-dataset/
 sft/data/balanced-dataset/
 sft/data/remote-partials/
-sft/data/**/dataset_shuffled.jsonl
+sft/data/additional-data/
+sft/data/full-dataset-extended/
 
 sft/outputs*
 sft/.modelscope_cache*

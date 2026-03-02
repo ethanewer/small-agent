@@ -2,9 +2,9 @@
 
 # Usage:
 #   mkdir -p logs outputs checkpoints
-#   sbatch training-scripts/train_full_32k_h200_tp2.sbatch
+#   sbatch training-scripts/train_full_65k_h200_tp2.sbatch
 
-#SBATCH -J ee-full-32k
+#SBATCH -J ee-full-65k
 #SBATCH -p h200
 #SBATCH -N 4
 #SBATCH --ntasks-per-node=1
@@ -12,8 +12,8 @@
 #SBATCH --cpus-per-task=192
 #SBATCH --time=7-00:00:00
 #SBATCH --exclusive
-#SBATCH -o logs-20260301/train_%j.out
-#SBATCH -e logs-20260301/train_%j.err
+#SBATCH -o logs-20260302/train_%j.out
+#SBATCH -e logs-20260302/train_%j.err
 
 set -euo pipefail
 set -x
@@ -24,12 +24,12 @@ MASTER_ADDR="$(scontrol show hostnames "$SLURM_JOB_NODELIST" | head -n1)"
 NNODES="${SLURM_NNODES}"
 NPROC_PER_NODE="${NPROC_PER_NODE:-8}"
 WORLD_SIZE="$((NNODES * NPROC_PER_NODE))"
-TP_SIZE=2
+TP_SIZE=4
 PP_SIZE=1
 MICRO_BATCH_SIZE=1
-GLOBAL_BATCH_SIZE=16
-CONTEXT_LENGTH=32768
-RUN_ID="ee_train_full_32k_megatron_tp2_${SLURM_JOB_ID}"
+GLOBAL_BATCH_SIZE=8
+CONTEXT_LENGTH=65536
+RUN_ID="ee_train_full_65k_megatron_tp2_${SLURM_JOB_ID}"
 export MASTER_PORT MASTER_ADDR NNODES NPROC_PER_NODE WORLD_SIZE RUN_ID
 
 JOB_COMMAND="$(scontrol show job "${SLURM_JOB_ID}" | sed -n "s/.* Command=\([^ ]*\).*/\1/p")"
@@ -47,12 +47,12 @@ CHECKPOINT_DIR="${RUN_ROOT}/checkpoints"
 mkdir -p "${LOG_DIR}" "${OUTPUT_BASE}" "${OUTPUT_DIR}" "${CHECKPOINT_DIR}"
 
 CONTAINER_WORKDIR="/workspace/run"
-CONTAINER_OUTPUT_BASE="${CONTAINER_WORKDIR}/outputs-20260301"
+CONTAINER_OUTPUT_BASE="${CONTAINER_WORKDIR}/outputs-20260302"
 BASE_MODEL_DIR="${CONTAINER_WORKDIR}/checkpoints/LocoreMind-LocoOperator-4B"
 MCORE_MODEL_DIR="${CONTAINER_WORKDIR}/checkpoints/LocoreMind-LocoOperator-4B-mcore"
 DATASET_PATH="${CONTAINER_WORKDIR}/data/full-dataset-extended/dataset_shuffled.jsonl"
-MAX_STEPS="${MAX_STEPS:-100000}"
-SAVE_STEPS="${SAVE_STEPS:-1000}"
+MAX_STEPS="${MAX_STEPS:-10000}"
+SAVE_STEPS="${SAVE_STEPS:-500}"
 LEARNING_RATE="${LEARNING_RATE:-2e-7}"
 DATASET_NUM_PROC="${DATASET_NUM_PROC:-8}"
 NUM_WORKERS="${NUM_WORKERS:-0}"
@@ -151,7 +151,8 @@ srun --mpi=pmix \
           --finetune true \
           --cross_entropy_loss_fusion true \
           --lr "${LEARNING_RATE}" \
-          --lr_warmup_fraction 0.01 \
+          --min_lr "${LEARNING_RATE}" \
+          --lr_warmup_fraction 0.05 \
           --train_iters "${MAX_STEPS}" \
           --log_interval 10 \
           --save "${CONTAINER_OUTPUT_BASE}/${RUN_ID}" \
