@@ -26,3 +26,5 @@ sft/logs*
 cli/.mypy_cache/
 cli/.pytest_cache/
 cli/.ruff_cache/
+cli/.bin/
+cli/.tools/
