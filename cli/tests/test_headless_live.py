@@ -84,5 +84,6 @@ class TestHeadlessLive(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, msg=combined_output)
         self.assertIn("Agent: claude", combined_output)
 
+
 if __name__ == "__main__":
     unittest.main()

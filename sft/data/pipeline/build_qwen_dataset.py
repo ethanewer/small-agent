@@ -298,7 +298,9 @@ def _canonicalize_tools_field(tools: Any) -> tuple[Optional[str], Optional[str]]
         return None, "invalid_tools_payload"
 
 
-def _canonicalize_tool_content(content: Any, role: str) -> tuple[Optional[str], Optional[str]]:
+def _canonicalize_tool_content(
+    content: Any, role: str
+) -> tuple[Optional[str], Optional[str]]:
     payload: Any = content
     if isinstance(content, str):
         try:
@@ -395,8 +397,12 @@ def _summarize_agent_row_changes(
     before_tools: Any,
     after_tools: Any,
 ) -> Optional[dict[str, Any]]:
-    before_roles = [str(m.get("role", "")) for m in before_messages if isinstance(m, dict)]
-    after_roles = [str(m.get("role", "")) for m in after_messages if isinstance(m, dict)]
+    before_roles = [
+        str(m.get("role", "")) for m in before_messages if isinstance(m, dict)
+    ]
+    after_roles = [
+        str(m.get("role", "")) for m in after_messages if isinstance(m, dict)
+    ]
     role_changed = before_roles != after_roles
     message_count_changed = len(before_messages) != len(after_messages)
     tool_field_changed = before_tools != after_tools
@@ -846,7 +852,9 @@ def validate_agent_jsonl(path: Path) -> dict[str, Any]:
         if not isinstance(messages, list):
             raise ValueError(f"Invalid messages field in {path}: row={checked_rows}")
         if not any(
-            m.get("role") in {"tool", "tool_response", "tool_call"} for m in messages if isinstance(m, dict)
+            m.get("role") in {"tool", "tool_response", "tool_call"}
+            for m in messages
+            if isinstance(m, dict)
         ):
             continue
         agent_rows += 1
@@ -867,9 +875,7 @@ def _row_signature(row: dict[str, Any]) -> str:
     return hashlib.sha1(orjson.dumps(payload, option=orjson.OPT_SORT_KEYS)).hexdigest()
 
 
-def diff_jsonl_by_row_id(
-    old_path: Optional[Path], new_path: Path
-) -> dict[str, Any]:
+def diff_jsonl_by_row_id(old_path: Optional[Path], new_path: Path) -> dict[str, Any]:
     old_rows: dict[str, str] = {}
     if old_path is not None and old_path.exists():
         for row in iter_rows_from_jsonl(old_path):
@@ -913,7 +919,9 @@ def build_additional(
     previous_jsonl = output_dir / "dataset_shuffled.jsonl"
     previous_jsonl_backup: Optional[Path] = None
     if previous_jsonl.exists():
-        previous_jsonl_backup = output_dir.parent / f".{output_dir.name}.previous.dataset_shuffled.jsonl"
+        previous_jsonl_backup = (
+            output_dir.parent / f".{output_dir.name}.previous.dataset_shuffled.jsonl"
+        )
         shutil.copy2(previous_jsonl, previous_jsonl_backup)
     if output_dir.exists():
         shutil.rmtree(output_dir)
@@ -944,7 +952,9 @@ def build_additional(
             },
         )
 
-    def on_row_changed(spec: DatasetSpec, row_id: str, change_summary: dict[str, Any]) -> None:
+    def on_row_changed(
+        spec: DatasetSpec, row_id: str, change_summary: dict[str, Any]
+    ) -> None:
         append_jsonl(
             changed_rows_log,
             {
@@ -990,7 +1000,9 @@ def build_additional(
 
     preflight_summary = validate_agent_jsonl(shuffled_jsonl)
     rebuild_diff = diff_jsonl_by_row_id(
-        old_path=previous_jsonl_backup if previous_jsonl_backup and previous_jsonl_backup.exists() else None,
+        old_path=previous_jsonl_backup
+        if previous_jsonl_backup and previous_jsonl_backup.exists()
+        else None,
         new_path=shuffled_jsonl,
     )
     if previous_jsonl_backup is not None and previous_jsonl_backup.exists():
@@ -1053,7 +1065,9 @@ def build_extended_full(
     previous_jsonl = output_dir / "dataset_shuffled.jsonl"
     previous_jsonl_backup: Optional[Path] = None
     if previous_jsonl.exists():
-        previous_jsonl_backup = output_dir.parent / f".{output_dir.name}.previous.dataset_shuffled.jsonl"
+        previous_jsonl_backup = (
+            output_dir.parent / f".{output_dir.name}.previous.dataset_shuffled.jsonl"
+        )
         shutil.copy2(previous_jsonl, previous_jsonl_backup)
     if output_dir.exists():
         shutil.rmtree(output_dir)
@@ -1078,7 +1092,9 @@ def build_extended_full(
 
     preflight_summary = validate_agent_jsonl(shuffled_jsonl)
     rebuild_diff = diff_jsonl_by_row_id(
-        old_path=previous_jsonl_backup if previous_jsonl_backup and previous_jsonl_backup.exists() else None,
+        old_path=previous_jsonl_backup
+        if previous_jsonl_backup and previous_jsonl_backup.exists()
+        else None,
         new_path=shuffled_jsonl,
     )
     if previous_jsonl_backup is not None and previous_jsonl_backup.exists():
