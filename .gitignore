@@ -29,3 +29,7 @@ cli/.pytest_cache/
 cli/.ruff_cache/
 cli/.bin/
 cli/.tools/
+
+# Generated harness reports
+cli/agents/toolmind_harness/alignment_report*.md
+cli/agents/toolmind_harness/reverse_engineering_notes.md
