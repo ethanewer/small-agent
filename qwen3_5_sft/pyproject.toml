@@ -1,0 +1,11 @@
+[project]
+name = "qwen3-5-sft"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "torch>=2.10.0",
+    "transformers>=5.2.0",
+    "trl>=0.29.0",
+]
