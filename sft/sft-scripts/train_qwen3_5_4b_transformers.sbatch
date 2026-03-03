@@ -1,20 +1,5 @@
 #!/bin/bash
 
-# Usage:
-#   cd sft
-#   sbatch --export=ALL,DATASET_PATH=/workspace/run/data/my_dataset/train.jsonl \
-#     sft-scripts/train_qwen3_5_4b_transformers.sbatch
-#
-# Optional overrides:
-#   MODEL_DIR (default: /workspace/run/checkpoints/Qwen3.5-4B)
-#   NPROC_PER_NODE (default: 8)
-#   MAX_LENGTH (default: 32768)
-#   OUTPUT_BASE (default: /workspace/run/outputs-20260303)
-#
-# Default token budget with MAX_LENGTH=32768:
-#   per_device_train_batch_size(1) * grad_accum(1) * world_size(32) * max_length(32768)
-#   = 1,048,576
-
 #SBATCH -J qwen35-4b-sft
 #SBATCH -p h200
 #SBATCH -N 4
@@ -55,16 +40,18 @@ OUTPUT_DIR="${OUTPUT_BASE}/${RUN_ID}"
 
 NPROC_PER_NODE="8"
 WORLD_SIZE="$((NNODES * NPROC_PER_NODE))"
-MAX_STEPS="10000"
+MAX_STEPS="20000"
 LEARNING_RATE="2e-7"
 WARMUP_RATIO="0.05"
 GROUP_BY_LENGTH="true"
-MODEL_TYPE="${MODEL_TYPE:-qwen3_nothinking}"
-TEMPLATE="${TEMPLATE:-qwen3_nothinking}"
+MODEL_TYPE="${MODEL_TYPE:-qwen3}"
+TEMPLATE="${TEMPLATE:-qwen3}"
 
-PER_DEVICE_TRAIN_BATCH_SIZE="${PER_DEVICE_TRAIN_BATCH_SIZE:-4}"
+PER_DEVICE_TRAIN_BATCH_SIZE="${PER_DEVICE_TRAIN_BATCH_SIZE:-1}"
 GRADIENT_ACCUMULATION_STEPS="${GRADIENT_ACCUMULATION_STEPS:-1}"
 MAX_LENGTH="${MAX_LENGTH:-32768}"
+PADDING_FREE="${PADDING_FREE:-true}"
+ATTN_IMPL="${ATTN_IMPL:-flash_attention_2}"
 TOKENS_PER_BATCH="$((PER_DEVICE_TRAIN_BATCH_SIZE * GRADIENT_ACCUMULATION_STEPS * WORLD_SIZE * MAX_LENGTH))"
 
 export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
@@ -74,7 +61,7 @@ export MODEL_DIR DATASET_PATH OUTPUT_BASE RUN_ID OUTPUT_DIR
 export MASTER_PORT MASTER_ADDR NNODES
 export CONTAINER_WORKDIR
 export PER_DEVICE_TRAIN_BATCH_SIZE GRADIENT_ACCUMULATION_STEPS MAX_LENGTH TOKENS_PER_BATCH
-export MAX_STEPS LEARNING_RATE WARMUP_RATIO GROUP_BY_LENGTH MODEL_TYPE TEMPLATE
+export MAX_STEPS LEARNING_RATE WARMUP_RATIO GROUP_BY_LENGTH PADDING_FREE ATTN_IMPL MODEL_TYPE TEMPLATE
 
 echo "[train] run root: ${RUN_ROOT}"
 echo "[train] run id: ${RUN_ID}"
@@ -90,6 +77,8 @@ echo "[train] max_steps: ${MAX_STEPS}"
 echo "[train] learning_rate: ${LEARNING_RATE}"
 echo "[train] warmup_ratio: ${WARMUP_RATIO}"
 echo "[train] group_by_length: ${GROUP_BY_LENGTH}"
+echo "[train] padding_free: ${PADDING_FREE}"
+echo "[train] attn_impl: ${ATTN_IMPL}"
 echo "[train] model_type: ${MODEL_TYPE}"
 echo "[train] template: ${TEMPLATE}"
 
@@ -133,13 +122,29 @@ srun --mpi=pmix \
 
     python -c "import torch; print(f\"[preflight] torch={torch.__version__}, ngpu={torch.cuda.device_count()}\")"
 
-    # Qwen3.5 uses model_type=qwen3_5, which needs recent Transformers support.
+    # Qwen3.5 config requires bleeding-edge Transformers model registry.
     if ! python -c "from transformers import AutoConfig; AutoConfig.from_pretrained(\"${MODEL_DIR}\", trust_remote_code=True)" >/dev/null 2>&1; then
       echo "[preflight] upgrading transformers/peft for qwen3_5 support"
       python -m pip install -U "transformers @ git+https://github.com/huggingface/transformers.git"
       python -m pip install -U "peft @ git+https://github.com/huggingface/peft.git"
       python -c "from transformers import AutoConfig; AutoConfig.from_pretrained(\"${MODEL_DIR}\", trust_remote_code=True); print(\"[preflight] transformers supports qwen3_5\")"
     fi
+
+    cat > "${CONTAINER_WORKDIR}/swift_sft_entry.py" <<'"'"'PY'"'"'
+import sys
+from transformers import TrainingArguments, Seq2SeqTrainingArguments
+
+# transformers main removed past_index; ms-swift trainer still references it.
+if not hasattr(TrainingArguments, "past_index"):
+    TrainingArguments.past_index = -1
+if not hasattr(Seq2SeqTrainingArguments, "past_index"):
+    Seq2SeqTrainingArguments.past_index = -1
+
+from swift.llm.train.sft import sft_main
+
+if __name__ == "__main__":
+    sft_main()
+PY
 
     if [[ "${SLURM_LOCALID}" == "0" ]]; then
       python -m torch.distributed.run \
@@ -148,7 +153,7 @@ srun --mpi=pmix \
           --node_rank "${SLURM_NODEID}" \
           --master_addr "${MASTER_ADDR}" \
           --master_port "${MASTER_PORT}" \
-          /usr/local/lib/python3.11/site-packages/swift/cli/sft.py \
+          "${CONTAINER_WORKDIR}/swift_sft_entry.py" \
           --model_type "${MODEL_TYPE}" \
           --template "${TEMPLATE}" \
           --model "${MODEL_DIR}" \
@@ -169,6 +174,8 @@ srun --mpi=pmix \
           --logging_steps 5 \
           --max_length "${MAX_LENGTH}" \
           --warmup_ratio "${WARMUP_RATIO}" \
+          --padding_free "${PADDING_FREE}" \
+          --attn_impl "${ATTN_IMPL}" \
           --dataset_num_proc "${DATASET_NUM_PROC:-4}" \
           --dataloader_num_workers "${DATALOADER_NUM_WORKERS:-4}" \
           --deepspeed "${DEEPSPEED_STAGE:-zero3}"
