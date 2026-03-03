@@ -29,3 +29,4 @@ cli/.pytest_cache/
 cli/.ruff_cache/
 cli/.bin/
 cli/.tools/
+log*
