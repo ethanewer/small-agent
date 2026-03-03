@@ -3,7 +3,7 @@ import torch
 from transformers import Qwen3_5ForCausalLM, AutoTokenizer
 from trl.trainer.sft_config import SFTConfig
 from trl.trainer.sft_trainer import SFTTrainer
-from datasets import load_dataset
+from datasets import load_from_disk, Dataset
 
 
 DATA_PATH = "/wbl-fast/usrs/ethan/small-agent/sft/data/balanced-dataset/dataset"
@@ -22,10 +22,8 @@ tokenizer = AutoTokenizer.from_pretrained(
 if tokenizer.pad_token is None:
     tokenizer.pad_token = tokenizer.eos_token
 
-dataset = load_dataset(
-    path=DATA_PATH,
-    split="train",
-)
+dataset = load_from_disk(DATA_PATH)["train"]
+assert isinstance(dataset, Dataset)
 
 
 def _apply_chat_template(example: dict) -> dict:
