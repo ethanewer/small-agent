@@ -5,17 +5,7 @@
     "terminus-2": {
       "final_message": false
     },
-    "qwen": {},
-    "claude": {},
-    "toolmind-harness": {
-      "strict_protocol": true,
-      "min_tool_turns": 8,
-      "repair_attempts": 3,
-      "request_reasoning": true,
-      "internal_protocol_retry": true,
-      "max_internal_protocol_retries": 2,
-      "record_protocol_repairs": false
-    }
+    "qwen": {}
   },
   "models": {
     "qwen3-coder-next": {
@@ -66,5 +56,10 @@
   },
   "verbosity": 0,
   "max_turns": 50,
-  "max_wait_seconds": 60
+  "max_wait_seconds": 60,
+  "benchmark": {
+    "runtime_mode": "interactive",
+    "event_log_format": "jsonl",
+    "artifact_dir": "benchmark-artifacts"
+  }
 }

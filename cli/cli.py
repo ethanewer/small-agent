@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import json
 import os
 from pathlib import Path
@@ -10,7 +10,12 @@ import subprocess
 import sys
 from typing import Any
 
-from agents.interface import AgentModelConfig, AgentRuntimeConfig
+from agents.core.task import Task
+from agents.interface import (
+    AgentModelConfig,
+    AgentRuntimeConfig,
+    run_agent_task_with_fallback,
+)
 from agents.registry import available_agents, get_agent
 from rich.console import Console
 from rich.panel import Panel
@@ -37,6 +42,7 @@ class LoadedConfig:
     verbosity: int
     max_turns: int
     max_wait_seconds: float
+    benchmark: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -217,6 +223,7 @@ def load_config(path: Path) -> LoadedConfig:
         verbosity=int(data.get("verbosity", 1)),
         max_turns=int(data.get("max_turns", 50)),
         max_wait_seconds=float(data.get("max_wait_seconds", 60.0)),
+        benchmark=dict(data.get("benchmark", {})),
     )
 
 
@@ -698,13 +705,15 @@ def main() -> None:
     )
 
     agent = get_agent(active_agent_key)
-    raise SystemExit(
-        agent.run(
-            instruction=instruction,
-            cfg=runtime_cfg,
-            console=console,
-        )
+    task = Task.from_instruction(instruction=instruction, task_id="cli-interactive")
+    result = run_agent_task_with_fallback(
+        agent=agent,
+        task=task,
+        cfg=runtime_cfg,
+        console=console,
+        sink=None,
     )
+    raise SystemExit(result.exit_code)
 
 
 if __name__ == "__main__":

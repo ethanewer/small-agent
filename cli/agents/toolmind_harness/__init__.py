@@ -1,1 +1,0 @@
-"""ToolMind harness agent implementation."""

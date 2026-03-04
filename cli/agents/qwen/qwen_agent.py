@@ -10,6 +10,10 @@ from typing import Any
 from rich.console import Console
 from rich.panel import Panel
 
+from agents.core.events import AgentEvent
+from agents.core.result import RunResult
+from agents.core.sink import EventSink
+from agents.core.task import Task
 from agents.interface import AgentRuntimeConfig
 from agents.local_binary import resolve_agent_binary
 from agents.openai_compat import (
@@ -52,6 +56,24 @@ def _qwen_actionable_error_message(
 
 class QwenHeadlessAgent:
     def run(self, instruction: str, cfg: AgentRuntimeConfig, console: Console) -> int:
+        result = self.run_task(
+            task=Task.from_instruction(instruction=instruction),
+            cfg=cfg,
+            console=console,
+            sink=None,
+        )
+        return result.exit_code
+
+    def run_task(
+        self,
+        *,
+        task: Task,
+        cfg: AgentRuntimeConfig,
+        console: Console | None = None,
+        sink: EventSink | None = None,
+    ) -> RunResult:
+        if console is None:
+            console = Console()
         options = cfg.agent_config
         binary = str(
             options.get("binary") or resolve_agent_binary(default_binary="qwen")
@@ -76,7 +98,25 @@ class QwenHeadlessAgent:
                     border_style="red",
                 )
             )
-            return 1
+            result = RunResult(
+                exit_code=1,
+                success=False,
+                task_id=task.task_id,
+                final_message=compatibility_error,
+            )
+            if sink:
+                sink.emit(
+                    event=AgentEvent(
+                        event_type="issue",
+                        payload={
+                            "kind": "compatibility",
+                            "message": compatibility_error,
+                        },
+                    )
+                )
+                sink.finalize(result=result)
+
+            return result
 
         settings: dict[str, Any] = {
             "selectedAuthType": "openai",
@@ -116,7 +156,7 @@ class QwenHeadlessAgent:
                 env["GEMINI_CLI_SYSTEM_SETTINGS_PATH"] = str(qwen_settings_path)
 
                 run_subprocess(
-                    args=[binary, "-p", instruction, "-y"],
+                    args=[binary, "-p", task.instruction, "-y"],
                     cwd=str(Path.cwd()),
                     env=env,
                     check=True,
@@ -129,7 +169,25 @@ class QwenHeadlessAgent:
                     border_style="red",
                 )
             )
-            return 1
+            result = RunResult(
+                exit_code=1,
+                success=False,
+                task_id=task.task_id,
+                final_message="qwen CLI not found",
+            )
+            if sink:
+                sink.emit(
+                    event=AgentEvent(
+                        event_type="issue",
+                        payload={
+                            "kind": "missing_binary",
+                            "message": "qwen CLI not found",
+                        },
+                    )
+                )
+                sink.finalize(result=result)
+
+            return result
         except subprocess.CalledProcessError as err:
             actionable_error = _qwen_actionable_error_message(
                 model=cfg.model.model,
@@ -143,12 +201,74 @@ class QwenHeadlessAgent:
                         border_style="red",
                     )
                 )
-                return 1
+                result = RunResult(
+                    exit_code=1,
+                    success=False,
+                    task_id=task.task_id,
+                    final_message=actionable_error,
+                )
+                if sink:
+                    sink.emit(
+                        event=AgentEvent(
+                            event_type="issue",
+                            payload={
+                                "kind": "compatibility",
+                                "message": actionable_error,
+                            },
+                        )
+                    )
+                    sink.finalize(result=result)
+
+                return result
 
             console.print(Panel(str(err), title="Agent Error", border_style="red"))
-            return 1
+            result = RunResult(
+                exit_code=1,
+                success=False,
+                task_id=task.task_id,
+                final_message=str(err),
+            )
+            if sink:
+                sink.emit(
+                    event=AgentEvent(
+                        event_type="issue",
+                        payload={"kind": "subprocess", "message": str(err)},
+                    )
+                )
+                sink.finalize(result=result)
+
+            return result
         except (ValueError, TypeError) as err:
             console.print(Panel(str(err), title="Agent Error", border_style="red"))
-            return 1
+            result = RunResult(
+                exit_code=1,
+                success=False,
+                task_id=task.task_id,
+                final_message=str(err),
+            )
+            if sink:
+                sink.emit(
+                    event=AgentEvent(
+                        event_type="issue",
+                        payload={"kind": "runtime", "message": str(err)},
+                    )
+                )
+                sink.finalize(result=result)
 
-        return 0
+            return result
+
+        result = RunResult(
+            exit_code=0,
+            success=True,
+            task_id=task.task_id,
+        )
+        if sink:
+            sink.emit(
+                event=AgentEvent(
+                    event_type="done",
+                    payload={"message": "qwen run completed"},
+                )
+            )
+            sink.finalize(result=result)
+
+        return result

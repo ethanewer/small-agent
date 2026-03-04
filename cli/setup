@@ -86,13 +86,9 @@ install_qwen_cli() {
   install_local_npm_cli "qwen" "@qwen-code/qwen-code"
 }
 
-install_claude_cli() {
-  install_local_npm_cli "claude" "@anthropic-ai/claude-code"
-}
-
 verify_clis() {
   local missing=0
-  for cmd in terminus2-cli qwen claude; do
+  for cmd in terminus2-cli qwen; do
     if [ -x "${LOCAL_BIN_DIR}/${cmd}" ]; then
       log "Found local CLI wrapper: ${LOCAL_BIN_DIR}/${cmd}"
     else
@@ -124,7 +120,6 @@ print_next_steps() {
 [setup] Quick checks:
   ${LOCAL_BIN_DIR}/terminus2-cli --help
   ${LOCAL_BIN_DIR}/qwen --help
-  ${LOCAL_BIN_DIR}/claude --help
 EOF
 }
 
@@ -133,7 +128,6 @@ main() {
   ensure_dirs
   install_terminus2_wrapper
   install_qwen_cli
-  install_claude_cli
   verify_clis
   print_next_steps
 }

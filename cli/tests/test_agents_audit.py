@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import tempfile
-import subprocess
 import unittest
 from pathlib import Path
 import sys
@@ -13,468 +12,126 @@ from rich.console import Console
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from agents.claude.claude_agent import ClaudeCodeAgent  # noqa: E402
-from agents.interface import AgentModelConfig, AgentRuntimeConfig  # noqa: E402
-from agents.openai_compat import (  # noqa: E402
-    detect_provider_kind,
-    preflight_agent_model_compatibility,
+from agents.core.events import AgentEvent  # noqa: E402
+from agents.core.result import RunResult  # noqa: E402
+from agents.core.sink import EventSink, JsonlEventSink  # noqa: E402
+from agents.core.task import Task  # noqa: E402
+from agents.interface import (  # noqa: E402
+    AgentModelConfig,
+    AgentRuntimeConfig,
+    run_agent_task_with_fallback,
 )
 from agents.qwen.qwen_agent import QwenHeadlessAgent  # noqa: E402
 from agents.registry import get_agent  # noqa: E402
 from agents.terminus2 import agent as terminus_agent  # noqa: E402
-from agents.toolmind_harness import harness  # noqa: E402
-from agents.toolmind_harness.agent import ToolmindAgent  # noqa: E402
 
 
-class _FakeResponse:
-    def __init__(self, text: str) -> None:
-        self._payload = text.encode("utf-8")
-
-    def read(self) -> bytes:
-        return self._payload
-
-    def __enter__(self) -> "_FakeResponse":
-        return self
-
-    def __exit__(self, exc_type, exc, tb) -> None:  # type: ignore[no-untyped-def]
-        del exc_type, exc, tb
-
-
-class _FakeClient:
-    def __init__(self, responses: list[harness.CompletionResult]) -> None:
-        self._responses = responses
-        self.calls = 0
-
-    def complete(self, messages, temperature=0.2, include_reasoning=True):  # type: ignore[no-untyped-def]
-        del messages, temperature, include_reasoning
-        idx = self.calls
-        self.calls += 1
-        return self._responses[idx]
-
-
-class _FakeTools:
+class _RecordingSink(EventSink):
     def __init__(self) -> None:
-        self.calls: list[harness.ToolCall] = []
+        self.events: list[AgentEvent] = []
+        self.result: RunResult | None = None
 
-    def execute(self, call: harness.ToolCall) -> dict[str, object]:
-        self.calls.append(call)
-        return {"success": True, "tool": f"{call.server_name}.{call.tool_name}"}
+    def emit(self, *, event: AgentEvent) -> None:
+        self.events.append(event)
 
-
-class TestToolmindAgentConfigCoercion(unittest.TestCase):
-    def test_run_coerces_string_booleans_and_preserves_zero_temperature(self) -> None:
-        runtime = AgentRuntimeConfig(
-            agent_key="toolmind-harness",
-            model=AgentModelConfig(
-                model="model-x",
-                api_base="https://example.invalid/v1",
-                api_key="k",
-                temperature=0.0,
-            ),
-            agent_config={
-                "strict_protocol": "false",
-                "allow_fallback_search": "true",
-                "force_think_tag": "false",
-                "request_reasoning": "false",
-                "internal_protocol_retry": "0",
-                "record_protocol_repairs": "1",
-            },
-        )
-        captured_kwargs: dict[str, object] = {}
-
-        def fake_run_harness(**kwargs):  # type: ignore[no-untyped-def]
-            captured_kwargs.update(kwargs)
-            return {"conversations": []}
-
-        with patch(
-            "agents.toolmind_harness.agent.run_harness", side_effect=fake_run_harness
-        ):
-            exit_code = ToolmindAgent().run(
-                instruction="test",
-                cfg=runtime,
-                console=Console(record=True),
-            )
-
-        self.assertEqual(exit_code, 0)
-        self.assertEqual(captured_kwargs["temperature"], 0.0)
-        self.assertFalse(captured_kwargs["strict_protocol"])
-        self.assertTrue(captured_kwargs["allow_fallback_search"])
-        self.assertFalse(captured_kwargs["force_think_tag"])
-        self.assertFalse(captured_kwargs["request_reasoning"])
-        self.assertFalse(captured_kwargs["internal_protocol_retry"])
-        self.assertTrue(captured_kwargs["record_protocol_repairs"])
-
-    def test_run_normalizes_openai_prefixed_model_for_openai_apis(self) -> None:
-        runtime = AgentRuntimeConfig(
-            agent_key="toolmind-harness",
-            model=AgentModelConfig(
-                model="openai/local-model",
-                api_base="http://127.0.0.1:1234/v1",
-                api_key="k",
-            ),
-            agent_config={},
-        )
-        captured_kwargs: dict[str, object] = {}
-
-        def fake_run_harness(**kwargs):  # type: ignore[no-untyped-def]
-            captured_kwargs.update(kwargs)
-            return {"conversations": []}
-
-        with patch(
-            "agents.toolmind_harness.agent.run_harness", side_effect=fake_run_harness
-        ):
-            exit_code = ToolmindAgent().run(
-                instruction="test",
-                cfg=runtime,
-                console=Console(record=True),
-            )
-
-        self.assertEqual(exit_code, 0)
-        self.assertEqual(captured_kwargs["model"], "local-model")
+    def finalize(self, *, result: RunResult) -> None:
+        self.result = result
 
 
-class TestRegistryAndParser(unittest.TestCase):
+class _LegacyOnlyAgent:
+    def __init__(self, *, exit_code: int) -> None:
+        self._exit_code = exit_code
+        self.calls: list[str] = []
+
+    def run(self, instruction: str, cfg: AgentRuntimeConfig, console: Console) -> int:
+        del cfg, console
+        self.calls.append(instruction)
+        return self._exit_code
+
+
+class TestRegistryAndCore(unittest.TestCase):
     def test_get_agent_unknown_lists_available_agents(self) -> None:
         with self.assertRaisesRegex(
             ValueError,
-            "Available agents: claude, qwen, terminus-2, toolmind-harness",
+            "Available agents: qwen, terminus-2",
         ):
             get_agent("missing-agent")
 
-    def test_mcp_parser_parse_all_parses_valid_and_fallback_arguments(self) -> None:
-        text = (
-            "<use_mcp_tool><server_name>tool-python</server_name>"
-            "<tool_name>run_command</tool_name>"
-            '<arguments>{"sandbox_id":"s1","command":"pwd"}</arguments></use_mcp_tool>'
-            "<use_mcp_tool><server_name>tool-python</server_name>"
-            "<tool_name>run_python_code</tool_name>"
-            "<arguments>{invalid json</arguments></use_mcp_tool>"
-        )
-        calls = harness.MCPParser.parse_all(text)
-        self.assertEqual(len(calls), 2)
-        self.assertEqual(calls[0].arguments["sandbox_id"], "s1")
-        self.assertIn("_raw_arguments", calls[1].arguments)
-
-
-class TestOpenAiCompat(unittest.TestCase):
-    def test_detect_provider_kind_distinguishes_openrouter_and_local(self) -> None:
-        self.assertEqual(
-            detect_provider_kind(api_base="https://openrouter.ai/api/v1"),
-            "openrouter",
-        )
-        self.assertEqual(
-            detect_provider_kind(api_base="http://127.0.0.1:1234/v1"),
-            "openai_compatible_local",
-        )
-
-    def test_preflight_keeps_qwen_model_checks_runtime_based(self) -> None:
-        message = preflight_agent_model_compatibility(
-            agent_key="qwen",
-            model="gpt-5.3-codex",
-            api_base="https://api.openai.com/v1",
-        )
-        self.assertIsNone(message)
-
-
-class TestToolExecutor(unittest.TestCase):
-    def test_google_search_requires_query(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            executor = harness.ToolExecutor(scratch_dir=Path(temp_dir))
-            result = executor.execute(
-                harness.ToolCall(
-                    server_name="search_and_scrape_webpage",
-                    tool_name="google_search",
-                    arguments={},
+    def test_jsonl_sink_writes_events_and_result(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = Path(tmp_dir) / "events.jsonl"
+            sink = JsonlEventSink(output_path=path)
+            sink.emit(
+                event=AgentEvent(
+                    event_type="issue",
+                    payload={"kind": "parser", "message": "bad json"},
+                    turn=2,
                 )
             )
-        self.assertFalse(result["success"])
-        self.assertIn("Missing required argument 'q'", result["error"])
-
-    def test_google_search_fallback_scrapes_ddg_when_enabled(self) -> None:
-        html = '<a class="result__a" href="https://example.com">Example Result</a>'
-        with tempfile.TemporaryDirectory() as temp_dir:
-            executor = harness.ToolExecutor(
-                scratch_dir=Path(temp_dir),
-                allow_fallback_search=True,
-            )
-            with patch("urllib.request.urlopen", return_value=_FakeResponse(html)):
-                result = executor.execute(
-                    harness.ToolCall(
-                        server_name="search_and_scrape_webpage",
-                        tool_name="google_search",
-                        arguments={"q": "example"},
-                    )
+            sink.finalize(
+                result=RunResult(
+                    exit_code=0,
+                    success=True,
+                    task_id="t-1",
                 )
-        self.assertTrue(result["success"])
-        self.assertEqual(result["results"][0]["title"], "Example Result")
-
-    def test_scrape_and_extract_prefixes_target_without_extractor_model(self) -> None:
-        body = "First line\n" + (
-            "A useful sentence with enough characters to include.\n" * 2
-        )
-        with tempfile.TemporaryDirectory() as temp_dir:
-            executor = harness.ToolExecutor(scratch_dir=Path(temp_dir))
-            with patch("urllib.request.urlopen", return_value=_FakeResponse(body)):
-                result = executor.execute(
-                    harness.ToolCall(
-                        server_name="jina_scrape_llm_summary",
-                        tool_name="scrape_and_extract_info",
-                        arguments={
-                            "url": "https://example.com",
-                            "info_to_extract": "founding year",
-                        },
-                    )
-                )
-        self.assertTrue(result["success"])
-        self.assertIn(
-            "Requested extraction target: founding year", result["extracted_info"]
-        )
-
-
-class TestHeadlessAgents(unittest.TestCase):
-    def test_qwen_headless_builds_expected_env_and_args(self) -> None:
-        runtime = AgentRuntimeConfig(
-            agent_key="qwen",
-            model=AgentModelConfig(
-                model="qwen/qwen3.5-35b-a3b",
-                api_base="https://openrouter.ai/api/v1",
-                api_key="test-key",
-                temperature=0.0,
-            ),
-            agent_config={
-                "binary": "qwen-custom",
-                "token_limit": 4096,
-                "sampling_params": {"temperature": 0.1},
-                "mcp_servers": {
-                    "tool-python": {
-                        "command": "python3",
-                        "args": ["mcp.py"],
-                        "cwd": "/tmp",
-                        "env": {},
-                        "timeout": 30,
-                    }
-                },
-                "env": {"CUSTOM_ENV": "1"},
-            },
-        )
-        captured: dict[str, object] = {}
-
-        def fake_run_subprocess(**kwargs):  # type: ignore[no-untyped-def]
-            captured.update(kwargs)
-            return 0
-
-        with patch(
-            "agents.qwen.qwen_agent.run_subprocess",
-            side_effect=fake_run_subprocess,
-        ):
-            code = QwenHeadlessAgent().run(
-                instruction="do a quick check",
-                cfg=runtime,
-                console=Console(record=True),
             )
+            text = path.read_text(encoding="utf-8")
+            self.assertIn('"event_type": "issue"', text)
+            self.assertIn('"event_type": "result"', text)
 
-        self.assertEqual(code, 0)
-        self.assertEqual(
-            captured["args"],
-            ["qwen-custom", "-p", "do a quick check", "-y"],
-        )
-        env = cast(dict[str, str], captured["env"])
-        self.assertEqual(env["OPENAI_MODEL"], "qwen/qwen3.5-35b-a3b")
-        self.assertEqual(env["OPENAI_BASE_URL"], "https://openrouter.ai/api/v1")
-        self.assertEqual(env["OPENAI_API_BASE"], "https://openrouter.ai/api/v1")
-        self.assertEqual(env["OPENAI_API_KEY"], "test-key")
-        self.assertEqual(env["CUSTOM_ENV"], "1")
-        self.assertTrue(env["QWEN_CODE_SYSTEM_SETTINGS_PATH"].endswith(".json"))
-        self.assertTrue(env["GEMINI_CLI_SYSTEM_SETTINGS_PATH"].endswith(".json"))
-        self.assertNotEqual(env["HOME"], str(Path.cwd()))
-        self.assertTrue(env["XDG_CONFIG_HOME"].startswith(env["HOME"]))
 
-    def test_claude_builds_expected_env_and_args(self) -> None:
-        runtime = AgentRuntimeConfig(
-            agent_key="claude",
+class TestFallbackRunnerContracts(unittest.TestCase):
+    def _runtime_cfg(self) -> AgentRuntimeConfig:
+        return AgentRuntimeConfig(
+            agent_key="terminus-2",
             model=AgentModelConfig(
-                model="claude-sonnet-4-6",
-                api_base="https://openrouter.ai/api/v1",
-                api_key="test-key",
-                temperature=0.0,
-            ),
-            agent_config={
-                "binary": "claude-custom",
-                "output_format": "json",
-                "skip_permissions": True,
-                "pass_model_arg": True,
-                "isolate_home": True,
-                "allowed_tools": ["Bash(ls:*)"],
-                "env": {"CUSTOM_ENV": "1"},
-            },
-        )
-        captured: dict[str, object] = {}
-
-        def fake_run_subprocess(**kwargs):  # type: ignore[no-untyped-def]
-            captured.update(kwargs)
-            return 0
-
-        with patch(
-            "agents.claude.claude_agent.run_subprocess",
-            side_effect=fake_run_subprocess,
-        ):
-            code = ClaudeCodeAgent().run(
-                instruction="do a quick check",
-                cfg=runtime,
-                console=Console(record=True),
-            )
-
-        self.assertEqual(code, 0)
-        args = cast(list[str], captured["args"])
-        self.assertEqual(args[0], "claude-custom")
-        self.assertIn("--model", args)
-        model_idx = args.index("--model")
-        self.assertEqual(args[model_idx + 1], "claude-sonnet-4-6")
-        self.assertIn("--dangerously-skip-permissions", args)
-        self.assertIn("--allowedTools", args)
-        env = cast(dict[str, str], captured["env"])
-        self.assertEqual(env["OPENAI_MODEL"], "claude-sonnet-4-6")
-        self.assertEqual(env["OPENAI_BASE_URL"], "https://openrouter.ai/api/v1")
-        self.assertEqual(env["OPENAI_API_BASE"], "https://openrouter.ai/api/v1")
-        self.assertEqual(env["OPENAI_API_KEY"], "test-key")
-        self.assertEqual(env["ANTHROPIC_AUTH_TOKEN"], "test-key")
-        self.assertEqual(env["ANTHROPIC_MODEL"], "claude-sonnet-4-6")
-        self.assertEqual(env["ANTHROPIC_API_KEY"], "test-key")
-        self.assertEqual(env["ANTHROPIC_BASE_URL"], "https://openrouter.ai/api/v1")
-        self.assertEqual(env["CUSTOM_ENV"], "1")
-        self.assertNotEqual(env["HOME"], str(Path.cwd()))
-
-    def test_claude_can_disable_model_arg_and_home_isolation(self) -> None:
-        runtime = AgentRuntimeConfig(
-            agent_key="claude",
-            model=AgentModelConfig(
-                model="qwen/qwen3.5-35b-a3b",
+                model="qwen/qwen3-coder-next",
                 api_base="https://openrouter.ai/api/v1",
                 api_key="test-key",
             ),
-            agent_config={
-                "binary": "claude-custom",
-                "pass_model_arg": False,
-                "isolate_home": False,
-            },
+            agent_config={"final_message": False},
         )
-        captured: dict[str, object] = {}
 
-        def fake_run_subprocess(**kwargs):  # type: ignore[no-untyped-def]
-            captured.update(kwargs)
-            return 0
-
-        with patch(
-            "agents.claude.claude_agent.run_subprocess",
-            side_effect=fake_run_subprocess,
-        ):
-            code = ClaudeCodeAgent().run(
-                instruction="do a quick check",
+    def test_fallback_uses_run_task_when_available(self) -> None:
+        runtime = self._runtime_cfg()
+        task = Task.from_instruction(instruction="echo hi", task_id="task-1")
+        with patch("agents.terminus2.agent.run_agent", return_value=0):
+            result = run_agent_task_with_fallback(
+                agent=get_agent("terminus-2"),
+                task=task,
                 cfg=runtime,
                 console=Console(record=True),
             )
-        self.assertEqual(code, 0)
-        args = cast(list[str], captured["args"])
-        self.assertNotIn("--model", args)
-        env = cast(dict[str, str], captured["env"])
-        self.assertEqual(env["ANTHROPIC_MODEL"], "qwen/qwen3.5-35b-a3b")
-        self.assertEqual(env["ANTHROPIC_AUTH_TOKEN"], "test-key")
-        self.assertNotIn("XDG_CONFIG_HOME", env)
+        self.assertEqual(result.exit_code, 0)
+        self.assertEqual(result.task_id, "task-1")
 
-    def test_headless_agents_normalize_openai_prefixed_model(self) -> None:
+    def test_fallback_uses_legacy_run_when_no_run_task(self) -> None:
+        runtime = self._runtime_cfg()
+        task = Task.from_instruction(instruction="legacy call", task_id="legacy-1")
+        agent = _LegacyOnlyAgent(exit_code=2)
+        result = run_agent_task_with_fallback(
+            agent=agent,  # type: ignore[arg-type]
+            task=task,
+            cfg=runtime,
+            console=Console(record=True),
+        )
+        self.assertEqual(agent.calls, ["legacy call"])
+        self.assertEqual(result.exit_code, 2)
+        self.assertFalse(result.success)
+        self.assertEqual(result.task_id, "legacy-1")
+
+
+class TestQwenAndTerminusTaskAPI(unittest.TestCase):
+    def test_qwen_task_path_uses_task_instruction(self) -> None:
         runtime = AgentRuntimeConfig(
             agent_key="qwen",
             model=AgentModelConfig(
-                model="openai/local-model",
-                api_base="http://127.0.0.1:1234/v1",
+                model="qwen/qwen3-coder-next",
+                api_base="https://openrouter.ai/api/v1",
                 api_key="test-key",
-            ),
-        )
-        qwen_captured: dict[str, object] = {}
-
-        with patch(
-            "agents.qwen.qwen_agent.run_subprocess",
-            side_effect=lambda **kwargs: qwen_captured.update(kwargs) or 0,
-        ):
-            self.assertEqual(
-                QwenHeadlessAgent().run(
-                    instruction="test",
-                    cfg=runtime,
-                    console=Console(record=True),
-                ),
-                0,
-            )
-
-        self.assertEqual(
-            cast(dict[str, str], qwen_captured["env"])["OPENAI_MODEL"],
-            "local-model",
-        )
-
-    def test_new_agent_error_paths_return_nonzero(self) -> None:
-        runtime = AgentRuntimeConfig(
-            agent_key="claude",
-            model=AgentModelConfig(
-                model="claude-sonnet-4-6",
-                api_base="https://example.invalid/v1",
-                api_key="k",
-            ),
-        )
-        console = Console(record=True)
-        with patch(
-            "agents.claude.claude_agent.run_subprocess",
-            side_effect=FileNotFoundError(),
-        ):
-            code = ClaudeCodeAgent().run(
-                instruction="test",
-                cfg=runtime,
-                console=console,
-            )
-        self.assertEqual(code, 1)
-        self.assertIn("claude CLI not found", console.export_text())
-
-    def test_qwen_reports_actionable_chat_compat_error_for_non_chat_model(self) -> None:
-        runtime = AgentRuntimeConfig(
-            agent_key="qwen",
-            model=AgentModelConfig(
-                model="gpt-5.3-codex",
-                api_base="https://api.openai.com/v1",
-                api_key="k",
             ),
             agent_config={"binary": "qwen-custom"},
         )
-        console = Console(record=True)
-        with patch(
-            "agents.qwen.qwen_agent.run_subprocess",
-            side_effect=subprocess.CalledProcessError(
-                returncode=1,
-                cmd=["qwen-custom", "-p", "test", "-y"],
-                stderr=(
-                    "This is not a chat model and thus not supported in the v1/chat/"
-                    "completions endpoint. Did you mean to use v1/completions?"
-                ),
-            ),
-        ) as run_mock:
-            code = QwenHeadlessAgent().run(
-                instruction="test",
-                cfg=runtime,
-                console=console,
-            )
-        self.assertEqual(code, 1)
-        run_mock.assert_called_once()
-        output = console.export_text()
-        self.assertIn("Qwen Code cannot use model 'gpt-5.3-codex'", output)
-        self.assertIn("terminus-2", output)
-
-    def test_claude_accepts_non_claude_model_for_openrouter_proxy(self) -> None:
-        runtime = AgentRuntimeConfig(
-            agent_key="claude",
-            model=AgentModelConfig(
-                model="qwen/qwen3.5-35b-a3b",
-                api_base="https://openrouter.ai/api/v1",
-                api_key="k",
-            ),
-            agent_config={"binary": "claude-custom"},
-        )
         captured: dict[str, object] = {}
 
         def fake_run_subprocess(**kwargs):  # type: ignore[no-untyped-def]
@@ -482,203 +139,219 @@ class TestHeadlessAgents(unittest.TestCase):
             return 0
 
         with patch(
-            "agents.claude.claude_agent.run_subprocess",
+            "agents.qwen.qwen_agent.run_subprocess",
             side_effect=fake_run_subprocess,
         ):
-            code = ClaudeCodeAgent().run(
-                instruction="test",
+            result = QwenHeadlessAgent().run_task(
+                task=Task.from_instruction(
+                    instruction="echo from task",
+                    task_id="task-123",
+                ),
                 cfg=runtime,
                 console=Console(record=True),
+                sink=None,
             )
-        self.assertEqual(code, 0)
-        env = cast(dict[str, str], captured["env"])
-        self.assertEqual(env["ANTHROPIC_MODEL"], "qwen/qwen3.5-35b-a3b")
-        self.assertEqual(env["ANTHROPIC_AUTH_TOKEN"], "k")
-
-    def test_claude_surfaces_actionable_message_on_subprocess_failure(self) -> None:
-        runtime = AgentRuntimeConfig(
-            agent_key="claude",
-            model=AgentModelConfig(
-                model="gpt-5.3-codex",
-                api_base="https://api.openai.com/v1",
-                api_key="k",
-            ),
-            agent_config={
-                "pass_model_arg": True,
-                "isolate_home": False,
-            },
-        )
-        console = Console(record=True)
-        with patch(
-            "agents.claude.claude_agent.run_subprocess",
-            side_effect=subprocess.CalledProcessError(2, ["claude"]),
-        ):
-            code = ClaudeCodeAgent().run(
-                instruction="test",
-                cfg=runtime,
-                console=console,
-            )
-        self.assertEqual(code, 1)
-        output = console.export_text()
-        self.assertIn("claude CLI exited with status 2", output)
-        self.assertIn("agents.claude.pass_model_arg", output)
-        self.assertIn("agents.claude.isolate_home", output)
-
-
-class TestHarnessLoop(unittest.TestCase):
-    def test_run_harness_returns_done_without_tool_when_not_strict(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            output_path = Path(temp_dir) / "traj.json"
-            fake_client = _FakeClient(
-                responses=[
-                    harness.CompletionResult(
-                        content="Final answer without tools.",
-                        reasoning="",
-                    )
-                ]
-            )
-            with (
-                patch(
-                    "agents.toolmind_harness.harness.OpenAIChatClient",
-                    return_value=fake_client,
-                ),
-                patch(
-                    "agents.toolmind_harness.harness.ToolExecutor",
-                    return_value=_FakeTools(),
-                ),
-            ):
-                row = harness.run_harness(
-                    question="q",
-                    model="m",
-                    output_path=output_path,
-                    key="k",
-                    row_id="id",
-                    max_assistant_turns=3,
-                    temperature=0.1,
-                    strict_protocol=False,
-                    min_tool_turns=1,
-                    repair_attempts=0,
-                    allow_fallback_search=False,
-                    force_think_tag=False,
-                    request_reasoning=False,
-                    internal_protocol_retry=False,
-                    max_internal_protocol_retries=0,
-                    record_protocol_repairs=False,
-                    api_key="x",
-                    api_base="https://example.invalid/v1",
-                )
-        self.assertEqual(row["conversations"][-1]["role"], "assistant")
-        self.assertIn(
-            "Final answer without tools.", row["conversations"][-1]["content"]
-        )
-
-    def test_run_harness_records_missing_tool_protocol_repair(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            output_path = Path(temp_dir) / "traj.json"
-            fake_client = _FakeClient(
-                responses=[
-                    harness.CompletionResult(
-                        content="No tool call here.",
-                        reasoning="",
-                    )
-                ]
-            )
-            issues: list[tuple[str, str]] = []
-            callbacks = harness.HarnessCallbacks(
-                on_issue=lambda kind, msg: issues.append((kind, msg))
-            )
-            with (
-                patch(
-                    "agents.toolmind_harness.harness.OpenAIChatClient",
-                    return_value=fake_client,
-                ),
-                patch(
-                    "agents.toolmind_harness.harness.ToolExecutor",
-                    return_value=_FakeTools(),
-                ),
-            ):
-                row = harness.run_harness(
-                    question="q",
-                    model="m",
-                    output_path=output_path,
-                    key="k",
-                    row_id="id",
-                    max_assistant_turns=1,
-                    temperature=0.1,
-                    strict_protocol=True,
-                    min_tool_turns=1,
-                    repair_attempts=0,
-                    allow_fallback_search=False,
-                    force_think_tag=False,
-                    request_reasoning=False,
-                    internal_protocol_retry=False,
-                    max_internal_protocol_retries=0,
-                    record_protocol_repairs=True,
-                    api_key="x",
-                    api_base="https://example.invalid/v1",
-                    callbacks=callbacks,
-                )
-        self.assertEqual(issues[0][0], "protocol")
+        self.assertTrue(result.success)
+        self.assertEqual(result.task_id, "task-123")
         self.assertEqual(
-            row["conversations"][-1]["content"], harness.REPAIR_MSG_MISSING_TOOL
+            cast(list[str], captured["args"]),
+            ["qwen-custom", "-p", "echo from task", "-y"],
         )
 
+    def test_qwen_returns_error_when_binary_missing(self) -> None:
+        runtime = AgentRuntimeConfig(
+            agent_key="qwen",
+            model=AgentModelConfig(
+                model="qwen/qwen3-coder-next",
+                api_base="https://openrouter.ai/api/v1",
+                api_key="test-key",
+            ),
+            agent_config={"binary": "qwen-custom"},
+        )
+        with patch(
+            "agents.qwen.qwen_agent.run_subprocess",
+            side_effect=FileNotFoundError(),
+        ):
+            result = QwenHeadlessAgent().run_task(
+                task=Task.from_instruction(
+                    instruction="echo from task", task_id="task-404"
+                ),
+                cfg=runtime,
+                console=Console(record=True),
+                sink=None,
+            )
+        self.assertFalse(result.success)
+        self.assertEqual(result.exit_code, 1)
+        self.assertIn("not found", str(result.final_message))
 
-class TestTerminus2Agent(unittest.TestCase):
-    def test_run_builds_core_config_and_returns_run_agent_code(self) -> None:
+    def test_qwen_returns_error_on_called_process_error(self) -> None:
+        runtime = AgentRuntimeConfig(
+            agent_key="qwen",
+            model=AgentModelConfig(
+                model="qwen/qwen3-coder-next",
+                api_base="https://openrouter.ai/api/v1",
+                api_key="test-key",
+            ),
+            agent_config={"binary": "qwen-custom"},
+        )
+        with patch(
+            "agents.qwen.qwen_agent.run_subprocess",
+            side_effect=__import__("subprocess").CalledProcessError(
+                returncode=2,
+                cmd=["qwen-custom"],
+                stderr="boom",
+            ),
+        ):
+            result = QwenHeadlessAgent().run_task(
+                task=Task.from_instruction(
+                    instruction="echo from task", task_id="task-500"
+                ),
+                cfg=runtime,
+                console=Console(record=True),
+                sink=None,
+            )
+        self.assertFalse(result.success)
+        self.assertEqual(result.exit_code, 1)
+        self.assertIsNotNone(result.final_message)
+
+    def test_qwen_returns_compatibility_error_when_preflight_fails(self) -> None:
+        runtime = AgentRuntimeConfig(
+            agent_key="qwen",
+            model=AgentModelConfig(
+                model="qwen/qwen3-coder-next",
+                api_base="https://openrouter.ai/api/v1",
+                api_key="test-key",
+            ),
+        )
+        with patch(
+            "agents.qwen.qwen_agent.preflight_agent_model_compatibility",
+            return_value="compatibility mismatch",
+        ):
+            result = QwenHeadlessAgent().run_task(
+                task=Task.from_instruction(
+                    instruction="echo from task", task_id="task-compat"
+                ),
+                cfg=runtime,
+                console=Console(record=True),
+                sink=None,
+            )
+        self.assertFalse(result.success)
+        self.assertEqual(result.final_message, "compatibility mismatch")
+
+    def test_terminus_run_task_returns_run_result(self) -> None:
         runtime = AgentRuntimeConfig(
             agent_key="terminus-2",
             model=AgentModelConfig(
                 model="model-y",
                 api_base="https://example.invalid/v1",
                 api_key="api",
-                temperature=0.5,
+            ),
+            agent_config={"max_turns": 1, "max_wait_seconds": 1.0},
+        )
+        with patch("agents.terminus2.agent.run_agent", return_value=0):
+            result = terminus_agent.Terminus2Agent().run_task(
+                task=Task.from_instruction(instruction="inspect", task_id="t2"),
+                cfg=runtime,
+                console=Console(record=True),
+                sink=None,
+            )
+        self.assertEqual(result.exit_code, 0)
+        self.assertTrue(result.success)
+        self.assertEqual(result.task_id, "t2")
+
+    def test_terminus_run_task_maps_core_config_and_disable_final_message(self) -> None:
+        runtime = AgentRuntimeConfig(
+            agent_key="terminus-2",
+            model=AgentModelConfig(
+                model="qwen/qwen3-coder-next",
+                api_base="https://openrouter.ai/api/v1",
+                api_key="test-key",
+                temperature=0.0,
             ),
             agent_config={
-                "verbosity": 0,
-                "max_turns": 7,
-                "max_wait_seconds": 3.5,
+                "verbosity": 3,
+                "max_turns": 9,
+                "max_wait_seconds": 7.5,
                 "final_message": False,
             },
         )
-        captured: dict[str, object] = {}
+        captured_kwargs: dict[str, object] = {}
 
-        def fake_run_agent(**kwargs):  # type: ignore[no-untyped-def]
-            captured.update(kwargs)
-            return 9
+        def fake_run_agent(**kwargs: object) -> int:
+            captured_kwargs.update(kwargs)
+            return 0
 
         with patch("agents.terminus2.agent.run_agent", side_effect=fake_run_agent):
-            exit_code = terminus_agent.Terminus2Agent().run(
-                instruction="inspect",
+            result = terminus_agent.Terminus2Agent().run_task(
+                task=Task.from_instruction(
+                    instruction="inspect config",
+                    task_id="term-cfg",
+                ),
                 cfg=runtime,
                 console=Console(record=True),
+                sink=None,
             )
-
-        self.assertEqual(exit_code, 9)
-        cfg = cast(terminus_agent.CoreConfig, captured["cfg"])
-        self.assertEqual(cfg.max_turns, 7)
-        self.assertEqual(cfg.max_wait_seconds, 3.5)
+        self.assertTrue(result.success)
+        cfg = cast(terminus_agent.CoreConfig, captured_kwargs["cfg"])
+        self.assertEqual(cfg.max_turns, 9)
+        self.assertEqual(cfg.max_wait_seconds, 7.5)
         self.assertFalse(cfg.final_message_enabled)
-        self.assertEqual(captured["instruction"], "inspect")
-        self.assertEqual(captured["api_key"], "api")
+        self.assertEqual(cfg.active_model.model, "qwen/qwen3-coder-next")
 
-    def test_render_issue_output_hides_non_model_issues_at_verbosity_zero(self) -> None:
-        console = Console(record=True, width=60)
-        terminus_agent._render_issue_output(
-            console=console,
-            kind="parser",
-            message="bad json",
-            verbosity=0,
+    def test_terminus_emits_sink_events_from_callbacks(self) -> None:
+        runtime = AgentRuntimeConfig(
+            agent_key="terminus-2",
+            model=AgentModelConfig(
+                model="qwen/qwen3-coder-next",
+                api_base="https://openrouter.ai/api/v1",
+                api_key="test-key",
+            ),
+            agent_config={
+                "verbosity": 1,
+                "max_turns": 2,
+                "max_wait_seconds": 2.0,
+                "final_message": False,
+            },
         )
-        self.assertEqual(console.export_text(), "")
+        sink = _RecordingSink()
 
-        terminus_agent._render_issue_output(
-            console=console,
-            kind="model",
-            message="rate limited",
-            verbosity=0,
-        )
-        self.assertIn("error: model", console.export_text())
+        def fake_run_agent(**kwargs: object) -> int:
+            callbacks = cast(terminus_agent.AgentCallbacks, kwargs["callbacks"])
+            parsed = terminus_agent.ParsedResponse(
+                analysis="a",
+                plan="p",
+                commands=[],
+                task_complete=True,
+                final_message=None,
+            )
+            command = terminus_agent.Command(keystrokes="echo hi\n", duration=0.1)
+            if callbacks.on_reasoning:
+                callbacks.on_reasoning(1, parsed)
+            if callbacks.on_command_output:
+                callbacks.on_command_output(command, "hi")
+            if callbacks.on_issue:
+                callbacks.on_issue("model", "rate limit")
+            if callbacks.on_done:
+                callbacks.on_done("done")
+            if callbacks.on_stopped:
+                callbacks.on_stopped(2)
+            return 0
+
+        with patch("agents.terminus2.agent.run_agent", side_effect=fake_run_agent):
+            result = terminus_agent.Terminus2Agent().run_task(
+                task=Task.from_instruction(instruction="emit events", task_id="evt-1"),
+                cfg=runtime,
+                console=Console(record=True),
+                sink=sink,
+            )
+        self.assertTrue(result.success)
+        self.assertIsNotNone(sink.result)
+        event_types = [event.event_type for event in sink.events]
+        self.assertIn("reasoning", event_types)
+        self.assertIn("command_output", event_types)
+        self.assertIn("issue", event_types)
+        self.assertIn("done", event_types)
+        self.assertIn("stopped", event_types)
 
 
 if __name__ == "__main__":

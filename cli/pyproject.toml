@@ -11,3 +11,4 @@ dependencies = [
 
 [project.scripts]
 terminus2-cli = "cli:main"
+small-agent-benchmark = "benchmark.run_batch:main"

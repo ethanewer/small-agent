@@ -9,6 +9,7 @@ import unittest
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(PROJECT_ROOT))
 CLI_PATH = PROJECT_ROOT / "cli.py"
 CLI_SPEC = importlib.util.spec_from_file_location("cli_live", CLI_PATH)
 assert CLI_SPEC and CLI_SPEC.loader
@@ -41,7 +42,7 @@ class TestHeadlessLive(unittest.TestCase):
                 "--agent",
                 "qwen",
                 "--model",
-                "qwen3.5-35b-a3b",
+                "qwen3-coder-next",
                 "Reply with exactly: OK",
             ],
             cwd=str(PROJECT_ROOT),
@@ -54,35 +55,6 @@ class TestHeadlessLive(unittest.TestCase):
         combined_output = f"{proc.stdout}\n{proc.stderr}"
         self.assertEqual(proc.returncode, 0, msg=combined_output)
         self.assertIn("Agent: qwen", combined_output)
-
-    def test_claude_live_if_available(self) -> None:
-        if _local_or_path_binary("claude") is None:
-            self.skipTest("claude binary not found on PATH")
-        if not cli.resolve_api_key("OPENROUTER_API_KEY"):
-            self.skipTest("OPENROUTER_API_KEY not set")
-        env = os.environ.copy()
-        env["PATH"] = f"{PROJECT_ROOT / '.bin'}:{env.get('PATH', '')}"
-
-        proc = subprocess.run(
-            [
-                sys.executable,
-                str(CLI_PATH),
-                "--agent",
-                "claude",
-                "--model",
-                "qwen3.5-35b-a3b",
-                "Reply with exactly: OK",
-            ],
-            cwd=str(PROJECT_ROOT),
-            capture_output=True,
-            text=True,
-            timeout=300,
-            check=False,
-            env=env,
-        )
-        combined_output = f"{proc.stdout}\n{proc.stderr}"
-        self.assertEqual(proc.returncode, 0, msg=combined_output)
-        self.assertIn("Agent: claude", combined_output)
 
 
 if __name__ == "__main__":

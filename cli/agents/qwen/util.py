@@ -7,9 +7,13 @@ import selectors
 import signal
 import subprocess
 import sys
-from typing import Optional, Sequence
+from typing import Optional, Protocol, Sequence, cast
 
 ArgList = Sequence[str]
+
+
+class BinaryReadable(Protocol):
+    def read(self, n: int = -1) -> bytes: ...
 
 
 def _safe_write(stream: object, data: bytes) -> None:
@@ -85,8 +89,17 @@ def run_subprocess(
 
             for key, _ in events:
                 file_obj = key.fileobj
+                # selectors stubs allow int/HasFileno, but we register Popen pipes.
+                if isinstance(file_obj, int) or not hasattr(file_obj, "read"):
+                    try:
+                        selector.unregister(file_obj)
+                    except Exception:
+                        pass
+                    continue
+
+                reader = cast(BinaryReadable, file_obj)
                 try:
-                    chunk = file_obj.read(8192)
+                    chunk = reader.read(8192)
                 except BlockingIOError:
                     continue
                 except Exception:

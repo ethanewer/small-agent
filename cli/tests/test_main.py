@@ -1,6 +1,8 @@
 import importlib.util
+import json
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from typing import Any
@@ -412,7 +414,7 @@ class TestInteractiveCommands(unittest.TestCase):
                 )
             },
             default_agent="terminus-2",
-            agents={"terminus-2": {}, "toolmind-harness": {}},
+            agents={"terminus-2": {}, "qwen": {}},
             verbosity=1,
             max_turns=5,
             max_wait_seconds=10.0,
@@ -488,11 +490,11 @@ class TestInteractiveCommands(unittest.TestCase):
         loaded = self._loaded_config()
         result = cli.parse_interactive_command(
             console=cli.Console(record=True),
-            instruction="/agent toolmind-harness",
+            instruction="/agent qwen",
             config=loaded,
         )
         self.assertTrue(result.handled)
-        self.assertEqual(result.selected_agent, "toolmind-harness")
+        self.assertEqual(result.selected_agent, "qwen")
 
     def test_parse_interactive_command_prompts_for_missing_agent(self) -> None:
         loaded = self._loaded_config()
@@ -503,7 +505,7 @@ class TestInteractiveCommands(unittest.TestCase):
                 config=loaded,
             )
         self.assertTrue(result.handled)
-        self.assertEqual(result.selected_agent, "toolmind-harness")
+        self.assertEqual(result.selected_agent, "qwen")
 
 
 class TestAgentSelection(unittest.TestCase):
@@ -519,7 +521,7 @@ class TestAgentSelection(unittest.TestCase):
                 )
             },
             default_agent="terminus-2",
-            agents={"terminus-2": {}, "toolmind-harness": {}},
+            agents={"terminus-2": {}, "qwen": {}},
             verbosity=1,
             max_turns=5,
             max_wait_seconds=10.0,
@@ -530,10 +532,10 @@ class TestAgentSelection(unittest.TestCase):
         self.assertEqual(
             cli.resolve_agent_key(
                 config=loaded,
-                cli_agent_key="toolmind-harness",
+                cli_agent_key="qwen",
                 selected_agent_key=None,
             ),
-            "toolmind-harness",
+            "qwen",
         )
 
     def test_resolve_agent_key_uses_selected_when_no_cli(self) -> None:
@@ -542,10 +544,118 @@ class TestAgentSelection(unittest.TestCase):
             cli.resolve_agent_key(
                 config=loaded,
                 cli_agent_key=None,
-                selected_agent_key="toolmind-harness",
+                selected_agent_key="qwen",
             ),
-            "toolmind-harness",
+            "qwen",
         )
+
+
+class TestLoadConfigValidation(unittest.TestCase):
+    def _write_config(self, payload: dict[str, object]) -> Path:
+        temp_file = tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            suffix=".json",
+            delete=False,
+        )
+        with temp_file:
+            json.dump(payload, temp_file)
+        return Path(temp_file.name)
+
+    def test_load_config_defaults_agents_when_missing(self) -> None:
+        path = self._write_config(
+            {
+                "default_model": "qwen3-coder-next",
+                "models": {
+                    "qwen3-coder-next": {
+                        "model": "qwen/qwen3-coder-next",
+                        "api_base": "https://openrouter.ai/api/v1",
+                        "api_key": "OPENROUTER_API_KEY",
+                    }
+                },
+            }
+        )
+        try:
+            loaded = cli.load_config(path)
+        finally:
+            path.unlink(missing_ok=True)
+        self.assertEqual(loaded.default_agent, "terminus-2")
+        self.assertEqual(loaded.agents, {"terminus-2": {}})
+
+    def test_load_config_rejects_unknown_default_model(self) -> None:
+        path = self._write_config(
+            {
+                "default_model": "missing",
+                "models": {
+                    "qwen3-coder-next": {
+                        "model": "qwen/qwen3-coder-next",
+                        "api_base": "https://openrouter.ai/api/v1",
+                        "api_key": "OPENROUTER_API_KEY",
+                    }
+                },
+                "default_agent": "terminus-2",
+                "agents": {"terminus-2": {}},
+            }
+        )
+        try:
+            with self.assertRaisesRegex(
+                ValueError,
+                "default_model must match a key in models",
+            ):
+                cli.load_config(path)
+        finally:
+            path.unlink(missing_ok=True)
+
+    def test_load_config_rejects_default_agent_not_in_agents(self) -> None:
+        path = self._write_config(
+            {
+                "default_model": "qwen3-coder-next",
+                "models": {
+                    "qwen3-coder-next": {
+                        "model": "qwen/qwen3-coder-next",
+                        "api_base": "https://openrouter.ai/api/v1",
+                        "api_key": "OPENROUTER_API_KEY",
+                    }
+                },
+                "default_agent": "qwen",
+                "agents": {"terminus-2": {}},
+            }
+        )
+        try:
+            with self.assertRaisesRegex(
+                ValueError,
+                "default_agent must match a key in agents",
+            ):
+                cli.load_config(path)
+        finally:
+            path.unlink(missing_ok=True)
+
+    def test_resolve_agent_key_error_is_actionable_for_removed_agents(self) -> None:
+        loaded = cli.LoadedConfig(
+            default_model="qwen3-coder-next",
+            models={
+                "qwen3-coder-next": cli.ConfigModelEntry(
+                    model="qwen/qwen3-coder-next",
+                    api_base="https://openrouter.ai/api/v1",
+                    api_key="OPENROUTER_API_KEY",
+                    temperature=None,
+                )
+            },
+            default_agent="terminus-2",
+            agents={"terminus-2": {}, "qwen": {}},
+            verbosity=0,
+            max_turns=50,
+            max_wait_seconds=60.0,
+        )
+        with self.assertRaisesRegex(
+            ValueError,
+            "Unknown agent key 'claude'. Available agent keys: terminus-2, qwen",
+        ):
+            cli.resolve_agent_key(
+                config=loaded,
+                cli_agent_key="claude",
+                selected_agent_key=None,
+            )
 
 
 if __name__ == "__main__":
