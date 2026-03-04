@@ -63,12 +63,12 @@ cd cli
 ./setup
 ```
 
-This installs agent CLIs locally under `cli/.bin` and `cli/.tools` (no global npm/pipx installs).
+This installs agent CLIs locally under `cli/.local/bin` and `cli/.local/tools` (no global npm/pipx installs).
 
 Add local wrappers to your shell path:
 
 ```bash
-export PATH="$PWD/.bin:$PATH"
+export PATH="$PWD/.local/bin:$PATH"
 ```
 
 To remove all locally installed CLI artifacts:
@@ -82,19 +82,19 @@ To remove all locally installed CLI artifacts:
 Run with a positional instruction:
 
 ```bash
-./.bin/terminus2-cli "List files in current directory, then explain what you see."
+./.local/bin/terminus2-cli "List files in current directory, then explain what you see."
 ```
 
 Or run without instruction and enter it interactively when prompted:
 
 ```bash
-./.bin/terminus2-cli
+./.local/bin/terminus2-cli
 ```
 
 Optional flags:
 
 ```bash
-./.bin/terminus2-cli --verbosity 1 --max-turns 10 --model gpt-5.3-codex --config ./config.json "Your instruction"
+./.local/bin/terminus2-cli --verbosity 1 --max-turns 10 --model gpt-5.3-codex --config ./config.json "Your instruction"
 ```
 
 - `--model <key>` selects a model key from `config.models`.
@@ -122,7 +122,7 @@ If you omit a value (for example, `/verbosity`), the CLI prompts you for one.
 Example:
 
 ```bash
-./.bin/terminus2-cli
+./.local/bin/terminus2-cli
 # Enter instruction: /model
 # Available Models:
 # 1. qwen3-coder-next (...)
@@ -163,8 +163,8 @@ Compatibility behavior:
 Examples:
 
 ```bash
-./.bin/terminus2-cli --agent qwen --model qwen3-coder-next "Summarize this repository"
-./.bin/terminus2-cli --agent claude --model qwen3-coder-next "Summarize this repository"
+./.local/bin/terminus2-cli --agent qwen --model qwen3-coder-next "Summarize this repository"
+./.local/bin/terminus2-cli --agent claude --model qwen3-coder-next "Summarize this repository"
 ```
 
 You can override the executable per agent if needed:

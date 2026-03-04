@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+export UV_PROJECT_ENVIRONMENT="${SCRIPT_DIR}/.local/venv"
+export PYTHONPYCACHEPREFIX="${SCRIPT_DIR}/.local/cache/pycache"
+
+run_all=0
+set -- "$@"
+pass_args=()
+for arg in "$@"; do
+  case "${arg}" in
+    -a|--all)
+      run_all=1
+      ;;
+    *)
+      pass_args+=("${arg}")
+      ;;
+  esac
+done
+
+if [[ "${run_all}" -eq 1 ]]; then
+  export SMALL_AGENT_STRICT_TESTS=1
+  if [[ "${#pass_args[@]}" -gt 0 ]]; then
+    exec uv run --directory "${SCRIPT_DIR}" pytest "${pass_args[@]}"
+  fi
+  exec uv run --directory "${SCRIPT_DIR}" pytest
+fi
+
+if [[ "${#pass_args[@]}" -gt 0 ]]; then
+  exec uv run --directory "${SCRIPT_DIR}" pytest --ignore=tests/test_headless_live.py "${pass_args[@]}"
+fi
+exec uv run --directory "${SCRIPT_DIR}" pytest --ignore=tests/test_headless_live.py

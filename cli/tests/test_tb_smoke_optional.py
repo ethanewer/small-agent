@@ -28,11 +28,28 @@ def _has_docker() -> bool:
     return proc.returncode == 0
 
 
-@unittest.skipUnless(_has_tb(), "tb command not available")
-@unittest.skipUnless(_has_docker(), "docker not available/running")
-@unittest.skipUnless(os.getenv("OPENROUTER_API_KEY"), "OPENROUTER_API_KEY not set")
 class TestTerminalBenchSmokeOptional(unittest.TestCase):
+    def _require_prerequisites(self) -> None:
+        strict_mode = os.getenv("SMALL_AGENT_STRICT_TESTS") == "1"
+        tb_available = _has_tb()
+        docker_available = _has_docker()
+        has_openrouter_key = bool(os.getenv("OPENROUTER_API_KEY"))
+
+        if strict_mode:
+            self.assertTrue(tb_available, "tb command not available")
+            self.assertTrue(docker_available, "docker not available/running")
+            self.assertTrue(has_openrouter_key, "OPENROUTER_API_KEY not set")
+            return
+
+        if not tb_available:
+            self.skipTest("tb command not available")
+        if not docker_available:
+            self.skipTest("docker not available/running")
+        if not has_openrouter_key:
+            self.skipTest("OPENROUTER_API_KEY not set")
+
     def test_tb_help_smoke(self) -> None:
+        self._require_prerequisites()
         # Lightweight smoke: assert tb CLI works in environment.
         proc = subprocess.run(
             ["tb", "--help"],
@@ -46,6 +63,7 @@ class TestTerminalBenchSmokeOptional(unittest.TestCase):
         self.assertIn("Usage:", proc.stdout)
 
     def test_tb_single_task_config_smoke(self) -> None:
+        self._require_prerequisites()
         # Keep this lightweight and optional; no full benchmark sweep.
         with tempfile.TemporaryDirectory() as tmp_dir:
             sample_path = Path(tmp_dir) / "sample.jsonl"

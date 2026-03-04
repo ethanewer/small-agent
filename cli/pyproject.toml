@@ -12,3 +12,12 @@ dependencies = [
 [project.scripts]
 terminus2-cli = "cli:main"
 small-agent-benchmark = "benchmark.run_batch:main"
+
+[tool.ruff]
+cache-dir = ".local/cache/ruff"
+
+[tool.pytest.ini_options]
+cache_dir = ".local/cache/pytest"
+
+[tool.mypy]
+cache_dir = ".local/cache/mypy"

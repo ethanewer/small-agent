@@ -3,9 +3,12 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CLI_DIR="${SCRIPT_DIR}"
-LOCAL_BIN_DIR="${CLI_DIR}/.bin"
-LOCAL_NPM_PREFIX="${CLI_DIR}/.tools"
+LOCAL_ROOT_DIR="${CLI_DIR}/.local"
+LOCAL_BIN_DIR="${LOCAL_ROOT_DIR}/bin"
+LOCAL_NPM_PREFIX="${LOCAL_ROOT_DIR}/tools"
 LOCAL_NODE_BIN="${LOCAL_NPM_PREFIX}/node_modules/.bin"
+LOCAL_CACHE_DIR="${LOCAL_ROOT_DIR}/cache"
+LOCAL_VENV_DIR="${LOCAL_ROOT_DIR}/venv"
 
 log() {
   printf '[setup] %s\n' "$*"
@@ -20,7 +23,14 @@ have_cmd() {
 }
 
 ensure_dirs() {
-  mkdir -p "${LOCAL_BIN_DIR}" "${LOCAL_NPM_PREFIX}"
+  mkdir -p \
+    "${LOCAL_BIN_DIR}" \
+    "${LOCAL_NPM_PREFIX}" \
+    "${LOCAL_CACHE_DIR}/mypy" \
+    "${LOCAL_CACHE_DIR}/pytest" \
+    "${LOCAL_CACHE_DIR}/ruff" \
+    "${LOCAL_CACHE_DIR}/pycache" \
+    "${LOCAL_VENV_DIR}"
 }
 
 write_wrapper() {
@@ -39,8 +49,10 @@ install_terminus2_wrapper() {
 #!/usr/bin/env bash
 set -euo pipefail
 CLI_DIR="${CLI_DIR}"
-if [ -x "\${CLI_DIR}/.venv/bin/python" ]; then
-  exec "\${CLI_DIR}/.venv/bin/python" "\${CLI_DIR}/cli.py" "\$@"
+PYCACHE_DIR="\${CLI_DIR}/.local/cache/pycache"
+export PYTHONPYCACHEPREFIX="\${PYCACHE_DIR}"
+if [ -x "\${CLI_DIR}/.local/venv/bin/python" ]; then
+  exec "\${CLI_DIR}/.local/venv/bin/python" "\${CLI_DIR}/cli.py" "\$@"
 fi
 if command -v uv >/dev/null 2>&1; then
   exec uv run --directory "\${CLI_DIR}" python "\${CLI_DIR}/cli.py" "\$@"

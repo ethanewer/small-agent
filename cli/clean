@@ -4,8 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 TARGETS=(
-  "${SCRIPT_DIR}/.bin"
-  "${SCRIPT_DIR}/.tools"
+  "${SCRIPT_DIR}/.local"
 )
 
 for target in "${TARGETS[@]}"; do

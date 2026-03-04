@@ -23,12 +23,8 @@ sft/.modelscope_cache*
 sft/checkpoints*
 sft/logs*
 
-# Imported cli cache directories
-cli/.mypy_cache/
-cli/.pytest_cache/
-cli/.ruff_cache/
-cli/.bin/
-cli/.tools/
+# Imported cli local artifacts
+cli/.local/
 log*
 
 # Generated harness reports
