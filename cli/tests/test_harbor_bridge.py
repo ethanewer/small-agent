@@ -36,6 +36,13 @@ def _loaded_config() -> LoadedConfig:
     )
 
 
+def _failure_mode_value(mode: Any) -> str:
+    # terminal-bench returns enum members in production, while local fallback
+    # shims may return plain strings.
+    value = getattr(mode, "value", mode)
+    return str(value)
+
+
 class TestHarborBridge(unittest.TestCase):
     def test_resolve_harbor_config_uses_defaults(self) -> None:
         cfg = _loaded_config()
@@ -101,7 +108,7 @@ class TestHarborBridge(unittest.TestCase):
 
         self.assertEqual(agent_result.total_input_tokens, 120)
         self.assertEqual(agent_result.total_output_tokens, 45)
-        self.assertIn("none", str(agent_result.failure_mode))
+        self.assertEqual(_failure_mode_value(agent_result.failure_mode), "none")
 
     def test_perform_task_maps_failure_result(self) -> None:
         run_result = RunResult(
@@ -142,7 +149,10 @@ class TestHarborBridge(unittest.TestCase):
 
         self.assertEqual(agent_result.total_input_tokens, 30)
         self.assertEqual(agent_result.total_output_tokens, 10)
-        self.assertIn("unknown_agent_error", str(agent_result.failure_mode))
+        self.assertEqual(
+            _failure_mode_value(agent_result.failure_mode),
+            "unknown_agent_error",
+        )
 
 
 if __name__ == "__main__":

@@ -51,9 +51,15 @@ Full run for one model:
 All scripts support these optional env vars:
 
 - `TB_DATASET` (default: `terminal-bench-core==0.1.1`)
+- `TB_DATASET_PATH` (if set, uses `--dataset-path` directly)
 - `TB_OUTPUT_PATH` (default: `.benchmark-artifacts/tb2-runs`)
 - `TB_AGENT_IMPORT_PATH` (default: `benchmark.harbor_bridge:HarborTB2DefaultAgent`)
 - `TB_CONFIG_PATH` (default: `./config.json`)
+- `TB_LOCAL_REGISTRY_PATH` (if set, passes `--local-registry-path`)
 
 If `--model` or `--agent` are omitted, scripts read `default_model` and
 `default_agent` from `TB_CONFIG_PATH`.
+
+When `TB_DATASET` is in `name==version` form and the dataset already exists in
+`~/.cache/terminal-bench/<name>/<version>`, scripts automatically switch to
+`--dataset-path` to avoid remote registry lookups.

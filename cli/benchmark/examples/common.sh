@@ -5,9 +5,11 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CLI_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 
 TB_DATASET="${TB_DATASET:-terminal-bench-core==0.1.1}"
+TB_DATASET_PATH="${TB_DATASET_PATH:-}"
 TB_OUTPUT_PATH="${TB_OUTPUT_PATH:-.benchmark-artifacts/tb2-runs}"
 TB_AGENT_IMPORT_PATH="${TB_AGENT_IMPORT_PATH:-benchmark.harbor_bridge:HarborTB2DefaultAgent}"
 TB_CONFIG_PATH="${TB_CONFIG_PATH:-./config.json}"
+TB_LOCAL_REGISTRY_PATH="${TB_LOCAL_REGISTRY_PATH:-}"
 TB_CMD=(uvx --with pexpect --with rich --from terminal-bench tb run)
 
 run_tb() {
@@ -22,16 +24,41 @@ run_tb_for_model() {
   local agent_key="$2"
   local run_id="$3"
   shift 3
+  local -a dataset_args=()
+  local -a run_args=()
 
-  run_tb \
-    --dataset "${TB_DATASET}" \
-    --agent-import-path "${TB_AGENT_IMPORT_PATH}" \
-    --agent-kwarg "config_path=${TB_CONFIG_PATH}" \
-    --agent-kwarg "agent_key=${agent_key}" \
-    --agent-kwarg "model_key=${model_key}" \
-    "$@" \
-    --output-path "${TB_OUTPUT_PATH}" \
+  if [[ -n "${TB_DATASET_PATH}" ]]; then
+    dataset_args=(--dataset-path "${TB_DATASET_PATH}")
+  elif [[ "${TB_DATASET}" == *"=="* ]]; then
+    local dataset_name="${TB_DATASET%%==*}"
+    local dataset_version="${TB_DATASET##*==}"
+    local cached_dataset_path="${HOME}/.cache/terminal-bench/${dataset_name}/${dataset_version}"
+    if [[ -d "${cached_dataset_path}" ]]; then
+      dataset_args=(--dataset-path "${cached_dataset_path}")
+    else
+      dataset_args=(--dataset "${TB_DATASET}")
+    fi
+  else
+    dataset_args=(--dataset "${TB_DATASET}")
+  fi
+
+  run_args=("${dataset_args[@]}")
+  if [[ -n "${TB_LOCAL_REGISTRY_PATH}" ]]; then
+    run_args+=(--local-registry-path "${TB_LOCAL_REGISTRY_PATH}")
+  fi
+  run_args+=(
+    --agent-import-path "${TB_AGENT_IMPORT_PATH}"
+    --agent-kwarg "config_path=${TB_CONFIG_PATH}"
+    --agent-kwarg "agent_key=${agent_key}"
+    --agent-kwarg "model_key=${model_key}"
+  )
+  run_args+=("$@")
+  run_args+=(
+    --output-path "${TB_OUTPUT_PATH}"
     --run-id "${run_id}"
+  )
+
+  run_tb "${run_args[@]}"
 }
 
 load_default_model_and_agent() {
