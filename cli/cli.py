@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 import json
 import os
 from pathlib import Path
@@ -42,7 +42,6 @@ class LoadedConfig:
     verbosity: int
     max_turns: int
     max_wait_seconds: float
-    benchmark: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -235,7 +234,6 @@ def load_config(path: Path) -> LoadedConfig:
         verbosity=_normalize_verbosity(int(data.get("verbosity", 1))),
         max_turns=int(data.get("max_turns", 50)),
         max_wait_seconds=float(data.get("max_wait_seconds", 60.0)),
-        benchmark=dict(data.get("benchmark", {})),
     )
 
 

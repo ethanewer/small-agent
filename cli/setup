@@ -148,27 +148,9 @@ install_local_python_cli() {
   write_wrapper "${command_name}" "${venv_command}"
 }
 
-install_tb_cli() {
-  if [ -x "${LOCAL_BIN_DIR}/tb" ]; then
-    log "tb already installed locally: ${LOCAL_BIN_DIR}/tb"
-    return
-  fi
-
-  if install_local_python_cli "tb" "terminal-bench"; then
-    return
-  fi
-
-  if install_local_python_cli "tb" "terminalbench"; then
-    return
-  fi
-
-  warn "Unable to install tb CLI from known package names."
-  exit 1
-}
-
 verify_clis() {
   local missing=0
-  for cmd in terminus2-cli qwen tb; do
+  for cmd in terminus2-cli qwen; do
     if [ -x "${LOCAL_BIN_DIR}/${cmd}" ]; then
       log "Found local CLI wrapper: ${LOCAL_BIN_DIR}/${cmd}"
     else
@@ -200,7 +182,6 @@ print_next_steps() {
 [setup] Quick checks:
   ${LOCAL_BIN_DIR}/terminus2-cli --help
   ${LOCAL_BIN_DIR}/qwen --help
-  ${LOCAL_BIN_DIR}/tb --help
 EOF
 }
 
@@ -209,7 +190,6 @@ main() {
   ensure_dirs
   install_terminus2_wrapper
   install_qwen_cli
-  install_tb_cli
   verify_clis
   print_next_steps
 }

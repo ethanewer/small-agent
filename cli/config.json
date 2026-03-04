@@ -56,10 +56,5 @@
   },
   "verbosity": 0,
   "max_turns": 50,
-  "max_wait_seconds": 60,
-  "benchmark": {
-    "runtime_mode": "interactive",
-    "event_log_format": "jsonl",
-    "artifact_dir": ".benchmark-artifacts"
-  }
+  "max_wait_seconds": 60
 }
