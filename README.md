@@ -116,6 +116,56 @@ Optional flags:
 - `terminus-2`: interactive terminal-driving JSON agent
 - `qwen`: runs `qwen -p "<instruction>" -y` with OpenAI-compatible env
 
+### Harbor External Agent
+
+You can run this project through Harbor without modifying Harbor source code by
+importing the external adapter class:
+
+```bash
+harbor run --path "<task-or-dataset-path>" --agent-import-path agent:SmallAgentHarborAgent
+```
+
+The adapter module is `cli/harbor/agent.py`, and the scripts run Harbor from
+that directory so `--agent-import-path agent:SmallAgentHarborAgent` resolves
+correctly.
+
+The adapter resolves defaults from `cli/config.json`:
+
+- agent default -> `default_agent`
+- model default -> `default_model`
+
+You can override either at runtime using Harbor agent env:
+
+- `SMALL_AGENT_HARBOR_AGENT=<agent-key>`
+- `SMALL_AGENT_HARBOR_MODEL=<model-key>`
+
+Both keys are validated against `config.json` (`agents` and `models`).
+
+### Harbor Runner Scripts
+
+The CLI includes helper scripts with fixed public Terminal-Bench datasets:
+
+- `cli/harbor/run_smoke.sh`: smoke dataset (`terminal-bench-sample@2.0`)
+- `cli/harbor/run_small.sh`: small dataset (`terminal-bench-sample@2.0`)
+- `cli/harbor/run_full.sh`: full dataset (`terminal-bench@2.0`)
+
+All scripts accept:
+
+- `--model <key>`: selects a model key from `cli/config.json`
+- `--agent <key>`: selects an agent key from `cli/config.json`
+- `--dry-run`: prints resolved command without executing Harbor
+
+If `--model`/`--agent` are omitted, scripts use config defaults.
+
+Examples:
+
+```bash
+cd cli
+./harbor/run_smoke.sh --dry-run
+./harbor/run_small.sh --model gpt-5.3-codex --agent qwen --dry-run
+./harbor/run_full.sh --agent terminus-2
+```
+
 ### Interactive Commands
 
 When entering instruction interactively, you can use slash commands before starting the run:

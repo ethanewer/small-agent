@@ -25,6 +25,7 @@ sft/logs*
 
 # Imported cli local artifacts
 cli/.local/
+cli/harbor/jobs/
 log*
 
 # Generated harness reports
