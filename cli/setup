@@ -98,9 +98,77 @@ install_qwen_cli() {
   install_local_npm_cli "qwen" "@qwen-code/qwen-code"
 }
 
+ensure_local_venv() {
+  if [ -x "${LOCAL_VENV_DIR}/bin/python" ]; then
+    return
+  fi
+
+  if have_cmd uv; then
+    log "Creating local virtual environment with uv."
+    uv venv "${LOCAL_VENV_DIR}" --python python3
+    return
+  fi
+
+  log "Creating local virtual environment with python3 -m venv."
+  python3 -m venv "${LOCAL_VENV_DIR}"
+}
+
+install_local_python_cli() {
+  local command_name="${1}"
+  local package_name="${2}"
+  local venv_python="${LOCAL_VENV_DIR}/bin/python"
+  local venv_command="${LOCAL_VENV_DIR}/bin/${command_name}"
+
+  ensure_local_venv
+
+  if [ -x "${venv_command}" ]; then
+    log "${command_name} already installed in local venv: ${venv_command}"
+    write_wrapper "${command_name}" "${venv_command}"
+    return 0
+  fi
+
+  log "Installing ${command_name} in local venv (${package_name})."
+  if have_cmd uv; then
+    if ! uv pip install --python "${venv_python}" "${package_name}"; then
+      warn "Failed to install ${package_name} with uv."
+      return 1
+    fi
+  else
+    if ! "${venv_python}" -m pip install "${package_name}"; then
+      warn "Failed to install ${package_name} with pip."
+      return 1
+    fi
+  fi
+
+  if [ ! -x "${venv_command}" ]; then
+    warn "Install finished but ${command_name} was not found at ${venv_command}."
+    return 1
+  fi
+
+  write_wrapper "${command_name}" "${venv_command}"
+}
+
+install_tb_cli() {
+  if [ -x "${LOCAL_BIN_DIR}/tb" ]; then
+    log "tb already installed locally: ${LOCAL_BIN_DIR}/tb"
+    return
+  fi
+
+  if install_local_python_cli "tb" "terminal-bench"; then
+    return
+  fi
+
+  if install_local_python_cli "tb" "terminalbench"; then
+    return
+  fi
+
+  warn "Unable to install tb CLI from known package names."
+  exit 1
+}
+
 verify_clis() {
   local missing=0
-  for cmd in terminus2-cli qwen; do
+  for cmd in terminus2-cli qwen tb; do
     if [ -x "${LOCAL_BIN_DIR}/${cmd}" ]; then
       log "Found local CLI wrapper: ${LOCAL_BIN_DIR}/${cmd}"
     else
@@ -132,6 +200,7 @@ print_next_steps() {
 [setup] Quick checks:
   ${LOCAL_BIN_DIR}/terminus2-cli --help
   ${LOCAL_BIN_DIR}/qwen --help
+  ${LOCAL_BIN_DIR}/tb --help
 EOF
 }
 
@@ -140,6 +209,7 @@ main() {
   ensure_dirs
   install_terminus2_wrapper
   install_qwen_cli
+  install_tb_cli
   verify_clis
   print_next_steps
 }

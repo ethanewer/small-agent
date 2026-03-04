@@ -5,6 +5,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export UV_PROJECT_ENVIRONMENT="${SCRIPT_DIR}/.local/venv"
 export PYTHONPYCACHEPREFIX="${SCRIPT_DIR}/.local/cache/pycache"
+export PATH="${SCRIPT_DIR}/.local/bin:${PATH}"
 
 run_all=0
 set -- "$@"
