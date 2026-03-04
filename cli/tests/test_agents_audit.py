@@ -155,8 +155,66 @@ class TestQwenAndTerminusTaskAPI(unittest.TestCase):
         self.assertEqual(result.task_id, "task-123")
         self.assertEqual(
             cast(list[str], captured["args"]),
-            ["qwen-custom", "-p", "echo from task", "-y"],
+            [
+                "qwen-custom",
+                "-p",
+                "echo from task",
+                "-y",
+                "--output-format",
+                "stream-json",
+            ],
         )
+        self.assertEqual(cast(bool, captured["echo_stdout"]), False)
+        self.assertTrue(callable(cast(object, captured["on_stdout_line"])))
+
+    def test_qwen_emits_stream_tool_events_to_sink(self) -> None:
+        runtime = AgentRuntimeConfig(
+            agent_key="qwen",
+            model=AgentModelConfig(
+                model="qwen/qwen3-coder-next",
+                api_base="https://openrouter.ai/api/v1",
+                api_key="test-key",
+            ),
+            agent_config={"binary": "qwen-custom", "verbosity": 1},
+        )
+        sink = _RecordingSink()
+
+        def fake_run_subprocess(**kwargs):  # type: ignore[no-untyped-def]
+            on_stdout_line = kwargs["on_stdout_line"]
+            assert callable(on_stdout_line)
+            on_stdout_line(
+                '{"type":"assistant","message":{"content":[{"type":"text","text":"step 1"}]}}'
+            )
+            on_stdout_line(
+                '{"type":"assistant","message":{"content":[{"type":"tool_call","name":"shell","arguments":{"cmd":"ls"}}]}}'
+            )
+            on_stdout_line(
+                '{"type":"assistant","message":{"content":[{"type":"tool_result","name":"shell","output":"ok"}]}}'
+            )
+            return 0
+
+        console = Console(record=True)
+        with patch(
+            "agents.qwen.qwen_agent.run_subprocess",
+            side_effect=fake_run_subprocess,
+        ):
+            result = QwenHeadlessAgent().run_task(
+                task=Task.from_instruction(
+                    instruction="echo from task",
+                    task_id="task-events",
+                ),
+                cfg=runtime,
+                console=console,
+                sink=sink,
+            )
+        self.assertTrue(result.success)
+        self.assertIsNotNone(sink.result)
+        event_types = [event.event_type for event in sink.events]
+        self.assertIn("reasoning", event_types)
+        self.assertIn("tool_call", event_types)
+        self.assertIn("tool_result", event_types)
+        self.assertIn("done", event_types)
+        self.assertIn("Done", console.export_text())
 
     def test_qwen_returns_error_when_binary_missing(self) -> None:
         runtime = AgentRuntimeConfig(
@@ -269,7 +327,7 @@ class TestQwenAndTerminusTaskAPI(unittest.TestCase):
                 temperature=0.0,
             ),
             agent_config={
-                "verbosity": 3,
+                "verbosity": 1,
                 "max_turns": 9,
                 "max_wait_seconds": 7.5,
                 "final_message": False,

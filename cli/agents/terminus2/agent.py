@@ -63,10 +63,8 @@ def _render_labeled_fixed(
 
 
 def _fit_line(text: str, width: int, prefix_len: int) -> str:
-    content_width = max(10, width - prefix_len)
-    if len(text) > content_width:
-        return text[: content_width - 3] + "..."
-    return text.ljust(content_width)
+    del width, prefix_len
+    return text
 
 
 def _render_response(
@@ -75,7 +73,7 @@ def _render_response(
     parsed: ParsedResponse,
     verbosity: int,
 ) -> None:
-    if verbosity >= 3:
+    if verbosity >= 1:
         reasoning = f"analysis:\n{parsed.analysis}\n\nplan:\n{parsed.plan}"
         console.print(
             Panel(reasoning, title=f"Turn {turn} Reasoning", border_style="magenta")

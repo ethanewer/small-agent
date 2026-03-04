@@ -64,9 +64,9 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument(
         "--verbosity",
         type=int,
-        choices=[0, 1, 3],
+        choices=[0, 1],
         default=None,
-        help="0: one line per tool call, 1: full tool inputs/responses, 3: + reasoning",
+        help="0: one line per tool call, 1: full tool inputs/responses + reasoning",
     )
     parser.add_argument(
         "--config",
@@ -151,6 +151,16 @@ def resolve_api_key(config_api_key: str | None) -> str | None:
     return None
 
 
+def _normalize_verbosity(value: int) -> int:
+    # Backward compatibility: old config values used 3 for full debug output.
+    if value == 3:
+        return 1
+    if value not in {0, 1}:
+        raise ValueError("Verbosity must be one of: 0, 1.")
+
+    return value
+
+
 def load_config(path: Path) -> LoadedConfig:
     if not path.exists():
         raise FileNotFoundError(f"Missing config file: {path}")
@@ -220,7 +230,7 @@ def load_config(path: Path) -> LoadedConfig:
         models=models,
         default_agent=default_agent,
         agents=agents,
-        verbosity=int(data.get("verbosity", 1)),
+        verbosity=_normalize_verbosity(int(data.get("verbosity", 1))),
         max_turns=int(data.get("max_turns", 50)),
         max_wait_seconds=float(data.get("max_wait_seconds", 60.0)),
         benchmark=dict(data.get("benchmark", {})),
@@ -283,31 +293,29 @@ def select_verbosity_dialog(console: Console) -> int:
     console.print(
         Panel(
             "0. Minimal - shows one short line per tool call; does not show full I/O or reasoning\n"
-            "1. Standard - shows full tool inputs and outputs; does not show reasoning\n"
-            "3. Debug - shows full tool inputs/outputs and model reasoning (analysis/plan)",
+            "1. Full - shows full tool inputs/outputs and model reasoning (analysis/plan)",
             title="Verbosity Levels",
             border_style="cyan",
         )
     )
 
     while True:
-        raw_choice = Prompt.ask("[bold]Enter verbosity (0, 1, or 3)[/bold]").strip()
+        raw_choice = Prompt.ask("[bold]Enter verbosity (0 or 1)[/bold]").strip()
         if not raw_choice:
             continue
         try:
             return _parse_verbosity(value=raw_choice)
         except ValueError:
-            console.print(Panel("Please enter 0, 1, or 3.", border_style="yellow"))
+            console.print(Panel("Please enter 0 or 1.", border_style="yellow"))
 
 
 def _interactive_help_panel() -> Panel:
     return Panel(
         "/model - choose active model from a numbered list\n"
         "/agent [name] - choose active agent or set by key\n"
-        "/verbosity <0|1|3> - set output detail level\n"
+        "/verbosity <0|1> - set output detail level\n"
         "  0: one line per tool call\n"
-        "  1: full tool call inputs/responses\n"
-        "  3: full inputs/responses + reasoning\n"
+        "  1: full inputs/responses + reasoning\n"
         "/max_turns <int>=1 - set max agent turns\n"
         "/max_wait_seconds <float>>0 - set per-command max wait",
         title="Interactive Commands",
@@ -333,10 +341,10 @@ def _parse_verbosity(value: str) -> int:
     try:
         parsed = int(value)
     except ValueError as err:
-        raise ValueError("Verbosity must be one of: 0, 1, 3.") from err
+        raise ValueError("Verbosity must be one of: 0, 1.") from err
 
-    if parsed not in {0, 1, 3}:
-        raise ValueError("Verbosity must be one of: 0, 1, 3.")
+    if parsed not in {0, 1}:
+        raise ValueError("Verbosity must be one of: 0, 1.")
 
     return parsed
 

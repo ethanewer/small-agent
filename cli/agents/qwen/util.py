@@ -7,7 +7,7 @@ import selectors
 import signal
 import subprocess
 import sys
-from typing import Optional, Protocol, Sequence, cast
+from typing import Callable, Optional, Protocol, Sequence, cast
 
 ArgList = Sequence[str]
 
@@ -52,6 +52,8 @@ def run_subprocess(
     cwd: Optional[str] = None,
     env: Optional[dict[str, str]] = None,
     check: bool = True,
+    echo_stdout: bool = True,
+    on_stdout_line: Callable[[str], None] | None = None,
 ) -> int:
     proc = subprocess.Popen(
         args,
@@ -76,6 +78,7 @@ def run_subprocess(
 
     captured_stdout_chunks: list[str] = []
     captured_stderr_chunks: list[str] = []
+    stdout_line_buffer = ""
 
     try:
         while selector.get_map():
@@ -112,12 +115,22 @@ def run_subprocess(
                         pass
                     continue
 
-                _safe_write(stream=key.data, data=chunk)
                 decoded_chunk = chunk.decode(errors="replace")
                 if key.data is sys.stdout:
+                    if echo_stdout:
+                        _safe_write(stream=key.data, data=chunk)
                     captured_stdout_chunks.append(decoded_chunk)
+                    if on_stdout_line is not None:
+                        stdout_line_buffer += decoded_chunk
+                        while "\n" in stdout_line_buffer:
+                            line, stdout_line_buffer = stdout_line_buffer.split("\n", 1)
+                            on_stdout_line(line)
                 else:
+                    _safe_write(stream=key.data, data=chunk)
                     captured_stderr_chunks.append(decoded_chunk)
+
+        if on_stdout_line is not None and stdout_line_buffer:
+            on_stdout_line(stdout_line_buffer)
 
         rc = proc.wait()
     except KeyboardInterrupt:

@@ -113,7 +113,7 @@ When entering instruction interactively, you can use slash commands before start
 
 - `/model`: choose a model from a numbered list.
 - `/agent`: choose an agent from a numbered list.
-- `/verbosity [0|1|3]`: set runtime verbosity.
+- `/verbosity [0|1]`: set runtime verbosity.
 - `/max_turns [N]`: set runtime max turns (`N >= 1`).
 - `/max_wait_seconds [S]`: set runtime max wait (`S > 0`).
 
@@ -130,15 +130,14 @@ Example:
 # Enter model number: 2
 # Enter instruction: /max_turns 20
 # Enter instruction: /verbosity
-# Enter verbosity (0, 1, or 3): 1
+# Enter verbosity (0 or 1): 1
 # Enter instruction: Diagnose failing tests
 ```
 
 ### Verbosity Levels
 
 - `0`: one line per tool call
-- `1`: all tool call inputs and responses
-- `3`: all tool call inputs and responses, plus reasoning (`analysis` and `plan`)
+- `1`: all tool call inputs/responses, plus intermediate reasoning output
 
 ### Headless Agent Environment
 

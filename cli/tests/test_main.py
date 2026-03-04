@@ -308,6 +308,42 @@ class TestExecutionAndLoop(unittest.TestCase):
         self.assertTrue(child.closed)
 
 
+class TestTlsHandling(unittest.TestCase):
+    def test_is_tls_certificate_error_detects_common_marker(self) -> None:
+        self.assertTrue(
+            core_agent._is_tls_certificate_error(
+                message=(
+                    "APIError: [SSL: CERTIFICATE_VERIFY_FAILED] certificate verify "
+                    "failed: self-signed certificate in certificate chain"
+                )
+            )
+        )
+
+    def test_call_model_tls_error_raises_actionable_message(self) -> None:
+        cfg = core_agent.Config(
+            active_model_key="test",
+            active_model=core_agent.ModelConfig(
+                model="qwen3-coder-next",
+                api_base="https://openrouter.ai/api/v1",
+            ),
+        )
+        with patch.object(
+            core_agent,
+            "completion",
+            side_effect=Exception(
+                "OpenrouterException - [SSL: CERTIFICATE_VERIFY_FAILED] "
+                "certificate verify failed: self-signed certificate in certificate chain"
+            ),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "SMALL_AGENT_CA_BUNDLE"):
+                core_agent.call_model(
+                    cfg=cfg,
+                    prompt="ping",
+                    history=[],
+                    api_key="dummy-key",
+                )
+
+
 class TestFinalSummaryNormalization(unittest.TestCase):
     def test_normalize_summary_response_prefers_final_message_from_json(self) -> None:
         normalized = final_summary.normalize_summary_response(
@@ -424,11 +460,11 @@ class TestInteractiveCommands(unittest.TestCase):
         loaded = self._loaded_config()
         result = cli.parse_interactive_command(
             console=cli.Console(record=True),
-            instruction="/verbosity 3",
+            instruction="/verbosity 1",
             config=loaded,
         )
         self.assertTrue(result.handled)
-        self.assertEqual(result.updated_verbosity, 3)
+        self.assertEqual(result.updated_verbosity, 1)
         self.assertEqual(result.instruction, "")
 
     def test_parse_interactive_command_prompts_for_missing_verbosity(self) -> None:
@@ -581,6 +617,28 @@ class TestLoadConfigValidation(unittest.TestCase):
             path.unlink(missing_ok=True)
         self.assertEqual(loaded.default_agent, "terminus-2")
         self.assertEqual(loaded.agents, {"terminus-2": {}})
+
+    def test_load_config_maps_legacy_verbosity_3_to_1(self) -> None:
+        path = self._write_config(
+            {
+                "default_model": "qwen3-coder-next",
+                "models": {
+                    "qwen3-coder-next": {
+                        "model": "qwen/qwen3-coder-next",
+                        "api_base": "https://openrouter.ai/api/v1",
+                        "api_key": "OPENROUTER_API_KEY",
+                    }
+                },
+                "default_agent": "terminus-2",
+                "agents": {"terminus-2": {}},
+                "verbosity": 3,
+            }
+        )
+        try:
+            loaded = cli.load_config(path)
+        finally:
+            path.unlink(missing_ok=True)
+        self.assertEqual(loaded.verbosity, 1)
 
     def test_load_config_rejects_unknown_default_model(self) -> None:
         path = self._write_config(

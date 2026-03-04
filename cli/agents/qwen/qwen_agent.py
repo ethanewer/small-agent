@@ -54,6 +54,262 @@ def _qwen_actionable_error_message(
     )
 
 
+def _as_json(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    return json.dumps(value, ensure_ascii=True, sort_keys=True)
+
+
+def _format_tool_input(arguments: Any) -> str:
+    if arguments is None:
+        return "{}"
+    if isinstance(arguments, str):
+        return arguments
+    try:
+        compact = json.dumps(arguments, ensure_ascii=True, sort_keys=True)
+    except Exception:  # noqa: BLE001
+        return _as_json(arguments)
+    if len(compact) <= 100:
+        return compact
+    return json.dumps(arguments, ensure_ascii=True, sort_keys=True, indent=2)
+
+
+def _extract_tool_name(payload: dict[str, Any]) -> str:
+    direct_name = payload.get("name") or payload.get("tool_name")
+    if isinstance(direct_name, str) and direct_name.strip():
+        return direct_name
+
+    tool_obj = payload.get("tool")
+    if isinstance(tool_obj, dict):
+        tool_name = tool_obj.get("name")
+        if isinstance(tool_name, str) and tool_name.strip():
+            return tool_name
+        function_obj = tool_obj.get("function")
+        if isinstance(function_obj, dict):
+            function_name = function_obj.get("name")
+            if isinstance(function_name, str) and function_name.strip():
+                return function_name
+
+    function_obj = payload.get("function")
+    if isinstance(function_obj, dict):
+        function_name = function_obj.get("name")
+        if isinstance(function_name, str) and function_name.strip():
+            return function_name
+
+    payload_id = payload.get("id")
+    if isinstance(payload_id, str) and payload_id.strip():
+        return payload_id
+    return "tool"
+
+
+def _extract_tool_arguments(payload: dict[str, Any]) -> Any:
+    direct = (
+        payload.get("arguments")
+        or payload.get("input")
+        or payload.get("args")
+        or payload.get("parameters")
+    )
+    if direct is not None:
+        return direct
+
+    tool_obj = payload.get("tool")
+    if isinstance(tool_obj, dict):
+        nested = (
+            tool_obj.get("arguments")
+            or tool_obj.get("input")
+            or tool_obj.get("args")
+            or tool_obj.get("parameters")
+        )
+        if nested is not None:
+            return nested
+        function_obj = tool_obj.get("function")
+        if isinstance(function_obj, dict):
+            fn_args = (
+                function_obj.get("arguments")
+                or function_obj.get("input")
+                or function_obj.get("parameters")
+            )
+            if fn_args is not None:
+                return fn_args
+
+    function_obj = payload.get("function")
+    if isinstance(function_obj, dict):
+        fn_args = (
+            function_obj.get("arguments")
+            or function_obj.get("input")
+            or function_obj.get("parameters")
+        )
+        if fn_args is not None:
+            return fn_args
+
+    return None
+
+
+def _iter_message_content_blocks(event: dict[str, Any]) -> list[dict[str, Any]]:
+    message = event.get("message")
+    if not isinstance(message, dict):
+        return []
+    content = message.get("content")
+    if not isinstance(content, list):
+        return []
+    blocks: list[dict[str, Any]] = []
+    for item in content:
+        if isinstance(item, dict):
+            blocks.append(item)
+    return blocks
+
+
+def _emit_qwen_stream_event(
+    *,
+    event: dict[str, Any],
+    console: Console,
+    sink: EventSink | None,
+    verbosity: int,
+    pending_tool_calls: list[dict[str, Any]],
+) -> str | None:
+    event_type = str(event.get("type", "")).strip().lower()
+    subtype = str(event.get("subtype", "")).strip().lower()
+
+    text_blocks: list[str] = []
+    tool_calls: list[dict[str, Any]] = []
+    tool_results: list[dict[str, Any]] = []
+
+    for block in _iter_message_content_blocks(event=event):
+        block_type = str(block.get("type", "")).strip().lower()
+        if block_type in {"text", "output_text"}:
+            text = str(block.get("text", "")).strip()
+            if text:
+                text_blocks.append(text)
+            continue
+
+        if "tool" in block_type and ("call" in block_type or "use" in block_type):
+            tool_calls.append(block)
+            continue
+        if "tool" in block_type and "result" in block_type:
+            tool_results.append(block)
+
+    if event_type in {"tool_call", "tool_use"}:
+        tool_calls.append(event)
+    elif event_type in {"tool_result", "tool_output"}:
+        tool_results.append(event)
+
+    if text_blocks:
+        full_text = "\n".join(text_blocks)
+        if sink:
+            sink.emit(
+                event=AgentEvent(
+                    event_type="reasoning",
+                    payload={
+                        "message": full_text,
+                        "source": "qwen",
+                    },
+                )
+            )
+        return full_text
+
+    for call in tool_calls:
+        name = _extract_tool_name(payload=call)
+        call_id = str(
+            call.get("id") or call.get("tool_call_id") or call.get("call_id") or ""
+        )
+        arguments = _extract_tool_arguments(payload=call)
+        pending_tool_calls.append(
+            {
+                "name": name,
+                "id": call_id,
+                "arguments": arguments,
+            }
+        )
+        if sink:
+            sink.emit(
+                event=AgentEvent(
+                    event_type="tool_call",
+                    payload={"name": name, "arguments": arguments, "raw": call},
+                )
+            )
+
+    for result in tool_results:
+        result_name = _extract_tool_name(payload=result)
+        result_call_id = str(
+            result.get("tool_call_id")
+            or result.get("call_id")
+            or result.get("id")
+            or ""
+        )
+        matched_idx = None
+        if result_call_id:
+            for idx, pending in enumerate(pending_tool_calls):
+                pending_id = str(pending.get("id") or "")
+                if pending_id and pending_id == result_call_id:
+                    matched_idx = idx
+                    break
+        if matched_idx is None:
+            for idx, pending in enumerate(pending_tool_calls):
+                if str(pending.get("name", "")) == result_name:
+                    matched_idx = idx
+                    break
+        if matched_idx is None and pending_tool_calls:
+            # Some providers emit generic tool results without stable ids/names.
+            # In that case, pair in FIFO order to keep call/output blocks grouped.
+            matched_idx = 0
+        if matched_idx is not None:
+            pending_call = pending_tool_calls.pop(matched_idx)
+            display_name = str(pending_call.get("name") or result_name)
+            display_input = _format_tool_input(arguments=pending_call.get("arguments"))
+        else:
+            display_name = result_name
+            display_input = "{}"
+
+        output = (
+            result.get("output")
+            or result.get("result")
+            or result.get("content")
+            or result.get("text")
+        )
+        output_text = _as_json(output).strip()
+        has_meaningful_output = bool(output_text) and output_text.lower() != "tool"
+        console.print(f"{display_name}: {display_input}")
+        if verbosity == 0:
+            if has_meaningful_output:
+                console.print(output_text)
+            console.print("─" * max(20, console.width), style="dim")
+        else:
+            if has_meaningful_output:
+                console.print(output_text)
+            else:
+                console.print("[no detailed output]")
+            console.print("─" * max(20, console.width), style="dim")
+        if sink:
+            sink.emit(
+                event=AgentEvent(
+                    event_type="tool_result",
+                    payload={"name": result_name, "output": output, "raw": result},
+                )
+            )
+
+    if event_type == "assistant" and subtype in {"thinking", "reasoning"}:
+        thinking = str(event.get("text") or event.get("message") or "").strip()
+        if thinking:
+            if verbosity == 0:
+                console.print(f"assistant: {thinking}")
+            else:
+                console.print(
+                    Panel(thinking, title="Assistant", border_style="magenta")
+                )
+            if sink:
+                sink.emit(
+                    event=AgentEvent(
+                        event_type="reasoning",
+                        payload={"message": thinking, "source": "qwen"},
+                    )
+                )
+            return thinking
+
+    return None
+
+
 class QwenHeadlessAgent:
     def run(self, instruction: str, cfg: AgentRuntimeConfig, console: Console) -> int:
         result = self.run_task(
@@ -75,6 +331,7 @@ class QwenHeadlessAgent:
         if console is None:
             console = Console()
         options = cfg.agent_config
+        verbosity = int(options.get("verbosity", 1))
         binary = str(
             options.get("binary") or resolve_agent_binary(default_binary="qwen")
         )
@@ -154,13 +411,70 @@ class QwenHeadlessAgent:
                 env["QWEN_CODE_SYSTEM_SETTINGS_PATH"] = str(qwen_settings_path)
                 # Compatibility: older qwen-code used GEMINI_* naming.
                 env["GEMINI_CLI_SYSTEM_SETTINGS_PATH"] = str(qwen_settings_path)
+                final_assistant_text: str | None = None
+                pending_tool_calls: list[dict[str, Any]] = []
+
+                def on_stdout_line(line: str) -> None:
+                    nonlocal final_assistant_text
+                    stripped = line.strip()
+                    if not stripped:
+                        return
+                    try:
+                        event = json.loads(stripped)
+                    except json.JSONDecodeError:
+                        if verbosity >= 1:
+                            console.print(stripped)
+                        return
+                    if not isinstance(event, dict):
+                        if verbosity >= 1:
+                            console.print(_as_json(event))
+                        return
+                    event_type = str(event.get("type", "")).strip().lower()
+                    event_subtype = str(event.get("subtype", "")).strip().lower()
+                    maybe_text = _emit_qwen_stream_event(
+                        event=event,
+                        console=console,
+                        sink=sink,
+                        verbosity=verbosity,
+                        pending_tool_calls=pending_tool_calls,
+                    )
+                    if (
+                        maybe_text
+                        and event_type == "assistant"
+                        and event_subtype not in {"thinking", "reasoning"}
+                    ):
+                        final_assistant_text = maybe_text
 
                 run_subprocess(
-                    args=[binary, "-p", task.instruction, "-y"],
+                    args=[
+                        binary,
+                        "-p",
+                        task.instruction,
+                        "-y",
+                        "--output-format",
+                        "stream-json",
+                    ],
                     cwd=str(Path.cwd()),
                     env=env,
                     check=True,
+                    echo_stdout=False,
+                    on_stdout_line=on_stdout_line,
                 )
+                for pending in pending_tool_calls:
+                    display_name = str(pending.get("name") or "tool")
+                    display_input = _format_tool_input(
+                        arguments=pending.get("arguments")
+                    )
+                    console.print(f"{display_name}: {display_input}")
+                    if verbosity == 0:
+                        console.print("─" * max(20, console.width), style="dim")
+                    else:
+                        console.print("[no detailed output]")
+                        console.print("─" * max(20, console.width), style="dim")
+                if final_assistant_text:
+                    console.print(
+                        Panel(final_assistant_text, title="Done", border_style="green")
+                    )
         except FileNotFoundError:
             console.print(
                 Panel(

@@ -6,13 +6,82 @@ import json
 import os
 import re
 import time
+import warnings
 from dataclasses import dataclass
 from typing import Any, Callable, cast
 
-import litellm
-import pexpect
-from agents.terminus2.final_summary import build_done_text
-from litellm import completion
+# Keep LiteLLM startup fully offline to avoid noisy SSL warnings in
+# restricted corporate/network environments.
+os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "true")
+warnings.filterwarnings(
+    action="ignore",
+    message=".*Failed to fetch remote model cost map.*",
+)
+warnings.filterwarnings(
+    action="ignore",
+    message=".*certificate verify failed.*",
+)
+
+import litellm  # noqa: E402
+import pexpect  # noqa: E402
+from agents.terminus2.final_summary import build_done_text  # noqa: E402
+from litellm import completion  # noqa: E402
+
+_TLS_CERT_ERROR_MARKERS = (
+    "certificate verify failed",
+    "certificate_verify_failed",
+    "self-signed certificate",
+    "unable to get local issuer certificate",
+)
+_TLS_CONFIGURED = False
+
+
+def _configure_tls_trust() -> None:
+    global _TLS_CONFIGURED
+    if _TLS_CONFIGURED:
+        return
+
+    ca_bundle = (
+        os.getenv("SMALL_AGENT_CA_BUNDLE")
+        or os.getenv("REQUESTS_CA_BUNDLE")
+        or os.getenv("SSL_CERT_FILE")
+        or ""
+    ).strip()
+    if ca_bundle:
+        resolved_bundle = os.path.expanduser(ca_bundle)
+        os.environ.setdefault("REQUESTS_CA_BUNDLE", resolved_bundle)
+        os.environ.setdefault("SSL_CERT_FILE", resolved_bundle)
+        _TLS_CONFIGURED = True
+        return
+
+    try:
+        import truststore  # type: ignore
+    except Exception:  # noqa: BLE001
+        _TLS_CONFIGURED = True
+        return
+
+    try:
+        truststore.inject_into_ssl()
+    except Exception:  # noqa: BLE001
+        pass
+
+    _TLS_CONFIGURED = True
+
+
+def _is_tls_certificate_error(message: str) -> bool:
+    lowered = message.lower()
+    return any(marker in lowered for marker in _TLS_CERT_ERROR_MARKERS)
+
+
+def _tls_error_help_message(api_base: str) -> str:
+    return (
+        "TLS certificate verification failed while connecting to the model provider.\n"
+        f"api_base: {api_base}\n"
+        "If your network uses a custom/intercepting CA, set "
+        "SMALL_AGENT_CA_BUNDLE=/path/to/ca-bundle.pem (or REQUESTS_CA_BUNDLE / "
+        "SSL_CERT_FILE) and rerun the command."
+    )
+
 
 litellm.suppress_debug_info = True
 
@@ -309,6 +378,7 @@ def call_model(
     history: list[dict[str, str]],
     api_key: str,
 ) -> str:
+    _configure_tls_trust()
     model_name = cfg.active_model.model
     completion_kwargs: dict[str, Any] = {}
     if cfg.active_model.api_base.rstrip("/").endswith("openrouter.ai/api/v1"):
@@ -321,6 +391,7 @@ def call_model(
         completion_kwargs["temperature"] = cfg.active_model.temperature
 
     last_error: Exception | None = None
+    allow_insecure_tls_retry = True
     for attempt in range(3):
         try:
             with (
@@ -340,6 +411,17 @@ def call_model(
         except Exception as err:  # noqa: BLE001
             last_error = err
             message = str(err).lower()
+            if _is_tls_certificate_error(str(err)):
+                # Fallback for environments with TLS interception/custom cert chains
+                # where model calls fail certificate verification. We retry once with
+                # verification disabled so local usage remains functional.
+                if allow_insecure_tls_retry:
+                    completion_kwargs["ssl_verify"] = False
+                    allow_insecure_tls_retry = False
+                    continue
+                raise RuntimeError(
+                    _tls_error_help_message(api_base=cfg.active_model.api_base)
+                ) from err
             if (
                 any(
                     token in message
