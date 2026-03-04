@@ -10,7 +10,7 @@ DATASET_REF="terminal-bench@2.0"
 main() {
   if ! parse_common_args "$@"; then
     cat <<'EOF'
-Usage: ./harbor/run_full.sh [--model <key>] [--agent <key>] [--dry-run] [-- <extra harbor args>]
+Usage: ./harbor/run_full.sh [--model <key>] [--agent <key>] [--dry-run]
 Runs Harbor on the full fixed official public dataset.
 EOF
     usage_common

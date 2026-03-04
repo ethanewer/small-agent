@@ -113,6 +113,18 @@ ensure_local_venv() {
   python3 -m venv "${LOCAL_VENV_DIR}"
 }
 
+install_project_python_deps() {
+  local venv_python="${LOCAL_VENV_DIR}/bin/python"
+  ensure_local_venv
+
+  log "Installing Python project dependencies into local venv."
+  if have_cmd uv; then
+    uv pip install --python "${venv_python}" --editable "${CLI_DIR}"
+  else
+    "${venv_python}" -m pip install --editable "${CLI_DIR}"
+  fi
+}
+
 install_local_python_cli() {
   local command_name="${1}"
   local package_name="${2}"
@@ -188,6 +200,7 @@ EOF
 main() {
   ensure_python
   ensure_dirs
+  install_project_python_deps
   install_terminus2_wrapper
   install_qwen_cli
   verify_clis

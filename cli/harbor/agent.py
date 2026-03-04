@@ -10,7 +10,8 @@ import shlex
 import sys
 from typing import Any
 
-from rich.console import Console
+from rich.console import Console  # pyright: ignore[reportMissingImports]
+
 
 _base_agent_cls: type[object] = object
 try:  # pragma: no cover - Harbor is optional in local tests.
@@ -195,6 +196,15 @@ def _extract_exec_fields(exec_result: Any) -> tuple[int, str, str]:
     return exit_code, stdout, stderr
 
 
+def _raise_for_exec_failure(*, exec_result: Any, action: str) -> None:
+    exit_code, stdout, stderr = _extract_exec_fields(exec_result=exec_result)
+    if exit_code == 0:
+        return
+
+    details = stderr.strip() or stdout.strip() or "no output captured"
+    raise RuntimeError(f"{action} failed with exit_code={exit_code}: {details}")
+
+
 class SmallAgentHarborAgent(HarborBaseAgent):
     def __init__(
         self,
@@ -207,7 +217,12 @@ class SmallAgentHarborAgent(HarborBaseAgent):
         **_kwargs: object,
     ) -> None:
         try:
-            super().__init__(logs_dir=logs_dir, model_name=model_name, **_kwargs)  # type: ignore
+            base_init_kwargs: dict[str, object] = dict(_kwargs)
+            if logs_dir is not None:
+                base_init_kwargs["logs_dir"] = logs_dir
+            if model_name is not None:
+                base_init_kwargs["model_name"] = model_name
+            super().__init__(**base_init_kwargs)
         except TypeError:
             # Local tests may run without Harbor's BaseAgent implementation.
             try:
@@ -242,12 +257,16 @@ class SmallAgentHarborAgent(HarborBaseAgent):
             "exit 1; "
             "fi"
         )
-        await _environment_exec(
+        setup_result = await _environment_exec(
             environment=environment,
             command=setup_command,
             cwd=None,
             env=None,
             timeout_sec=60,
+        )
+        _raise_for_exec_failure(
+            exec_result=setup_result,
+            action="Harbor setup preflight",
         )
 
     async def run(

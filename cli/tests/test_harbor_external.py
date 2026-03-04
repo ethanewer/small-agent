@@ -7,12 +7,57 @@ import tempfile
 import unittest
 from pathlib import Path
 import sys
+import types
 from typing import Any
 from unittest.mock import patch
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 AGENT_PATH = PROJECT_ROOT / "harbor" / "agent.py"
 sys.path.insert(0, str(PROJECT_ROOT))
+
+
+def _install_runtime_dependency_stubs() -> None:
+    if "litellm" not in sys.modules:
+        litellm_module = types.ModuleType("litellm")
+        setattr(litellm_module, "suppress_debug_info", True)
+
+        def _completion(*_args: object, **_kwargs: object) -> dict[str, object]:
+            return {"choices": [{"message": {"content": "{}"}}]}
+
+        setattr(litellm_module, "completion", _completion)
+        sys.modules["litellm"] = litellm_module
+
+    if "pexpect" not in sys.modules:
+        pexpect_module = types.ModuleType("pexpect")
+
+        class _DummySpawn:
+            def __init__(self, *_args: object, **_kwargs: object) -> None:
+                return
+
+            def sendline(self, *_args: object, **_kwargs: object) -> None:
+                return
+
+            def expect_exact(self, *_args: object, **_kwargs: object) -> None:
+                return
+
+            def sendcontrol(self, *_args: object, **_kwargs: object) -> None:
+                return
+
+            def send(self, *_args: object, **_kwargs: object) -> None:
+                return
+
+            def close(self, *_args: object, **_kwargs: object) -> None:
+                return
+
+        class _Timeout(Exception):
+            pass
+
+        setattr(pexpect_module, "spawn", _DummySpawn)
+        setattr(pexpect_module, "TIMEOUT", _Timeout)
+        sys.modules["pexpect"] = pexpect_module
+
+
+_install_runtime_dependency_stubs()
 
 agent_spec = importlib.util.spec_from_file_location("harbor_agent_module", AGENT_PATH)
 assert agent_spec and agent_spec.loader
@@ -99,6 +144,18 @@ class TestHarborExternalAgent(unittest.TestCase):
         asyncio.run(agent.setup(environment=environment))
         self.assertTrue(environment.calls)
         self.assertIn("./cli/run", environment.calls[0]["command"])
+
+    def test_setup_fails_when_cli_run_missing(self) -> None:
+        environment = _FakeEnvironment(
+            result={
+                "exit_code": 1,
+                "stdout": "",
+                "stderr": "missing ./cli/run in workspace root",
+            }
+        )
+        agent = SmallAgentHarborAgent()
+        with self.assertRaises(RuntimeError):
+            asyncio.run(agent.setup(environment=environment))
 
     def test_run_uses_default_model_and_agent(self) -> None:
         path = self._write_config(self._minimal_config())

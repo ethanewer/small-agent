@@ -9,8 +9,10 @@ AGENT_IMPORT_PATH="agent:SmallAgentHarborAgent"
 MODEL_OVERRIDE=""
 AGENT_OVERRIDE=""
 DRY_RUN=0
-POSITIONAL_ARGS=()
 HARBOR_CMD=()
+JOBS_ROOT="${SCRIPT_DIR}/jobs"
+RESOLVED_JOBS_DIR=""
+RUN_ID=""
 
 usage_common() {
   cat <<'EOF'
@@ -19,6 +21,10 @@ Options:
   --agent <key>   Agent key from cli/config.json agents
   --dry-run       Print resolved harbor command and exit
   -h, --help      Show help
+
+Safety policy:
+  Only fixed benchmark options are allowed.
+  Extra Harbor arguments are rejected by design.
 EOF
 }
 
@@ -26,7 +32,6 @@ parse_common_args() {
   MODEL_OVERRIDE=""
   AGENT_OVERRIDE=""
   DRY_RUN=0
-  POSITIONAL_ARGS=()
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -50,22 +55,23 @@ parse_common_args() {
         DRY_RUN=1
         shift
         ;;
-      --)
-        shift
-        while [[ $# -gt 0 ]]; do
-          POSITIONAL_ARGS+=("$1")
-          shift
-        done
-        ;;
       -h|--help)
         return 64
         ;;
       *)
-        POSITIONAL_ARGS+=("$1")
-        shift
+        echo "Unknown argument: $1" >&2
+        echo "These benchmark scripts intentionally reject extra Harbor arguments." >&2
+        echo "Use --help to see supported options." >&2
+        exit 2
         ;;
     esac
   done
+}
+
+resolve_safe_jobs_dir() {
+  mkdir -p "${JOBS_ROOT}"
+  RUN_ID="$(date -u +"%Y-%m-%d__%H-%M-%S")__$$"
+  RESOLVED_JOBS_DIR="${JOBS_ROOT}/${RUN_ID}"
 }
 
 resolve_harbor_command() {
@@ -140,12 +146,15 @@ PY
 
 build_harbor_dataset_command() {
   resolve_harbor_command
+  resolve_safe_jobs_dir
   local dataset_ref="$1"
-  shift
-  local extra_args=("$@")
   HARBOR_COMMAND=(
     "${HARBOR_CMD[@]}"
     run
+    --jobs-dir "${RESOLVED_JOBS_DIR}"
+    --env docker
+    --delete
+    --no-force-build
     -d "${dataset_ref}"
     --agent-import-path "${AGENT_IMPORT_PATH}"
   )
@@ -155,22 +164,19 @@ build_harbor_dataset_command() {
   if [[ -n "${RESOLVED_AGENT}" ]]; then
     HARBOR_COMMAND+=(--agent-env "SMALL_AGENT_HARBOR_AGENT=${RESOLVED_AGENT}")
   fi
-  if [[ "${#extra_args[@]}" -gt 0 ]]; then
-    HARBOR_COMMAND+=("${extra_args[@]}")
-  fi
-  if [[ "${#POSITIONAL_ARGS[@]}" -gt 0 ]]; then
-    HARBOR_COMMAND+=("${POSITIONAL_ARGS[@]}")
-  fi
 }
 
 build_harbor_path_command() {
   resolve_harbor_command
+  resolve_safe_jobs_dir
   local task_or_dataset_path="$1"
-  shift
-  local extra_args=("$@")
   HARBOR_COMMAND=(
     "${HARBOR_CMD[@]}"
     run
+    --jobs-dir "${RESOLVED_JOBS_DIR}"
+    --env docker
+    --delete
+    --no-force-build
     --path "${task_or_dataset_path}"
     --agent-import-path "${AGENT_IMPORT_PATH}"
   )
@@ -180,16 +186,10 @@ build_harbor_path_command() {
   if [[ -n "${RESOLVED_AGENT}" ]]; then
     HARBOR_COMMAND+=(--agent-env "SMALL_AGENT_HARBOR_AGENT=${RESOLVED_AGENT}")
   fi
-  if [[ "${#extra_args[@]}" -gt 0 ]]; then
-    HARBOR_COMMAND+=("${extra_args[@]}")
-  fi
-  if [[ "${#POSITIONAL_ARGS[@]}" -gt 0 ]]; then
-    HARBOR_COMMAND+=("${POSITIONAL_ARGS[@]}")
-  fi
 }
 
 print_harbor_command() {
-  printf 'Resolved model=%s agent=%s\n' "${RESOLVED_MODEL}" "${RESOLVED_AGENT}"
+  printf 'Resolved model=%s agent=%s jobs_dir=%s\n' "${RESOLVED_MODEL}" "${RESOLVED_AGENT}" "${RESOLVED_JOBS_DIR}"
   printf 'Command:'
   local token
   for token in "${HARBOR_COMMAND[@]}"; do

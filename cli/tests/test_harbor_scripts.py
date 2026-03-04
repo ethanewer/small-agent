@@ -3,6 +3,7 @@ from __future__ import annotations
 import subprocess
 import unittest
 from pathlib import Path
+import re
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
@@ -24,8 +25,15 @@ class TestHarborRunnerScripts(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, msg=f"{proc.stdout}\n{proc.stderr}")
         self.assertIn("Resolved model=qwen3-coder-next agent=terminus-2", proc.stdout)
         self.assertIn("-d terminal-bench-sample@2.0", proc.stdout)
+        self.assertIn("--env docker", proc.stdout)
+        self.assertIn("--delete", proc.stdout)
+        self.assertIn("--no-force-build", proc.stdout)
         self.assertIn("SMALL_AGENT_HARBOR_MODEL=qwen3-coder-next", proc.stdout)
         self.assertIn("SMALL_AGENT_HARBOR_AGENT=terminus-2", proc.stdout)
+        self.assertRegex(
+            proc.stdout,
+            re.compile(r"--jobs-dir [^ ]*/cli/harbor/jobs/[^ ]+"),
+        )
 
     def test_run_small_accepts_overrides(self) -> None:
         proc = self._run_script(
@@ -46,6 +54,11 @@ class TestHarborRunnerScripts(unittest.TestCase):
         proc = self._run_script("run_full.sh", "--model", "missing-model", "--dry-run")
         self.assertNotEqual(proc.returncode, 0)
         self.assertIn("Unknown model key 'missing-model'", proc.stderr)
+
+    def test_run_smoke_rejects_extra_args(self) -> None:
+        proc = self._run_script("run_smoke.sh", "--dry-run", "--", "--env", "modal")
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("Unknown argument", proc.stderr)
 
 
 if __name__ == "__main__":

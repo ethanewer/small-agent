@@ -156,6 +156,17 @@ All scripts accept:
 - `--dry-run`: prints resolved command without executing Harbor
 
 If `--model`/`--agent` are omitted, scripts use config defaults.
+Extra Harbor CLI arguments are intentionally rejected by these scripts.
+
+Safety defaults enforced by the scripts:
+
+- write job artifacts only under `cli/harbor/jobs/<run-id>/...` (`--jobs-dir` is fixed)
+- force Docker environment execution (`--env docker`)
+- force environment cleanup (`--delete`)
+- disable forced image rebuilds (`--no-force-build`)
+
+This keeps host-visible benchmark outputs scoped to `cli/harbor/jobs`, while
+task execution remains isolated in Harbor-managed Docker environments.
 
 Examples:
 
