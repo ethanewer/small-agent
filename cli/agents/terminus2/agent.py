@@ -24,10 +24,13 @@ from agents.terminus2.core_agent import (
 def _coerce_final_message_enabled(value: object) -> bool:
     if value is None:
         return True
+
     if isinstance(value, bool):
         return value
+
     if isinstance(value, str):
         return value.strip().lower() not in {"0", "false", "no", "off"}
+
     return bool(value)
 
 
@@ -54,6 +57,7 @@ def _render_labeled_fixed(
         )
         if not wrapped:
             wrapped = [""]
+
         for segment in wrapped:
             prefix = label if first else (" " * len(label))
             line = Text(prefix, style=label_style)
@@ -195,6 +199,7 @@ class Terminus2Agent:
     ) -> RunResult:
         if console is None:
             console = Console()
+
         verbosity = int(cfg.agent_config.get("verbosity", 1))
         max_turns = int(cfg.agent_config.get("max_turns", 50))
         max_wait_seconds = float(cfg.agent_config.get("max_wait_seconds", 60.0))

@@ -7,7 +7,7 @@ import selectors
 import signal
 import subprocess
 import sys
-from typing import Callable, Optional, Protocol, Sequence, cast
+from typing import Callable, Protocol, Sequence, cast
 
 ArgList = Sequence[str]
 
@@ -17,8 +17,13 @@ class BinaryReadable(Protocol):
 
 
 def _safe_write(stream: object, data: bytes) -> None:
+    fileno: int | None = None
     try:
-        fileno = stream.fileno()  # type: ignore[attr-defined]
+        fileno_attr = getattr(stream, "fileno", None)
+        if callable(fileno_attr):
+            fileno_value = fileno_attr()
+            if isinstance(fileno_value, int):
+                fileno = fileno_value
     except Exception:
         fileno = None
 
@@ -34,14 +39,19 @@ def _safe_write(stream: object, data: bytes) -> None:
                 if err.errno in (errno.EAGAIN, errno.EWOULDBLOCK):
                     select.select([], [fileno], [])
                     continue
+
                 break
         if not view:
             return
 
     text = data.decode(errors="replace")
     try:
-        stream.write(text)  # type: ignore[attr-defined]
-        stream.flush()  # type: ignore[attr-defined]
+        write_attr = getattr(stream, "write", None)
+        flush_attr = getattr(stream, "flush", None)
+        if callable(write_attr):
+            write_attr(text)
+        if callable(flush_attr):
+            flush_attr()
     except Exception:
         return
 
@@ -49,8 +59,8 @@ def _safe_write(stream: object, data: bytes) -> None:
 def run_subprocess(
     *,
     args: ArgList,
-    cwd: Optional[str] = None,
-    env: Optional[dict[str, str]] = None,
+    cwd: str | None = None,
+    env: dict[str, str] | None = None,
     check: bool = True,
     echo_stdout: bool = True,
     on_stdout_line: Callable[[str], None] | None = None,
@@ -67,12 +77,14 @@ def run_subprocess(
 
     if proc.stdout is not None:
         os.set_blocking(proc.stdout.fileno(), False)
+
     if proc.stderr is not None:
         os.set_blocking(proc.stderr.fileno(), False)
 
     selector = selectors.DefaultSelector()
     if proc.stdout is not None:
         selector.register(proc.stdout, selectors.EVENT_READ, data=sys.stdout)
+
     if proc.stderr is not None:
         selector.register(proc.stderr, selectors.EVENT_READ, data=sys.stderr)
 
@@ -86,6 +98,7 @@ def run_subprocess(
             if not events:
                 if proc.poll() is None:
                     continue
+
                 events = [
                     (key, selectors.EVENT_READ) for key in selector.get_map().values()
                 ]
@@ -100,7 +113,7 @@ def run_subprocess(
                         pass
                     continue
 
-                reader = cast(BinaryReadable, file_obj)
+                reader = cast(BinaryReadable, cast(object, file_obj))
                 try:
                     chunk = reader.read(8192)
                 except BlockingIOError:
@@ -119,6 +132,7 @@ def run_subprocess(
                 if key.data is sys.stdout:
                     if echo_stdout:
                         _safe_write(stream=key.data, data=chunk)
+
                     captured_stdout_chunks.append(decoded_chunk)
                     if on_stdout_line is not None:
                         stdout_line_buffer += decoded_chunk
@@ -153,6 +167,7 @@ def run_subprocess(
             pass
         if proc.stdout is not None:
             proc.stdout.close()
+
         if proc.stderr is not None:
             proc.stderr.close()
 
@@ -163,4 +178,5 @@ def run_subprocess(
             output="".join(captured_stdout_chunks),
             stderr="".join(captured_stderr_chunks),
         )
+
     return rc

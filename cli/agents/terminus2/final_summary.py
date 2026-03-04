@@ -48,8 +48,10 @@ def build_done_text(
     normalized = normalize_summary_response(response or "")
     if normalized:
         return normalized
+
     if pending_final_message:
         return pending_final_message
+
     return "Task marked complete (double-confirmed)."
 
 
@@ -82,6 +84,7 @@ def _strip_code_fences(text: str) -> str:
     match = fence_pattern.match(text)
     if not match:
         return text
+
     return match.group(1).strip()
 
 
@@ -96,6 +99,7 @@ def _extract_json_dict(text: str) -> dict[str, Any] | None:
     candidate = _first_json_object(text)
     if not candidate:
         return None
+
     parsed = _try_parse_json(candidate)
     return parsed if isinstance(parsed, dict) else None
 

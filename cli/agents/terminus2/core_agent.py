@@ -33,12 +33,12 @@ _TLS_CERT_ERROR_MARKERS = (
     "self-signed certificate",
     "unable to get local issuer certificate",
 )
-_TLS_CONFIGURED = False
+_tls_configured = False
 
 
 def _configure_tls_trust() -> None:
-    global _TLS_CONFIGURED
-    if _TLS_CONFIGURED:
+    global _tls_configured
+    if _tls_configured:
         return
 
     ca_bundle = (
@@ -51,13 +51,13 @@ def _configure_tls_trust() -> None:
         resolved_bundle = os.path.expanduser(ca_bundle)
         os.environ.setdefault("REQUESTS_CA_BUNDLE", resolved_bundle)
         os.environ.setdefault("SSL_CERT_FILE", resolved_bundle)
-        _TLS_CONFIGURED = True
+        _tls_configured = True
         return
 
     try:
         import truststore  # type: ignore
     except Exception:  # noqa: BLE001
-        _TLS_CONFIGURED = True
+        _tls_configured = True
         return
 
     try:
@@ -65,7 +65,7 @@ def _configure_tls_trust() -> None:
     except Exception:  # noqa: BLE001
         pass
 
-    _TLS_CONFIGURED = True
+    _tls_configured = True
 
 
 def _is_tls_certificate_error(message: str) -> bool:
@@ -406,7 +406,7 @@ def call_model(
                     messages=history + [{"role": "user", "content": prompt}],
                     **completion_kwargs,
                 )
-            payload = cast(dict[str, Any], result)
+            payload = cast(dict[str, Any], cast(object, result))
             return str(payload["choices"][0]["message"]["content"])
         except Exception as err:  # noqa: BLE001
             last_error = err
@@ -419,9 +419,11 @@ def call_model(
                     completion_kwargs["ssl_verify"] = False
                     allow_insecure_tls_retry = False
                     continue
+
                 raise RuntimeError(
                     _tls_error_help_message(api_base=cfg.active_model.api_base)
                 ) from err
+
             if (
                 any(
                     token in message
@@ -437,7 +439,7 @@ def call_model(
     raise RuntimeError(f"Model request failed: {last_error}")
 
 
-def start_shell() -> pexpect.spawn:
+def start_shell() -> pexpect.spawn[str]:
     child = pexpect.spawn(
         "/bin/bash",
         ["--noprofile", "--norc", "-i"],
@@ -450,7 +452,9 @@ def start_shell() -> pexpect.spawn:
     return child
 
 
-def execute_command(child: pexpect.spawn, cmd: Command, max_wait_seconds: float) -> str:
+def execute_command(
+    child: pexpect.spawn[str], cmd: Command, max_wait_seconds: float
+) -> str:
     effective_wait = min(max(cmd.duration, 0.0), max(max_wait_seconds, 0.1))
     if cmd.keystrokes == "":
         time.sleep(effective_wait)
@@ -501,7 +505,7 @@ def _append_turn_history(
 
 
 def _execute_turn_commands(
-    child: pexpect.spawn,
+    child: pexpect.spawn[str],
     parsed: ParsedResponse,
     max_wait_seconds: float,
     callbacks: AgentCallbacks,
@@ -600,6 +604,7 @@ def run_agent(
                             callbacks.on_done(done_text)
 
                     return 0
+
                 pending_completion = True
                 prompt = completion_confirmation_message(terminal_output)
             else:

@@ -26,6 +26,7 @@ from agents.qwen.util import run_subprocess
 def _coerce_int(value: Any, default: int) -> int:
     if value is None:
         return default
+
     return int(value)
 
 
@@ -57,23 +58,37 @@ def _qwen_actionable_error_message(
 def _as_json(value: Any) -> str:
     if value is None:
         return ""
+
     if isinstance(value, str):
         return value
+
     return json.dumps(value, ensure_ascii=True, sort_keys=True)
 
 
 def _format_tool_input(arguments: Any) -> str:
     if arguments is None:
         return "{}"
+
     if isinstance(arguments, str):
         return arguments
+
     try:
         compact = json.dumps(arguments, ensure_ascii=True, sort_keys=True)
     except Exception:  # noqa: BLE001
         return _as_json(arguments)
+
     if len(compact) <= 100:
         return compact
+
     return json.dumps(arguments, ensure_ascii=True, sort_keys=True, indent=2)
+
+
+def _compact_single_line(text: str, *, max_chars: int = 160) -> str:
+    single_line = " ".join(text.split())
+    if len(single_line) <= max_chars:
+        return single_line
+
+    return single_line[: max_chars - 3] + "..."
 
 
 def _extract_tool_name(payload: dict[str, Any]) -> str:
@@ -86,6 +101,7 @@ def _extract_tool_name(payload: dict[str, Any]) -> str:
         tool_name = tool_obj.get("name")
         if isinstance(tool_name, str) and tool_name.strip():
             return tool_name
+
         function_obj = tool_obj.get("function")
         if isinstance(function_obj, dict):
             function_name = function_obj.get("name")
@@ -101,6 +117,7 @@ def _extract_tool_name(payload: dict[str, Any]) -> str:
     payload_id = payload.get("id")
     if isinstance(payload_id, str) and payload_id.strip():
         return payload_id
+
     return "tool"
 
 
@@ -124,6 +141,7 @@ def _extract_tool_arguments(payload: dict[str, Any]) -> Any:
         )
         if nested is not None:
             return nested
+
         function_obj = tool_obj.get("function")
         if isinstance(function_obj, dict):
             fn_args = (
@@ -151,9 +169,11 @@ def _iter_message_content_blocks(event: dict[str, Any]) -> list[dict[str, Any]]:
     message = event.get("message")
     if not isinstance(message, dict):
         return []
+
     content = message.get("content")
     if not isinstance(content, list):
         return []
+
     blocks: list[dict[str, Any]] = []
     for item in content:
         if isinstance(item, dict):
@@ -182,11 +202,13 @@ def _emit_qwen_stream_event(
             text = str(block.get("text", "")).strip()
             if text:
                 text_blocks.append(text)
+
             continue
 
         if "tool" in block_type and ("call" in block_type or "use" in block_type):
             tool_calls.append(block)
             continue
+
         if "tool" in block_type and "result" in block_type:
             tool_results.append(block)
 
@@ -207,6 +229,7 @@ def _emit_qwen_stream_event(
                     },
                 )
             )
+
         return full_text
 
     for call in tool_calls:
@@ -245,15 +268,18 @@ def _emit_qwen_stream_event(
                 if pending_id and pending_id == result_call_id:
                     matched_idx = idx
                     break
+
         if matched_idx is None:
             for idx, pending in enumerate(pending_tool_calls):
                 if str(pending.get("name", "")) == result_name:
                     matched_idx = idx
                     break
+
         if matched_idx is None and pending_tool_calls:
             # Some providers emit generic tool results without stable ids/names.
             # In that case, pair in FIFO order to keep call/output blocks grouped.
             matched_idx = 0
+
         if matched_idx is not None:
             pending_call = pending_tool_calls.pop(matched_idx)
             display_name = str(pending_call.get("name") or result_name)
@@ -270,12 +296,14 @@ def _emit_qwen_stream_event(
         )
         output_text = _as_json(output).strip()
         has_meaningful_output = bool(output_text) and output_text.lower() != "tool"
-        console.print(f"{display_name}: {display_input}")
         if verbosity == 0:
+            console.print(f"{display_name}: {_compact_single_line(display_input)}")
             if has_meaningful_output:
-                console.print(output_text)
+                console.print(_compact_single_line(output_text))
+
             console.print("─" * max(20, console.width), style="dim")
         else:
+            console.print(f"{display_name}: {display_input}")
             if has_meaningful_output:
                 console.print(output_text)
             else:
@@ -305,6 +333,7 @@ def _emit_qwen_stream_event(
                         payload={"message": thinking, "source": "qwen"},
                     )
                 )
+
             return thinking
 
     return None
@@ -330,6 +359,7 @@ class QwenHeadlessAgent:
     ) -> RunResult:
         if console is None:
             console = Console()
+
         options = cfg.agent_config
         verbosity = int(options.get("verbosity", 1))
         binary = str(
@@ -381,6 +411,7 @@ class QwenHeadlessAgent:
         }
         if sampling_params:
             settings["sampling_params"] = sampling_params
+
         if mcp_servers:
             settings["mcpServers"] = mcp_servers
 
@@ -419,16 +450,20 @@ class QwenHeadlessAgent:
                     stripped = line.strip()
                     if not stripped:
                         return
+
                     try:
                         event = json.loads(stripped)
                     except json.JSONDecodeError:
                         if verbosity >= 1:
                             console.print(stripped)
+
                         return
                     if not isinstance(event, dict):
                         if verbosity >= 1:
                             console.print(_as_json(event))
+
                         return
+
                     event_type = str(event.get("type", "")).strip().lower()
                     event_subtype = str(event.get("subtype", "")).strip().lower()
                     maybe_text = _emit_qwen_stream_event(
@@ -465,10 +500,13 @@ class QwenHeadlessAgent:
                     display_input = _format_tool_input(
                         arguments=pending.get("arguments")
                     )
-                    console.print(f"{display_name}: {display_input}")
                     if verbosity == 0:
+                        console.print(
+                            f"{display_name}: {_compact_single_line(display_input)}"
+                        )
                         console.print("─" * max(20, console.width), style="dim")
                     else:
+                        console.print(f"{display_name}: {display_input}")
                         console.print("[no detailed output]")
                         console.print("─" * max(20, console.width), style="dim")
                 if final_assistant_text:

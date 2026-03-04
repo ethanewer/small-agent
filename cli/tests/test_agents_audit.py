@@ -385,14 +385,19 @@ class TestQwenAndTerminusTaskAPI(unittest.TestCase):
             command = terminus_agent.Command(keystrokes="echo hi\n", duration=0.1)
             if callbacks.on_reasoning:
                 callbacks.on_reasoning(1, parsed)
+
             if callbacks.on_command_output:
                 callbacks.on_command_output(command, "hi")
+
             if callbacks.on_issue:
                 callbacks.on_issue("model", "rate limit")
+
             if callbacks.on_done:
                 callbacks.on_done("done")
+
             if callbacks.on_stopped:
                 callbacks.on_stopped(2)
+
             return 0
 
         with patch("agents.terminus2.agent.run_agent", side_effect=fake_run_agent):

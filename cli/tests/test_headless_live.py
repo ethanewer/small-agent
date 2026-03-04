@@ -32,11 +32,15 @@ class TestHeadlessLive(unittest.TestCase):
         if _local_or_path_binary("qwen") is None:
             if strict_mode:
                 self.fail("qwen binary not found on PATH")
+
             self.skipTest("qwen binary not found on PATH")
+
         if not cli.resolve_api_key("OPENROUTER_API_KEY"):
             if strict_mode:
                 self.fail("OPENROUTER_API_KEY not set")
+
             self.skipTest("OPENROUTER_API_KEY not set")
+
         env = os.environ.copy()
         env["PATH"] = f"{PROJECT_ROOT / '.local' / 'bin'}:{env.get('PATH', '')}"
 
@@ -72,6 +76,7 @@ class TestHeadlessLive(unittest.TestCase):
             if any(marker in lowered for marker in network_failure_markers):
                 if strict_mode:
                     self.fail(combined_output)
+
                 self.skipTest(
                     "qwen live call failed due to network/API transport issues"
                 )

@@ -108,6 +108,7 @@ def _env_var_name(config_api_key: str | None) -> str | None:
         candidate = raw[1:]
         if ENV_NAME_PATTERN.fullmatch(candidate):
             return candidate
+
         return None
 
     if ENV_NAME_PATTERN.fullmatch(raw):
@@ -155,6 +156,7 @@ def _normalize_verbosity(value: int) -> int:
     # Backward compatibility: old config values used 3 for full debug output.
     if value == 3:
         return 1
+
     if value not in {0, 1}:
         raise ValueError("Verbosity must be one of: 0, 1.")
 
@@ -251,6 +253,7 @@ def select_model_dialog(console: Console, config: LoadedConfig) -> str:
         raw_choice = Prompt.ask("[bold]Enter model number[/bold]").strip()
         if not raw_choice:
             continue
+
         if not raw_choice.isdigit():
             console.print(Panel("Please enter a valid number.", border_style="yellow"))
             continue
@@ -277,6 +280,7 @@ def select_agent_dialog(console: Console, config: LoadedConfig) -> str:
         raw_choice = Prompt.ask("[bold]Enter agent number[/bold]").strip()
         if not raw_choice:
             continue
+
         if not raw_choice.isdigit():
             console.print(Panel("Please enter a valid number.", border_style="yellow"))
             continue
@@ -303,6 +307,7 @@ def select_verbosity_dialog(console: Console) -> int:
         raw_choice = Prompt.ask("[bold]Enter verbosity (0 or 1)[/bold]").strip()
         if not raw_choice:
             continue
+
         try:
             return _parse_verbosity(value=raw_choice)
         except ValueError:
@@ -505,6 +510,7 @@ def resolve_model_key(
             raise ValueError(
                 f"Unknown model key '{cleaned}'. Available model keys: {available}"
             )
+
         return cleaned
 
     if selected_model_key:
@@ -525,6 +531,7 @@ def resolve_agent_key(
             raise ValueError(
                 f"Unknown agent key '{cleaned}'. Available agent keys: {available}"
             )
+
         return cleaned
 
     if selected_agent_key:
@@ -591,13 +598,17 @@ def main() -> None:
             if command_result.handled:
                 if command_result.selected_model:
                     selected_model_from_instruction = command_result.selected_model
+
                 if command_result.selected_agent:
                     selected_agent_from_instruction = command_result.selected_agent
+
                 if command_result.updated_verbosity is not None:
                     args.verbosity = command_result.updated_verbosity
+
                 if command_result.instruction:
                     instruction = command_result.instruction
                     break
+
                 continue
 
             if command_result.instruction:

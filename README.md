@@ -29,7 +29,14 @@ This file is tracked, so prefer env-var references for `api_key` values instead 
 
 ```json
 {
+  "default_agent": "terminus-2",
   "default_model": "qwen3-coder-next",
+  "agents": {
+    "terminus-2": {
+      "final_message": false
+    },
+    "qwen": {}
+  },
   "models": {
     "qwen3-coder-next": {
       "model": "qwen/qwen3-coder-next",
@@ -42,17 +49,21 @@ This file is tracked, so prefer env-var references for `api_key` values instead 
       "api_key": "OPENAI_API_KEY"
     }
   },
+  "verbosity": 0,
   "max_turns": 50,
   "max_wait_seconds": 60
 }
 ```
 
+- `default_agent`: default agent key to use from `agents`
 - `default_model`: default model key to use from `models`
+- `agents`: dict of named agent profiles/options
 - `models`: dict of named model profiles
 - model profile `model`: provider model ID (for example `gpt-5.3-codex`)
 - model profile `api_base`: provider base URL
 - model profile `api_key`: literal key, env var name (`OPENAI_API_KEY`), or `$ENV_VAR`
 - model profile `temperature` (optional): sampling temperature for that model; if omitted, provider defaults are used
+- `verbosity`: `0` (compact) or `1` (full tool IO + reasoning)
 - `max_turns`: maximum model turns before stopping
 - `max_wait_seconds`: max time to wait for each tool call/command completion
 
@@ -103,9 +114,7 @@ Optional flags:
 ### Available Agents
 
 - `terminus-2`: interactive terminal-driving JSON agent
-- `toolmind-harness`: tool-call protocol harness agent
 - `qwen`: runs `qwen -p "<instruction>" -y` with OpenAI-compatible env
-- `claude`: runs Claude Code headless mode (`claude -p ...`)
 
 ### Interactive Commands
 
@@ -141,7 +150,7 @@ Example:
 
 ### Headless Agent Environment
 
-`qwen` and `claude` rely on model profile values from `config.json`:
+`qwen` relies on model profile values from `config.json`:
 
 - `model` -> `OPENAI_MODEL`
 - `api_base` -> `OPENAI_BASE_URL`
@@ -152,18 +161,11 @@ Compatibility behavior:
 - OpenRouter and local OpenAI-compatible endpoints are first-class targets.
 - OpenAI models are allowed when the selected agent/CLI supports the model type.
 - Known incompatible combinations are surfaced with explicit agent errors.
-- `claude` supports OpenRouter/OpenAI-compatible open models via
-  `ANTHROPIC_BASE_URL` + `ANTHROPIC_AUTH_TOKEN` + `ANTHROPIC_MODEL`.
-  By default, the wrapper also forwards `--model`; set
-  `agents.claude.pass_model_arg=false` if your gateway expects env-only model selection.
-  Home isolation is disabled by default for auth stability; set
-  `agents.claude.isolate_home=true` for stateless runs.
 
 Examples:
 
 ```bash
 ./.local/bin/terminus2-cli --agent qwen --model qwen3-coder-next "Summarize this repository"
-./.local/bin/terminus2-cli --agent claude --model qwen3-coder-next "Summarize this repository"
 ```
 
 You can override the executable per agent if needed:
@@ -171,7 +173,7 @@ You can override the executable per agent if needed:
 ```json
 {
   "agents": {
-    "claude": { "binary": "claude" }
+    "qwen": { "binary": "qwen" }
   }
 }
 ```

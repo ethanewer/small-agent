@@ -5,6 +5,7 @@
 - Use `uv` for Python commands and dependency management (for example: `uv run ...`, `uv add ...`).
 - Format code with `ruff format` before finishing changes.
 - Run lint checks with `ruff check` before finishing changes.
+- Run type checks with `basedpyright` before finishing changes (`uvx basedpyright`).
 
 ## Style Guidelines
 

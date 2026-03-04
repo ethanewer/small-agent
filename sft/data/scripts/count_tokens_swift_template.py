@@ -56,11 +56,14 @@ def parse_args() -> argparse.Namespace:
 def parse_tools_field(raw_tools: Any) -> Any:
     if not isinstance(raw_tools, str):
         return raw_tools
+
     stripped = raw_tools.strip()
     if not stripped:
         return raw_tools
+
     if stripped[0] not in "[{":
         return raw_tools
+
     try:
         return json.loads(stripped)
     except json.JSONDecodeError:
@@ -70,6 +73,7 @@ def parse_tools_field(raw_tools: Any) -> Any:
 def format_duration(seconds: float) -> str:
     if seconds < 0:
         seconds = 0
+
     s = int(seconds)
     h, rem = divmod(s, 3600)
     m, sec = divmod(rem, 60)
@@ -117,6 +121,7 @@ def main() -> None:
             bytes_read += len(raw_line)
             if not raw_line.strip():
                 continue
+
             try:
                 line = raw_line.decode("utf-8")
                 row = json.loads(line)

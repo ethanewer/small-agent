@@ -31,6 +31,7 @@ def _load_rows(*, input_jsonl: Path) -> list[dict[str, Any]]:
     ):
         if not line.strip():
             continue
+
         try:
             parsed = json.loads(line)
         except json.JSONDecodeError as err:
@@ -41,6 +42,7 @@ def _load_rows(*, input_jsonl: Path) -> list[dict[str, Any]]:
             raise ValueError(
                 f"Invalid row on line {line_index} in {input_jsonl}: expected JSON object."
             )
+
         rows.append(parsed)
 
     return rows
@@ -55,6 +57,7 @@ def _build_runtime_cfg(
         raise ValueError(
             f"Missing API key for model '{model_key}'. Set env var or literal api_key."
         )
+
     agent_options = {
         "verbosity": cfg.verbosity,
         "max_turns": cfg.max_turns,
