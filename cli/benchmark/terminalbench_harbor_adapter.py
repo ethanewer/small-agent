@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
-from benchmark.adapters import AgentBenchmarkAdapter
+from benchmark.adapters import AgentBenchmarkAdapter, result_to_payload
 from benchmark.terminalbench_common import parse_terminalbench_sample, sample_to_task
 
 
@@ -20,10 +21,11 @@ class HarborImportPathAgent:
         del extra_kwargs
         sample = parse_terminalbench_sample(data=data)
         task = sample_to_task(sample=sample)
-        result = self._adapter.run_sync(task=task)
+        result = await asyncio.to_thread(self._adapter.run_sync, task=task)
+        payload = result_to_payload(result=result)
         return {
-            "task_id": result.task_id,
-            "success": result.success,
-            "exit_code": result.exit_code,
-            "metrics": result.metrics,
+            "task_id": payload["task_id"],
+            "success": payload["success"],
+            "exit_code": payload["exit_code"],
+            "metrics": payload["metrics"],
         }

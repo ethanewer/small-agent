@@ -60,6 +60,6 @@
   "benchmark": {
     "runtime_mode": "interactive",
     "event_log_format": "jsonl",
-    "artifact_dir": "benchmark-artifacts"
+    "artifact_dir": ".benchmark-artifacts"
   }
 }

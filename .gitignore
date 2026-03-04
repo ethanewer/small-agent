@@ -25,6 +25,8 @@ sft/logs*
 
 # Imported cli local artifacts
 cli/.local/
+cli/.benchmark-artifacts/
+cli/benchmark-artifacts/
 log*
 
 # Generated harness reports

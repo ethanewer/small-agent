@@ -4,7 +4,6 @@ from dataclasses import dataclass
 from typing import Any
 
 from agents.core.task import Task, TaskContext
-from agents.interface import AgentModelConfig
 
 
 @dataclass
@@ -35,19 +34,4 @@ def parse_terminalbench_sample(*, data: dict[str, Any]) -> TerminalBenchSample:
         task_id=task_id,
         instruction=instruction,
         metadata=metadata,
-    )
-
-
-def model_from_kwargs(
-    *,
-    model: str,
-    api_base: str,
-    api_key: str,
-    temperature: float | None = None,
-) -> AgentModelConfig:
-    return AgentModelConfig(
-        model=model,
-        api_base=api_base,
-        api_key=api_key,
-        temperature=temperature,
     )

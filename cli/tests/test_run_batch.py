@@ -11,6 +11,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 import benchmark.run_batch as run_batch  # noqa: E402
+from benchmark.runtime_config import build_runtime_cfg  # noqa: E402
 from cli import ConfigModelEntry, LoadedConfig  # noqa: E402
 
 
@@ -63,9 +64,10 @@ class TestRunBatchHelpers(unittest.TestCase):
     def test_build_runtime_cfg_resolves_api_key_and_injects_defaults(self) -> None:
         cfg = _loaded_config()
         with patch(
-            "benchmark.run_batch.cli_module.resolve_api_key", return_value="resolved"
+            "benchmark.runtime_config.cli_module.resolve_api_key",
+            return_value="resolved",
         ):
-            runtime_cfg = run_batch._build_runtime_cfg(
+            runtime_cfg = build_runtime_cfg(
                 cfg=cfg,
                 agent_key="terminus-2",
                 model_key="qwen3-coder-next",
@@ -78,9 +80,11 @@ class TestRunBatchHelpers(unittest.TestCase):
 
     def test_build_runtime_cfg_raises_when_api_key_missing(self) -> None:
         cfg = _loaded_config()
-        with patch("benchmark.run_batch.cli_module.resolve_api_key", return_value=None):
+        with patch(
+            "benchmark.runtime_config.cli_module.resolve_api_key", return_value=None
+        ):
             with self.assertRaisesRegex(ValueError, "Missing API key"):
-                run_batch._build_runtime_cfg(
+                build_runtime_cfg(
                     cfg=cfg,
                     agent_key="terminus-2",
                     model_key="qwen3-coder-next",
@@ -113,7 +117,7 @@ class TestRunBatchMain(unittest.TestCase):
                     return_value=_loaded_config(),
                 ),
                 patch(
-                    "benchmark.run_batch.cli_module.resolve_api_key",
+                    "benchmark.runtime_config.cli_module.resolve_api_key",
                     return_value="resolved",
                 ),
                 patch("benchmark.run_batch.get_agent", return_value=object()),
