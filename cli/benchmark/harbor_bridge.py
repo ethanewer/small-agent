@@ -1,16 +1,17 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import os
 from pathlib import Path
 from typing import Any
 
-from agents.core.task import Task
-from agents.registry import get_agent
-from benchmark.adapters import AgentBenchmarkAdapter
 from benchmark.runtime_config import build_runtime_cfg
 import cli as cli_module
 
 try:
+    from terminal_bench.agents.agent_factory import (  # pyright: ignore[reportMissingImports]
+        AgentFactory,
+    )
     from terminal_bench.agents.base_agent import (  # pyright: ignore[reportMissingImports]
         AgentResult,
         BaseAgent,
@@ -24,9 +25,22 @@ try:
 except Exception:
     # Keep this module importable in local test environments where
     # terminal-bench is not installed.
+    AgentFactory = None
+
     class BaseAgent:
         def __init__(self, **kwargs: Any) -> None:
             del kwargs
+
+        def perform_task(
+            self,
+            instruction: str,
+            session: "TmuxSession",
+            logging_dir: Path | None = None,
+        ) -> "AgentResult":
+            del instruction
+            del session
+            del logging_dir
+            raise NotImplementedError
 
     @dataclass
     class AgentResult:
@@ -58,6 +72,10 @@ def resolve_harbor_config(
     model_key: str | None = None,
 ) -> HarborResolvedConfig:
     selected_path = Path(config_path) if config_path else cli_module.CONFIG_PATH
+    selected_path = selected_path.expanduser()
+    if not selected_path.is_absolute():
+        selected_path = (Path.cwd() / selected_path).resolve()
+
     loaded = cli_module.load_config(selected_path)
     return HarborResolvedConfig(
         config_path=selected_path,
@@ -67,28 +85,58 @@ def resolve_harbor_config(
     )
 
 
-def build_adapter_from_config(
+def _set_runtime_api_key_env(*, resolved: HarborResolvedConfig) -> None:
+    model_cfg = resolved.loaded.models[resolved.model_key]
+    env_name = cli_module._env_var_name(config_api_key=model_cfg.api_key)
+    if not env_name:
+        return
+
+    api_key = cli_module.resolve_api_key(config_api_key=model_cfg.api_key)
+    if not api_key:
+        return
+
+    os.environ[env_name] = api_key
+
+
+def build_terminal_bench_agent_from_config(
     *,
     config_path: Path | str | None = None,
     agent_key: str | None = None,
     model_key: str | None = None,
-    console: Any | None = None,
-) -> AgentBenchmarkAdapter:
+) -> BaseAgent | None:
     resolved = resolve_harbor_config(
         config_path=config_path,
         agent_key=agent_key,
         model_key=model_key,
     )
+    if AgentFactory is None:
+        return None
+
+    _set_runtime_api_key_env(resolved=resolved)
     runtime_cfg = build_runtime_cfg(
         cfg=resolved.loaded,
         agent_key=resolved.agent_key,
         model_key=resolved.model_key,
     )
-    return AgentBenchmarkAdapter(
-        agent=get_agent(resolved.agent_key),
-        runtime_cfg=runtime_cfg,
-        console=console,
+    agent_kwargs = dict(runtime_cfg.agent_config)
+    agent_kwargs.update(
+        {
+            "model_name": runtime_cfg.model.model,
+            "api_base": runtime_cfg.model.api_base,
+            "temperature": runtime_cfg.model.temperature
+            if runtime_cfg.model.temperature is not None
+            else 0.7,
+        }
     )
+    agent_class = AgentFactory.AGENT_NAME_TO_CLASS.get(resolved.agent_key)
+    if agent_class is None:
+        available = ", ".join(sorted(AgentFactory.AGENT_NAME_TO_CLASS.keys()))
+        raise ValueError(
+            f"Unsupported terminal-bench agent '{resolved.agent_key}'. "
+            f"Available agent names: {available}"
+        )
+
+    return agent_class(**agent_kwargs)
 
 
 class HarborTB2DefaultAgent(BaseAgent):  # pyright: ignore[reportGeneralTypeIssues]
@@ -96,7 +144,7 @@ class HarborTB2DefaultAgent(BaseAgent):  # pyright: ignore[reportGeneralTypeIssu
     Terminal-Bench import-path agent.
 
     This bridge resolves defaults from cli/config.json and delegates execution
-    to the existing small-agent runtime adapter.
+    to an official terminal-bench agent instance.
     """
 
     def __init__(self, **kwargs: Any) -> None:
@@ -111,11 +159,10 @@ class HarborTB2DefaultAgent(BaseAgent):  # pyright: ignore[reportGeneralTypeIssu
             agent_key=kwargs.get("agent_key"),
             model_key=kwargs.get("model_key"),
         )
-        self._adapter = build_adapter_from_config(
+        self._tb_agent = build_terminal_bench_agent_from_config(
             config_path=self._resolved.config_path,
             agent_key=self._resolved.agent_key,
             model_key=self._resolved.model_key,
-            console=None,
         )
 
     @staticmethod
@@ -128,31 +175,24 @@ class HarborTB2DefaultAgent(BaseAgent):  # pyright: ignore[reportGeneralTypeIssu
         session: TmuxSession,
         logging_dir: Path | None = None,
     ) -> AgentResult:
-        del session
-        del logging_dir
-        run_result = self._adapter.run_sync(
-            task=Task.from_instruction(
-                instruction=instruction,
-                task_id="harbor-import-path-task",
+        if self._tb_agent is None:
+            return AgentResult(
+                total_input_tokens=0,
+                total_output_tokens=0,
+                failure_mode=FailureMode.UNKNOWN_AGENT_ERROR,
+                timestamped_markers=[],
             )
-        )
 
-        input_tokens = int(
-            run_result.metrics.get("input_tokens")
-            or run_result.metrics.get("prompt_tokens")
-            or 0
-        )
-        output_tokens = int(
-            run_result.metrics.get("output_tokens")
-            or run_result.metrics.get("completion_tokens")
-            or 0
-        )
-        failure_mode = (
-            FailureMode.NONE if run_result.success else FailureMode.UNKNOWN_AGENT_ERROR
-        )
-        return AgentResult(
-            total_input_tokens=input_tokens,
-            total_output_tokens=output_tokens,
-            failure_mode=failure_mode,
-            timestamped_markers=[],
-        )
+        try:
+            return self._tb_agent.perform_task(
+                instruction=instruction,
+                session=session,
+                logging_dir=logging_dir,
+            )
+        except Exception:
+            return AgentResult(
+                total_input_tokens=0,
+                total_output_tokens=0,
+                failure_mode=FailureMode.UNKNOWN_AGENT_ERROR,
+                timestamped_markers=[],
+            )

@@ -4,14 +4,14 @@ import unittest
 from pathlib import Path
 import sys
 from typing import Any, cast
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from agents.core.result import RunResult  # noqa: E402
 from benchmark.harbor_bridge import (  # noqa: E402
     HarborTB2DefaultAgent,
+    build_terminal_bench_agent_from_config,
     resolve_harbor_config,
 )
 from cli import ConfigModelEntry, LoadedConfig  # noqa: E402
@@ -66,21 +66,53 @@ class TestHarborBridge(unittest.TestCase):
         self.assertEqual(resolved.agent_key, "qwen")
         self.assertEqual(resolved.model_key, "gpt-5.3-codex")
 
-    def test_perform_task_maps_success_result(self) -> None:
-        run_result = RunResult(
-            exit_code=0,
-            success=True,
-            task_id="task-1",
-            metrics={
-                "input_tokens": 120.0,
-                "output_tokens": 45.0,
-            },
-        )
-        fake_adapter = type(
-            "FakeAdapter",
+    def test_build_terminal_bench_agent_uses_runtime_cfg(self) -> None:
+        cfg = _loaded_config()
+        fake_agent_class = Mock()
+        fake_agent_class.return_value = object()
+        fake_factory = type(
+            "FakeFactory",
             (),
-            {"run_sync": lambda self, task: run_result},
+            {"AGENT_NAME_TO_CLASS": {"terminus-2": fake_agent_class}},
+        )
+        with (
+            patch(
+                "benchmark.harbor_bridge.cli_module.load_config",
+                return_value=cfg,
+            ),
+            patch(
+                "benchmark.harbor_bridge.AgentFactory",
+                fake_factory,
+            ),
+        ):
+            _ = build_terminal_bench_agent_from_config(
+                config_path="/tmp/config.json",
+                agent_key="terminus-2",
+                model_key="qwen3-coder-next",
+            )
+
+        fake_agent_class.assert_called_once()
+        call_kwargs = fake_agent_class.call_args.kwargs
+        self.assertEqual(call_kwargs["model_name"], "qwen/qwen3-coder-next")
+        self.assertEqual(
+            call_kwargs["api_base"],
+            "https://openrouter.ai/api/v1",
+        )
+        self.assertEqual(call_kwargs["temperature"], 0.7)
+
+    def test_perform_task_delegates_to_terminal_bench_agent(self) -> None:
+        delegate_result = type(
+            "DelegateResult",
+            (),
+            {
+                "total_input_tokens": 120,
+                "total_output_tokens": 45,
+                "failure_mode": "none",
+                "timestamped_markers": [],
+            },
         )()
+        fake_delegate = Mock()
+        fake_delegate.perform_task.return_value = delegate_result
         with (
             patch(
                 "benchmark.harbor_bridge.resolve_harbor_config",
@@ -96,8 +128,8 @@ class TestHarborBridge(unittest.TestCase):
                 )(),
             ),
             patch(
-                "benchmark.harbor_bridge.build_adapter_from_config",
-                return_value=fake_adapter,
+                "benchmark.harbor_bridge.build_terminal_bench_agent_from_config",
+                return_value=fake_delegate,
             ),
         ):
             agent = HarborTB2DefaultAgent()
@@ -106,22 +138,14 @@ class TestHarborBridge(unittest.TestCase):
                 session=cast(Any, object()),
             )
 
+        fake_delegate.perform_task.assert_called_once()
         self.assertEqual(agent_result.total_input_tokens, 120)
         self.assertEqual(agent_result.total_output_tokens, 45)
         self.assertEqual(_failure_mode_value(agent_result.failure_mode), "none")
 
-    def test_perform_task_maps_failure_result(self) -> None:
-        run_result = RunResult(
-            exit_code=1,
-            success=False,
-            task_id="task-2",
-            metrics={"prompt_tokens": 30.0, "completion_tokens": 10.0},
-        )
-        fake_adapter = type(
-            "FakeAdapter",
-            (),
-            {"run_sync": lambda self, task: run_result},
-        )()
+    def test_perform_task_returns_failure_on_delegate_error(self) -> None:
+        fake_delegate = Mock()
+        fake_delegate.perform_task.side_effect = RuntimeError("boom")
         with (
             patch(
                 "benchmark.harbor_bridge.resolve_harbor_config",
@@ -137,8 +161,8 @@ class TestHarborBridge(unittest.TestCase):
                 )(),
             ),
             patch(
-                "benchmark.harbor_bridge.build_adapter_from_config",
-                return_value=fake_adapter,
+                "benchmark.harbor_bridge.build_terminal_bench_agent_from_config",
+                return_value=fake_delegate,
             ),
         ):
             agent = HarborTB2DefaultAgent()
@@ -147,8 +171,8 @@ class TestHarborBridge(unittest.TestCase):
                 session=cast(Any, object()),
             )
 
-        self.assertEqual(agent_result.total_input_tokens, 30)
-        self.assertEqual(agent_result.total_output_tokens, 10)
+        self.assertEqual(agent_result.total_input_tokens, 0)
+        self.assertEqual(agent_result.total_output_tokens, 0)
         self.assertEqual(
             _failure_mode_value(agent_result.failure_mode),
             "unknown_agent_error",

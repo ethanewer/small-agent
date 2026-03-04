@@ -46,6 +46,8 @@ For a full command cookbook, see:
   - `--agent-kwarg config_path=...`
   - `--agent-kwarg agent_key=...`
   - `--agent-kwarg model_key=...`
+- The Harbor bridge delegates to official terminal-bench agents, so task
+  commands execute through the provided tmux session in the docker sandbox.
 
 Smoke check (single task from the official task registry):
 
@@ -53,11 +55,11 @@ Smoke check (single task from the official task registry):
 uvx --with pexpect --with rich --from terminal-bench tb run \
   --dataset terminal-bench-core==0.1.1 \
   --agent-import-path benchmark.harbor_bridge:HarborTB2DefaultAgent \
-  --agent-kwarg config_path=./config.json \
+  --agent-kwarg config_path="$(pwd)/cli/config.json" \
   --task-id fix-git \
   --n-attempts 1 \
   --n-concurrent 1 \
-  --output-path .benchmark-artifacts/tb2-runs
+  --output-path "${TMPDIR:-/tmp}/small-agent-tb2-runs"
 ```
 
 Tiny subset run (5 tasks, all present in Terminal-Bench 2.0 and terminal-bench-core==0.1.1):
@@ -66,7 +68,7 @@ Tiny subset run (5 tasks, all present in Terminal-Bench 2.0 and terminal-bench-c
 uvx --with pexpect --with rich --from terminal-bench tb run \
   --dataset terminal-bench-core==0.1.1 \
   --agent-import-path benchmark.harbor_bridge:HarborTB2DefaultAgent \
-  --agent-kwarg config_path=./config.json \
+  --agent-kwarg config_path="$(pwd)/cli/config.json" \
   --task-id configure-git-webserver \
   --task-id fix-git \
   --task-id count-dataset-tokens \
@@ -74,6 +76,6 @@ uvx --with pexpect --with rich --from terminal-bench tb run \
   --task-id nginx-request-logging \
   --n-attempts 1 \
   --n-concurrent 4 \
-  --output-path .benchmark-artifacts/tb2-runs
+  --output-path "${TMPDIR:-/tmp}/small-agent-tb2-runs"
 ```
 

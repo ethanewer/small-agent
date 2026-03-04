@@ -51,15 +51,25 @@ Full run for one model:
 All scripts support these optional env vars:
 
 - `TB_DATASET` (default: `terminal-bench-core==0.1.1`)
-- `TB_DATASET_PATH` (if set, uses `--dataset-path` directly)
-- `TB_OUTPUT_PATH` (default: `.benchmark-artifacts/tb2-runs`)
+- `TB_DATASET_PATH` (if set, uses `--dataset-path` directly; otherwise uses `--dataset`)
+- `TB_OUTPUT_PATH` (default: `${TMPDIR:-/tmp}/small-agent-tb2-runs`)
 - `TB_AGENT_IMPORT_PATH` (default: `benchmark.harbor_bridge:HarborTB2DefaultAgent`)
-- `TB_CONFIG_PATH` (default: `./config.json`)
+- `TB_CONFIG_PATH` (default: `./config.json`; resolved to an absolute path before launch)
 - `TB_LOCAL_REGISTRY_PATH` (if set, passes `--local-registry-path`)
+- `TB_USE_DATASET_CACHE` (default: `1`; when enabled and `TB_DATASET=name==version`,
+  auto-uses `~/.cache/terminal-bench/<name>/<version>` if present)
 
 If `--model` or `--agent` are omitted, scripts read `default_model` and
 `default_agent` from `TB_CONFIG_PATH`.
 
-When `TB_DATASET` is in `name==version` form and the dataset already exists in
-`~/.cache/terminal-bench/<name>/<version>`, scripts automatically switch to
-`--dataset-path` to avoid remote registry lookups.
+## Reproducibility notes
+
+- Benchmark scripts do not auto-switch to host cache paths. This avoids
+  machine-specific `~/.cache/...` leakage in run metadata.
+- Benchmark outputs default to a temp directory (not the git repo), reducing
+  accidental workspace mutations during smoke/tiny/full runs.
+- If your environment cannot fetch the remote registry (for example SSL/cert
+  interception), the default cache fallback allows offline runs when the
+  dataset version is already present under `~/.cache/terminal-bench/`.
+- Task git operations must happen inside the Terminal-Bench sandbox. If you see
+  host branch changes after a run, stop and inspect your agent import path.
