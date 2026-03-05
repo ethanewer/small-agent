@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import importlib
-import importlib.util
 import inspect
 import json
 import os
@@ -28,24 +27,16 @@ _CLI_ROOT = Path(__file__).resolve().parents[1]
 if str(_CLI_ROOT) not in sys.path:
     sys.path.insert(0, str(_CLI_ROOT))
 
-cli_file_path = _CLI_ROOT / "cli.py"
-spec = importlib.util.spec_from_file_location(
-    name="small_agent_cli", location=cli_file_path
+from harbor_config import (  # noqa: E402
+    CONFIG_PATH,
+    _env_var_name,
+    build_runtime_config,
+    load_config,
 )
-if spec is None or spec.loader is None:  # pragma: no cover
-    raise RuntimeError(f"Unable to import cli module from {cli_file_path}")
-
-_cli_module = importlib.util.module_from_spec(spec=spec)
-sys.modules["small_agent_cli"] = _cli_module
-spec.loader.exec_module(module=_cli_module)
-
-CONFIG_PATH = getattr(_cli_module, "CONFIG_PATH")
-build_runtime_config = getattr(_cli_module, "build_runtime_config")
-load_config = getattr(_cli_module, "load_config")
-get_agent = getattr(_cli_module, "get_agent")
 
 _MODEL_ENV_NAME = "SMALL_AGENT_HARBOR_MODEL"
 _AGENT_ENV_NAME = "SMALL_AGENT_HARBOR_AGENT"
+_REMOTE_CLI_ROOT = "/tmp/small-agent-cli"
 
 
 def _safe_setattr(obj: Any, name: str, value: Any) -> None:
@@ -87,6 +78,14 @@ def _append_context_message(context: Any, message: str) -> None:
         method_name="log",
         kwargs={"message": message},
     )
+    metadata = getattr(context, "metadata", None)
+    if not isinstance(metadata, dict):
+        metadata = {}
+        _safe_setattr(obj=context, name="metadata", value=metadata)
+    if isinstance(metadata, dict):
+        logs = metadata.setdefault("small_agent_logs", [])
+        if isinstance(logs, list):
+            logs.append(message)
 
 
 def _set_context_result(
@@ -116,8 +115,38 @@ def _set_context_result(
     _safe_setattr(obj=context, name="stderr", value=stderr)
 
     metadata = getattr(context, "metadata", None)
+    if not isinstance(metadata, dict):
+        metadata = {}
+        _safe_setattr(obj=context, name="metadata", value=metadata)
     if isinstance(metadata, dict):
         metadata["small_agent_result"] = payload
+
+
+def _record_setup_stage(
+    *,
+    context: Any | None,
+    stage: str,
+    status: str,
+    details: str | None = None,
+) -> None:
+    if context is None:
+        return
+
+    metadata = getattr(context, "metadata", None)
+    if not isinstance(metadata, dict):
+        metadata = {}
+        _safe_setattr(obj=context, name="metadata", value=metadata)
+    if not isinstance(metadata, dict):
+        return
+
+    setup_log = metadata.setdefault("small_agent_setup", {})
+    if not isinstance(setup_log, dict):
+        return
+
+    payload: dict[str, str] = {"status": status}
+    if details:
+        payload["details"] = details
+    setup_log[stage] = payload
 
 
 async def _maybe_await(value: Any) -> Any:
@@ -163,36 +192,46 @@ async def _environment_exec(
 
 
 def _extract_exec_fields(exec_result: Any) -> tuple[int, str, str]:
+    def _as_text(value: Any) -> str:
+        if value is None:
+            return ""
+        return str(value)
+
     if exec_result is None:
         return 0, "", ""
 
     if isinstance(exec_result, tuple):
         if len(exec_result) == 3:
             first, second, third = exec_result
-            return int(first), str(second), str(third)
+            return int(first), _as_text(second), _as_text(third)
 
         if len(exec_result) == 2:
             first, second = exec_result
-            return int(first), str(second), ""
+            return int(first), _as_text(second), ""
 
     if isinstance(exec_result, str):
         return 0, exec_result, ""
 
     if isinstance(exec_result, dict):
-        exit_code = int(exec_result.get("exit_code", exec_result.get("returncode", 0)))
-        stdout = str(exec_result.get("stdout", ""))
-        stderr = str(exec_result.get("stderr", ""))
+        exit_code = int(
+            exec_result.get(
+                "exit_code",
+                exec_result.get("returncode", exec_result.get("return_code", 0)),
+            )
+        )
+        stdout = _as_text(exec_result.get("stdout", ""))
+        stderr = _as_text(exec_result.get("stderr", ""))
         return exit_code, stdout, stderr
 
     exit_code = int(
         getattr(
             exec_result,
             "exit_code",
-            getattr(exec_result, "returncode", 0),
+            getattr(exec_result, "returncode", getattr(exec_result, "return_code", 0)),
         )
     )
-    stdout = str(getattr(exec_result, "stdout", ""))
-    stderr = str(getattr(exec_result, "stderr", ""))
+    stdout = _as_text(getattr(exec_result, "stdout", ""))
+    stderr = _as_text(getattr(exec_result, "stderr", ""))
     return exit_code, stdout, stderr
 
 
@@ -203,6 +242,51 @@ def _raise_for_exec_failure(*, exec_result: Any, action: str) -> None:
 
     details = stderr.strip() or stdout.strip() or "no output captured"
     raise RuntimeError(f"{action} failed with exit_code={exit_code}: {details}")
+
+
+async def _environment_is_dir(*, environment: Any, path: str) -> bool:
+    checker = getattr(environment, "is_dir", None)
+    if callable(checker):
+        try:
+            result = await _maybe_await(checker(path=path))
+            return bool(result)
+        except TypeError:
+            result = await _maybe_await(checker(path))
+            return bool(result)
+
+    probe = await _environment_exec(
+        environment=environment,
+        command=f"test -d {shlex.quote(path)}",
+        cwd=None,
+        env=None,
+        timeout_sec=5,
+    )
+    exit_code, _, _ = _extract_exec_fields(exec_result=probe)
+    return exit_code == 0
+
+
+async def _environment_upload_dir(
+    *,
+    environment: Any,
+    source_dir: Path,
+    target_dir: str,
+) -> None:
+    uploader = getattr(environment, "upload_dir", None)
+    if not callable(uploader):
+        raise RuntimeError("Harbor environment does not expose an upload_dir method.")
+
+    attempts: list[dict[str, Any]] = [
+        {"source_dir": source_dir, "target_dir": target_dir},
+        {"source_dir": str(source_dir), "target_dir": target_dir},
+    ]
+    for kwargs in attempts:
+        try:
+            await _maybe_await(uploader(**kwargs))
+            return
+        except TypeError:
+            continue
+
+    await _maybe_await(uploader(str(source_dir), target_dir))
 
 
 class SmallAgentHarborAgent(HarborBaseAgent):
@@ -248,14 +332,57 @@ class SmallAgentHarborAgent(HarborBaseAgent):
         selected_model = self._forced_model_key or os.getenv(_MODEL_ENV_NAME) or None
         return selected_agent, selected_model
 
-    async def setup(self, environment: Any) -> None:
+    async def _ensure_cli_available(
+        self,
+        *,
+        environment: Any,
+        context: Any | None = None,
+    ) -> None:
+        _record_setup_stage(
+            context=context,
+            stage="check_remote_cli_dir",
+            status="started",
+        )
+        cli_present = await _environment_is_dir(
+            environment=environment,
+            path=_REMOTE_CLI_ROOT,
+        )
+        _record_setup_stage(
+            context=context,
+            stage="check_remote_cli_dir",
+            status="ok",
+            details=f"exists={cli_present}",
+        )
+        if not cli_present:
+            _record_setup_stage(
+                context=context,
+                stage="upload_cli_bundle",
+                status="started",
+            )
+            await _environment_upload_dir(
+                environment=environment,
+                source_dir=_CLI_ROOT,
+                target_dir=_REMOTE_CLI_ROOT,
+            )
+            _record_setup_stage(
+                context=context,
+                stage="upload_cli_bundle",
+                status="ok",
+            )
+
         setup_command = (
-            "if [ -x ./cli/run ]; then "
-            "echo 'small-agent cli is available'; "
+            f"if [ -f {shlex.quote(_REMOTE_CLI_ROOT + '/cli.py')} ] && "
+            f"[ -f {shlex.quote(_REMOTE_CLI_ROOT + '/config.json')} ]; then "
+            "echo 'small-agent cli bundle is available'; "
             "else "
-            "echo 'missing ./cli/run in workspace root' >&2; "
+            "echo 'small-agent cli bundle is missing required files' >&2; "
             "exit 1; "
             "fi"
+        )
+        _record_setup_stage(
+            context=context,
+            stage="preflight_cli_bundle",
+            status="started",
         )
         setup_result = await _environment_exec(
             environment=environment,
@@ -267,6 +394,64 @@ class SmallAgentHarborAgent(HarborBaseAgent):
         _raise_for_exec_failure(
             exec_result=setup_result,
             action="Harbor setup preflight",
+        )
+        _record_setup_stage(
+            context=context,
+            stage="preflight_cli_bundle",
+            status="ok",
+        )
+        bootstrap_command = (
+            "set -e; "
+            "export DEBIAN_FRONTEND=noninteractive; "
+            "if ! command -v python3 >/dev/null 2>&1; then "
+            "apt-get update && apt-get install -y --no-install-recommends "
+            "python3 python3-pip ca-certificates; "
+            "fi; "
+            "if ! python3 -m pip --version >/dev/null 2>&1; then "
+            "apt-get update && apt-get install -y --no-install-recommends "
+            "python3-pip ca-certificates; "
+            "fi; "
+            'PIP_BREAK_FLAG=""; '
+            "if python3 -m pip install --help 2>/dev/null | "
+            "grep -q -- --break-system-packages; then "
+            'PIP_BREAK_FLAG="--break-system-packages"; '
+            "fi; "
+            'if ! python3 -c "import pexpect, rich, litellm" '
+            ">/dev/null 2>&1; then "
+            "python3 -m pip install --disable-pip-version-check --no-input "
+            "$PIP_BREAK_FLAG pexpect rich litellm || "
+            "python3 -m pip install --disable-pip-version-check --no-input "
+            "$PIP_BREAK_FLAG "
+            "--trusted-host pypi.org --trusted-host files.pythonhosted.org "
+            "pexpect rich litellm; "
+            "fi"
+        )
+        _record_setup_stage(
+            context=context,
+            stage="bootstrap_python_dependencies",
+            status="started",
+        )
+        bootstrap_result = await _environment_exec(
+            environment=environment,
+            command=bootstrap_command,
+            cwd=_REMOTE_CLI_ROOT,
+            env=None,
+            timeout_sec=300,
+        )
+        _raise_for_exec_failure(
+            exec_result=bootstrap_result,
+            action="Harbor setup dependency bootstrap",
+        )
+        _record_setup_stage(
+            context=context,
+            stage="bootstrap_python_dependencies",
+            status="ok",
+        )
+
+    async def setup(self, environment: Any) -> None:
+        await self._ensure_cli_available(
+            environment=environment,
+            context=None,
         )
 
     async def run(
@@ -286,6 +471,10 @@ class SmallAgentHarborAgent(HarborBaseAgent):
                 stderr="Instruction is required.",
             )
             return
+        await self._ensure_cli_available(
+            environment=environment,
+            context=context,
+        )
 
         loaded_config = load_config(path=self._config_path)
         selected_agent, selected_model = self._select_keys()
@@ -324,23 +513,11 @@ class SmallAgentHarborAgent(HarborBaseAgent):
             )
             return
 
-        try:
-            get_agent(agent_key=active_agent_key)
-        except ValueError as err:
-            _append_context_message(context=context, message=str(err))
-            _set_context_result(
-                context=context,
-                success=False,
-                exit_code=1,
-                stdout="",
-                stderr=str(err),
-            )
-            return
-
         runtime_cfg = build_runtime_config(
             config=loaded_config,
             agent_key=active_agent_key,
             model_key=active_model_key,
+            allow_shell_lookup=True,
         )
         _append_context_message(
             context=context,
@@ -354,9 +531,14 @@ class SmallAgentHarborAgent(HarborBaseAgent):
             "OPENAI_BASE_URL": runtime_cfg.model.api_base,
             "OPENAI_API_KEY": runtime_cfg.model.api_key,
         }
+        model_env_name = _env_var_name(
+            config_api_key=loaded_config.models[active_model_key].api_key,
+        )
+        if model_env_name:
+            env_overrides[model_env_name] = runtime_cfg.model.api_key
         run_command = (
-            "./cli/run "
-            f"--config {shlex.quote(str(self._config_path))} "
+            f"python3 {shlex.quote(_REMOTE_CLI_ROOT + '/cli.py')} "
+            f"--config {shlex.quote(_REMOTE_CLI_ROOT + '/config.json')} "
             f"--agent {shlex.quote(active_agent_key)} "
             f"--model {shlex.quote(active_model_key)} "
             f"{shlex.quote(instruction_clean)}"

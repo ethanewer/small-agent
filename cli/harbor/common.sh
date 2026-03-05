@@ -13,6 +13,7 @@ HARBOR_CMD=()
 JOBS_ROOT="${SCRIPT_DIR}/jobs"
 RESOLVED_JOBS_DIR=""
 RUN_ID=""
+RESOLVED_N_CONCURRENT=""
 
 usage_common() {
   cat <<'EOF'
@@ -85,9 +86,7 @@ resolve_harbor_command() {
       uvx
       --from harbor
       --with truststore
-      --with pexpect
       --with rich
-      --with litellm
       python
       -c
       "import truststore; truststore.inject_into_ssl(); from harbor.cli.main import app; app()"
@@ -144,14 +143,48 @@ PY
   RESOLVED_AGENT="$(printf '%s\n' "${json_output}" | sed -n '2p')"
 }
 
+append_agent_env_passthrough() {
+  resolve_from_shell() {
+    local env_name="$1"
+    if [[ -n "${!env_name:-}" ]]; then
+      printf '%s' "${!env_name}"
+      return 0
+    fi
+
+    if command -v zsh >/dev/null 2>&1; then
+      local resolved
+      resolved="$(
+        zsh -ic "source ~/.zshrc >/dev/null 2>&1; printf %s \"\${${env_name}}\"" 2>/dev/null || true
+      )"
+      if [[ -n "${resolved}" ]]; then
+        printf '%s' "${resolved}"
+        return 0
+      fi
+    fi
+
+    return 1
+  }
+
+  local env_name
+  for env_name in OPENROUTER_API_KEY OPENAI_API_KEY OPENAI_BASE_URL SMALL_AGENT_CA_BUNDLE; do
+    local value
+    if value="$(resolve_from_shell "${env_name}")"; then
+      HARBOR_COMMAND+=(--agent-env "${env_name}=${value}")
+    fi
+  done
+}
+
 build_harbor_dataset_command() {
   resolve_harbor_command
   resolve_safe_jobs_dir
   local dataset_ref="$1"
+  local n_concurrent="${2:-}"
+  RESOLVED_N_CONCURRENT="${n_concurrent}"
   HARBOR_COMMAND=(
     "${HARBOR_CMD[@]}"
     run
     --jobs-dir "${RESOLVED_JOBS_DIR}"
+    --n-concurrent "${n_concurrent}"
     --env docker
     --delete
     --no-force-build
@@ -164,16 +197,20 @@ build_harbor_dataset_command() {
   if [[ -n "${RESOLVED_AGENT}" ]]; then
     HARBOR_COMMAND+=(--agent-env "SMALL_AGENT_HARBOR_AGENT=${RESOLVED_AGENT}")
   fi
+  append_agent_env_passthrough
 }
 
 build_harbor_path_command() {
   resolve_harbor_command
   resolve_safe_jobs_dir
   local task_or_dataset_path="$1"
+  local n_concurrent="${2:-}"
+  RESOLVED_N_CONCURRENT="${n_concurrent}"
   HARBOR_COMMAND=(
     "${HARBOR_CMD[@]}"
     run
     --jobs-dir "${RESOLVED_JOBS_DIR}"
+    --n-concurrent "${n_concurrent}"
     --env docker
     --delete
     --no-force-build
@@ -186,10 +223,11 @@ build_harbor_path_command() {
   if [[ -n "${RESOLVED_AGENT}" ]]; then
     HARBOR_COMMAND+=(--agent-env "SMALL_AGENT_HARBOR_AGENT=${RESOLVED_AGENT}")
   fi
+  append_agent_env_passthrough
 }
 
 print_harbor_command() {
-  printf 'Resolved model=%s agent=%s jobs_dir=%s\n' "${RESOLVED_MODEL}" "${RESOLVED_AGENT}" "${RESOLVED_JOBS_DIR}"
+  printf 'Resolved model=%s agent=%s n_concurrent=%s jobs_dir=%s\n' "${RESOLVED_MODEL}" "${RESOLVED_AGENT}" "${RESOLVED_N_CONCURRENT}" "${RESOLVED_JOBS_DIR}"
   printf 'Command:'
   local token
   for token in "${HARBOR_COMMAND[@]}"; do

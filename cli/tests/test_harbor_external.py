@@ -7,57 +7,12 @@ import tempfile
 import unittest
 from pathlib import Path
 import sys
-import types
 from typing import Any
 from unittest.mock import patch
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 AGENT_PATH = PROJECT_ROOT / "harbor" / "agent.py"
 sys.path.insert(0, str(PROJECT_ROOT))
-
-
-def _install_runtime_dependency_stubs() -> None:
-    if "litellm" not in sys.modules:
-        litellm_module = types.ModuleType("litellm")
-        setattr(litellm_module, "suppress_debug_info", True)
-
-        def _completion(*_args: object, **_kwargs: object) -> dict[str, object]:
-            return {"choices": [{"message": {"content": "{}"}}]}
-
-        setattr(litellm_module, "completion", _completion)
-        sys.modules["litellm"] = litellm_module
-
-    if "pexpect" not in sys.modules:
-        pexpect_module = types.ModuleType("pexpect")
-
-        class _DummySpawn:
-            def __init__(self, *_args: object, **_kwargs: object) -> None:
-                return
-
-            def sendline(self, *_args: object, **_kwargs: object) -> None:
-                return
-
-            def expect_exact(self, *_args: object, **_kwargs: object) -> None:
-                return
-
-            def sendcontrol(self, *_args: object, **_kwargs: object) -> None:
-                return
-
-            def send(self, *_args: object, **_kwargs: object) -> None:
-                return
-
-            def close(self, *_args: object, **_kwargs: object) -> None:
-                return
-
-        class _Timeout(Exception):
-            pass
-
-        setattr(pexpect_module, "spawn", _DummySpawn)
-        setattr(pexpect_module, "TIMEOUT", _Timeout)
-        sys.modules["pexpect"] = pexpect_module
-
-
-_install_runtime_dependency_stubs()
 
 agent_spec = importlib.util.spec_from_file_location("harbor_agent_module", AGENT_PATH)
 assert agent_spec and agent_spec.loader
@@ -68,9 +23,17 @@ SmallAgentHarborAgent = harbor_agent.SmallAgentHarborAgent
 
 
 class _FakeEnvironment:
-    def __init__(self, *, result: dict[str, Any] | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        result: dict[str, Any] | None = None,
+        results: list[dict[str, Any]] | None = None,
+    ) -> None:
         self.calls: list[dict[str, Any]] = []
         self._result = result or {"exit_code": 0, "stdout": "ok", "stderr": ""}
+        self._results = list(results or [])
+        self.directories: set[str] = set()
+        self.upload_calls: list[dict[str, str]] = []
 
     async def exec(
         self,
@@ -88,7 +51,21 @@ class _FakeEnvironment:
                 "timeout_sec": timeout_sec,
             }
         )
+        if self._results:
+            return self._results.pop(0)
         return self._result
+
+    async def is_dir(self, *, path: str) -> bool:
+        return path in self.directories
+
+    async def upload_dir(self, *, source_dir: str | Path, target_dir: str) -> None:
+        self.upload_calls.append(
+            {
+                "source_dir": str(source_dir),
+                "target_dir": target_dir,
+            }
+        )
+        self.directories.add(target_dir)
 
 
 class _FakeContext:
@@ -138,19 +115,34 @@ class TestHarborExternalAgent(unittest.TestCase):
             "max_wait_seconds": 10.0,
         }
 
+    def test_agent_import_does_not_pull_task_runtime_modules(self) -> None:
+        module_name = "harbor_agent_module_isolation"
+        for module_key in ("litellm", "pexpect", module_name):
+            sys.modules.pop(module_key, None)
+
+        spec = importlib.util.spec_from_file_location(module_name, AGENT_PATH)
+        self.assertIsNotNone(spec)
+        assert spec and spec.loader
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[module_name] = module
+        spec.loader.exec_module(module=module)
+        self.assertNotIn("litellm", sys.modules)
+        self.assertNotIn("pexpect", sys.modules)
+
     def test_setup_checks_cli_run_exists(self) -> None:
         environment = _FakeEnvironment()
         agent = SmallAgentHarborAgent()
         asyncio.run(agent.setup(environment=environment))
+        self.assertTrue(environment.upload_calls)
         self.assertTrue(environment.calls)
-        self.assertIn("./cli/run", environment.calls[0]["command"])
+        self.assertIn("/tmp/small-agent-cli/cli.py", environment.calls[0]["command"])
 
     def test_setup_fails_when_cli_run_missing(self) -> None:
         environment = _FakeEnvironment(
             result={
                 "exit_code": 1,
                 "stdout": "",
-                "stderr": "missing ./cli/run in workspace root",
+                "stderr": "small-agent cli bundle is missing required files",
             }
         )
         agent = SmallAgentHarborAgent()
@@ -183,6 +175,11 @@ class TestHarborExternalAgent(unittest.TestCase):
         self.assertIn("--model qwen3-coder-next", run_call["command"])
         run_env = run_call["env"]
         self.assertEqual(run_env["OPENAI_MODEL"], "qwen/qwen3-coder-next")
+        setup_metadata = context.metadata.get("small_agent_setup", {})
+        self.assertEqual(
+            setup_metadata.get("bootstrap_python_dependencies", {}).get("status"),
+            "ok",
+        )
 
     def test_run_honors_env_overrides(self) -> None:
         path = self._write_config(self._minimal_config())
@@ -217,7 +214,11 @@ class TestHarborExternalAgent(unittest.TestCase):
         path = self._write_config(self._minimal_config())
         try:
             environment = _FakeEnvironment(
-                result={"exit_code": 3, "stdout": "bad", "stderr": "failure"}
+                results=[
+                    {"exit_code": 0, "stdout": "ok", "stderr": ""},
+                    {"exit_code": 0, "stdout": "ok", "stderr": ""},
+                    {"exit_code": 3, "stdout": "bad", "stderr": "failure"},
+                ]
             )
             context = _FakeContext()
             agent = SmallAgentHarborAgent(config_path=str(path))
@@ -237,29 +238,34 @@ class TestHarborExternalAgent(unittest.TestCase):
         self.assertEqual(context.result["exit_code"], 3)
         self.assertEqual(context.result["stderr"], "failure")
 
-    def test_run_reports_unsupported_agent(self) -> None:
+    def test_run_reports_unknown_agent_override(self) -> None:
         config = self._minimal_config()
-        config["default_agent"] = "my-agent"
-        config["agents"] = {"my-agent": {}}
         path = self._write_config(config)
         try:
             environment = _FakeEnvironment()
             context = _FakeContext()
             agent = SmallAgentHarborAgent(config_path=str(path))
-            asyncio.run(
-                agent.run(
-                    instruction="echo hello",
-                    environment=environment,
-                    context=context,
+            with patch.dict(
+                "os.environ",
+                {
+                    "SMALL_AGENT_HARBOR_AGENT": "missing-agent",
+                },
+                clear=False,
+            ):
+                asyncio.run(
+                    agent.run(
+                        instruction="echo hello",
+                        environment=environment,
+                        context=context,
+                    )
                 )
-            )
         finally:
             path.unlink(missing_ok=True)
 
         self.assertIsNotNone(context.result)
         assert context.result is not None
         self.assertFalse(context.result["success"])
-        self.assertIn("Unknown agent", context.result["stderr"])
+        self.assertIn("Unknown Harbor agent override", context.result["stderr"])
 
 
 if __name__ == "__main__":

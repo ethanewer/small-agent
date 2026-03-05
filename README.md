@@ -129,6 +129,16 @@ The adapter module is `cli/harbor/agent.py`, and the scripts run Harbor from
 that directory so `--agent-import-path agent:SmallAgentHarborAgent` resolves
 correctly.
 
+Runtime separation notes:
+
+- Harbor wrapper runtime (in `cli/harbor/agent.py`) only loads lightweight
+  config helpers from `cli/harbor_config.py`.
+- Task runtime executes `python3 /tmp/small-agent-cli/cli.py ...` inside the
+  benchmark environment and owns heavy CLI dependencies (`litellm`, `pexpect`,
+  etc.).
+- This split prevents Harbor wrapper dependency resolution from importing full
+  task agent stacks.
+
 The adapter resolves defaults from `cli/config.json`:
 
 - agent default -> `default_agent`
@@ -145,7 +155,6 @@ Both keys are validated against `config.json` (`agents` and `models`).
 
 The CLI includes helper scripts with fixed public Terminal-Bench datasets:
 
-- `cli/harbor/run_smoke.sh`: smoke dataset (`terminal-bench-sample@2.0`)
 - `cli/harbor/run_small.sh`: small dataset (`terminal-bench-sample@2.0`)
 - `cli/harbor/run_full.sh`: full dataset (`terminal-bench@2.0`)
 
@@ -172,7 +181,6 @@ Examples:
 
 ```bash
 cd cli
-./harbor/run_smoke.sh --dry-run
 ./harbor/run_small.sh --model gpt-5.3-codex --agent qwen --dry-run
 ./harbor/run_full.sh --agent terminus-2
 ```
