@@ -185,6 +185,57 @@ cd cli
 ./harbor/run_full.sh --agent terminus-2
 ```
 
+### Iterative Agent Evolver Pipeline
+
+This repository now includes an overnight evolver loop in
+`cli/agent_evolve/` that:
+
+- starts from a stripped, core-only Terminus-2-derived agent
+- runs benchmark/eval cycles against Harbor
+- snapshots workdir code each benchmark run
+- stores eval artifacts next to snapshots
+- can stop gracefully (Ctrl+C/SIGTERM) after the in-flight step
+- creates contained run workdirs under `cli/agent_evolve/outputs/`
+- runs the inner Cursor agent with `--workspace <run-dir> --sandbox enabled`
+  so evolution is contained to each run directory
+
+Key entrypoints:
+
+- outer loop: `cli/agent_evolve/run_outer_loop.py`
+- starting template workdir: `cli/agent_evolve/start_workdir/`
+- benchmark wrapper: `cli/agent_evolve/start_workdir/run_recorded_benchmark.py`
+- inner-loop prompt template:
+  `cli/agent_evolve/headless_inner_loop_prompt.md`
+- interface compatibility tests:
+  `cli/agent_evolve/start_workdir/test_interface_contract.py`
+
+Default run (25 iterations, small benchmark):
+
+```bash
+cd cli
+uv run python agent_evolve/run_outer_loop.py
+```
+
+Common overrides:
+
+```bash
+cd cli
+uv run python agent_evolve/run_outer_loop.py --iterations 25 --runner cli/harbor/run_small.sh
+uv run python agent_evolve/run_outer_loop.py --cursor-model gpt-5.3-codex
+```
+
+Artifacts:
+
+- all outputs are under `cli/agent_evolve/outputs/<run-id>/`
+- current run workdir: `cli/agent_evolve/outputs/<run-id>/agent_evolve/`
+- eval logs/results: `cli/agent_evolve/outputs/<run-id>/eval/`
+- agent code snapshots: `cli/agent_evolve/outputs/<run-id>/snapshots/`
+- run state: `cli/agent_evolve/outputs/<run-id>/run_state.json`
+
+`run_recorded_benchmark.py` is the required benchmark entrypoint for evolver runs.
+It guarantees each benchmark invocation generates both a code snapshot and copied
+Harbor eval artifacts.
+
 ### Interactive Commands
 
 When entering instruction interactively, you can use slash commands before starting the run:

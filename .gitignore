@@ -27,6 +27,7 @@ sft/logs*
 cli/.local/
 cli/harbor/jobs/
 log*
+*.log
 
 # Generated harness reports
 cli/agents/toolmind_harness/alignment_report*.md
