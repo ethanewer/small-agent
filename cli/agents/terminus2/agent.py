@@ -67,8 +67,14 @@ def _render_labeled_fixed(
 
 
 def _fit_line(text: str, width: int, prefix_len: int) -> str:
-    del width, prefix_len
-    return text
+    max_chars = width - prefix_len
+    if max_chars <= 0:
+        return text
+
+    if len(text) <= max_chars:
+        return text
+
+    return text[: max_chars - 1] + "…"
 
 
 def _render_response(
