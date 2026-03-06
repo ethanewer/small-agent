@@ -1,6 +1,6 @@
 {
   "default_agent": "terminus-2",
-  "default_model": "lfm-2-24b-a2b",
+  "default_model": "qwen3-coder-next",
   "agents": {
     "terminus-2": {
       "final_message": false
@@ -8,12 +8,6 @@
     "qwen": {}
   },
   "models": {
-    "lfm-2-24b-a2b": {
-      "model": "liquid/lfm-2-24b-a2b",
-      "api_base": "https://openrouter.ai/api/v1",
-      "api_key": "OPENROUTER_API_KEY",
-      "context_length": 32768
-    },
     "qwen3-coder-next": {
       "model": "qwen/qwen3-coder-next",
       "api_base": "https://openrouter.ai/api/v1",

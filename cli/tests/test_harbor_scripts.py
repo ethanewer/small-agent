@@ -36,7 +36,7 @@ class TestHarborRunnerScripts(unittest.TestCase):
         self.assertRegex(
             proc.stdout,
             re.compile(
-                r"Resolved model=lfm-2-24b-a2b agent=terminus-2 n_concurrent=\d+"
+                r"Resolved model=qwen3-coder-next agent=terminus-2 n_concurrent=\d+"
             ),
         )
         self.assertIn("-d terminal-bench@2.0", proc.stdout)
@@ -163,7 +163,7 @@ class TestHarborRunnerScripts(unittest.TestCase):
         self.assertRegex(
             proc.stdout,
             re.compile(
-                r"Resolved model=lfm-2-24b-a2b agent=terminus-2 n_concurrent=\d+"
+                r"Resolved model=qwen3-coder-next agent=terminus-2 n_concurrent=\d+"
             ),
         )
         self.assertIn("-d terminal-bench@2.0", proc.stdout)
@@ -237,7 +237,7 @@ class TestHarborRunnerScripts(unittest.TestCase):
         self.assertRegex(
             proc.stdout,
             re.compile(
-                r"Resolved model=lfm-2-24b-a2b agent=terminus-2 n_concurrent=\d+"
+                r"Resolved model=qwen3-coder-next agent=terminus-2 n_concurrent=\d+"
             ),
         )
         self.assertIn("-d terminal-bench@2.0", proc.stdout)
