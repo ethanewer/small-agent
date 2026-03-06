@@ -6,10 +6,12 @@ import json
 import os
 import re
 import time
-import warnings
 from dataclasses import dataclass
 from typing import Any, Callable, cast
 
+import httpx
+import openai
+import pexpect
 from rich.console import Console
 
 from agents.core.events import AgentEvent
@@ -18,21 +20,6 @@ from agents.core.sink import EventSink
 from agents.core.task import Task
 from agents.interface import AgentRuntimeConfig
 
-os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "true")
-warnings.filterwarnings(
-    action="ignore",
-    message=".*Failed to fetch remote model cost map.*",
-)
-warnings.filterwarnings(
-    action="ignore",
-    message=".*certificate verify failed.*",
-)
-
-import litellm  # noqa: E402
-import pexpect  # noqa: E402
-
-from litellm import completion  # noqa: E402
-
 _TLS_CERT_ERROR_MARKERS = (
     "certificate verify failed",
     "certificate_verify_failed",
@@ -40,8 +27,6 @@ _TLS_CERT_ERROR_MARKERS = (
     "unable to get local issuer certificate",
 )
 _tls_configured = False
-
-litellm.suppress_debug_info = True
 
 PROMPT_SENTINEL = "__EVOLVER_PROMPT__> "
 MAX_OUTPUT_BYTES = 10_000
@@ -373,39 +358,45 @@ def call_model(
 ) -> str:
     _configure_tls_trust()
     model_name = cfg.active_model.model
-    completion_kwargs: dict[str, Any] = {}
-    if cfg.active_model.api_base.rstrip("/").endswith("openrouter.ai/api/v1"):
-        completion_kwargs["custom_llm_provider"] = "openrouter"
-        if model_name.startswith("openrouter/"):
-            model_name = model_name.removeprefix("openrouter/")
+    if model_name.startswith("openrouter/"):
+        model_name = model_name.removeprefix("openrouter/")
 
+    completion_kwargs: dict[str, Any] = {}
     if cfg.active_model.temperature is not None:
         completion_kwargs["temperature"] = cfg.active_model.temperature
 
     last_error: Exception | None = None
     allow_insecure_tls_retry = True
+    ssl_verify: bool = True
     for attempt in range(3):
         try:
+            http_client = httpx.Client(verify=ssl_verify)
+            client = openai.OpenAI(
+                base_url=cfg.active_model.api_base,
+                api_key=api_key or "unused",
+                http_client=http_client,
+            )
             with (
                 suppress_stdio_fd(),
                 contextlib.redirect_stdout(io.StringIO()),
                 contextlib.redirect_stderr(io.StringIO()),
             ):
-                result = completion(
+                messages = cast(
+                    list[Any],
+                    history + [{"role": "user", "content": prompt}],
+                )
+                result = client.chat.completions.create(
                     model=model_name,
-                    api_base=cfg.active_model.api_base,
-                    api_key=api_key,
-                    messages=history + [{"role": "user", "content": prompt}],
+                    messages=messages,
                     **completion_kwargs,
                 )
-            payload = cast(dict[str, Any], cast(object, result))
-            return str(payload["choices"][0]["message"]["content"])
+            return str(result.choices[0].message.content)
         except Exception as err:  # noqa: BLE001
             last_error = err
             message = str(err).lower()
             if _is_tls_certificate_error(str(err)):
                 if allow_insecure_tls_retry:
-                    completion_kwargs["ssl_verify"] = False
+                    ssl_verify = False
                     allow_insecure_tls_retry = False
                     continue
 
