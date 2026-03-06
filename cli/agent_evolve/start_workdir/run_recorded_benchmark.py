@@ -4,11 +4,12 @@ import argparse
 import contextlib
 import json
 import os
-from datetime import UTC, datetime  # type: ignore
-from pathlib import Path
+import shlex
 import shutil
 import subprocess
 import sys
+from datetime import UTC, datetime  # type: ignore
+from pathlib import Path
 from typing import Iterator, cast
 
 SNAPSHOT_IGNORES = shutil.ignore_patterns(
@@ -29,7 +30,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument(
         "--runner",
         type=Path,
-        default=Path("cli/harbor/run_small.sh"),
+        default=Path("cli/harbor/run_debug.sh"),
         help="Benchmark runner path relative to repo root.",
     )
     parser.add_argument(
@@ -49,6 +50,12 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         type=str,
         default="run",
         help="Label prefix for artifact directories (e.g. 'run' or 'eval').",
+    )
+    parser.add_argument(
+        "--runner-args",
+        type=str,
+        default="",
+        help='Extra arguments forwarded to the runner script (e.g. "--split 1").',
     )
     return parser.parse_args(argv)
 
@@ -152,7 +159,7 @@ def main(argv: list[str]) -> int:
     workdir_root = script_path.parent
     repo_root: Path | None = None
     for candidate in script_path.parents:
-        if (candidate / "cli" / "harbor" / "run_small.sh").exists():
+        if (candidate / "cli" / "harbor" / "run_small_benchmark.sh").exists():
             repo_root = candidate
             break
     if repo_root is None:
@@ -173,7 +180,8 @@ def main(argv: list[str]) -> int:
     _copy_code_snapshot(workdir_root=workdir_root, target_dir=snapshot_run_dir)
 
     runner_path = (repo_root / args.runner).resolve()
-    command: list[str] = [str(runner_path), "--agent", args.agent_key]
+    extra_args = shlex.split(args.runner_args) if args.runner_args else []
+    command: list[str] = [str(runner_path), *extra_args, "--agent", args.agent_key]
     if args.model_key:
         command.extend(["--model", args.model_key])
 

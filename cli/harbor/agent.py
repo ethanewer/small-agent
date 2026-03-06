@@ -298,6 +298,7 @@ class SmallAgentHarborAgent(HarborBaseAgent):
         model_key: str | None = None,
         model_name: str | None = None,
         logs_dir: str | Path | None = None,
+        extra_env: dict[str, str] | None = None,
         **_kwargs: object,
     ) -> None:
         try:
@@ -313,6 +314,9 @@ class SmallAgentHarborAgent(HarborBaseAgent):
                 super().__init__()
             except Exception:
                 pass
+
+        if extra_env:
+            os.environ.update(extra_env)
 
         self._config_path = (
             Path(config_path).resolve() if config_path else Path(CONFIG_PATH).resolve()

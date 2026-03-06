@@ -39,7 +39,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument(
         "--runner",
         type=Path,
-        default=Path("cli/harbor/run_small.sh"),
+        default=Path("cli/harbor/run_debug.sh"),
     )
     parser.add_argument("--agent-key", type=str, default="terminus-2")
     parser.add_argument("--model-key", type=str, default=None)
@@ -47,8 +47,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument(
         "--eval-runner",
         type=Path,
-        default=Path("cli/harbor/run_eval.sh"),
-        help="Runner script for the held-out eval benchmark (run after each iteration).",
+        default=Path("cli/harbor/run_small_benchmark.sh"),
+        help="Runner script for the eval benchmark (run between outer loop iterations).",
     )
     parser.add_argument(
         "--resume",
@@ -61,6 +61,12 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         action="store_true",
         default=False,
         help="Skip the dev benchmark on iteration 1 if a cached baseline exists.",
+    )
+    parser.add_argument(
+        "--runner-args",
+        type=str,
+        default="",
+        help='Extra arguments forwarded to the dev runner script (e.g. "--split 1").',
     )
     return parser.parse_args(argv)
 
@@ -393,6 +399,8 @@ def main(argv: list[str]) -> int:  # noqa: C901, PLR0912, PLR0915
                 "--run-label",
                 "run",
             ]
+            if args.runner_args:
+                benchmark_command.extend(["--runner-args", args.runner_args])
             if args.model_key:
                 benchmark_command.extend(["--model-key", args.model_key])
             benchmark_step = _run_command(command=benchmark_command, cwd=run_root)

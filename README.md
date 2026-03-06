@@ -155,8 +155,10 @@ Both keys are validated against `config.json` (`agents` and `models`).
 
 The CLI includes helper scripts with fixed public Terminal-Bench datasets:
 
-- `cli/harbor/run_small.sh`: small dataset (`terminal-bench-sample@2.0`)
-- `cli/harbor/run_full.sh`: full dataset (`terminal-bench@2.0`)
+- `cli/harbor/run_smoke.sh`: single easy task for quick smoke testing
+- `cli/harbor/run_debug.sh --split <1-4>`: 5 medium tasks per split (4 splits)
+- `cli/harbor/run_small_benchmark.sh`: 15-task benchmark (4 easy, 10 medium, 1 hard)
+- `cli/harbor/run_full_benchmark.sh`: all 89 tasks from `terminal-bench@2.0`
 
 All scripts accept:
 
@@ -181,8 +183,10 @@ Examples:
 
 ```bash
 cd cli
-./harbor/run_small.sh --model gpt-5.3-codex --agent qwen --dry-run
-./harbor/run_full.sh --agent terminus-2
+./harbor/run_smoke.sh --dry-run
+./harbor/run_debug.sh --split 1 --model gpt-5.3-codex --agent qwen --dry-run
+./harbor/run_small_benchmark.sh --agent terminus-2
+./harbor/run_full_benchmark.sh --agent terminus-2
 ```
 
 ### Iterative Agent Evolver Pipeline
@@ -220,7 +224,7 @@ Common overrides:
 
 ```bash
 cd cli
-uv run python agent_evolve/run_outer_loop.py --iterations 25 --runner cli/harbor/run_small.sh
+uv run python agent_evolve/run_outer_loop.py --iterations 25 --runner cli/harbor/run_debug.sh --runner-args "--split 1"
 uv run python agent_evolve/run_outer_loop.py --cursor-model gpt-5.3-codex
 ```
 

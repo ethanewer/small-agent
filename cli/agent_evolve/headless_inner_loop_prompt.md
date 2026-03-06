@@ -1,4 +1,4 @@
-You are responsible for improving this agent implementation. **Your real objective is maximizing performance on the full terminal-bench benchmark (89 tasks), not on the small dev set you can see.** The dev set (10 tasks) is only a diagnostic tool. You can use it to find and fix general problems with the harness, but your score is measured on the full benchmark which includes many tasks you have never seen.
+You are responsible for improving this agent implementation. **Your real objective is maximizing performance on the full terminal-bench benchmark (89 tasks), not on the small dev set you can see.** The dev set is only a diagnostic tool. You can use it to find and fix general problems with the harness, but your score is measured on the full benchmark which includes many tasks you have never seen.
 
 Current dev score: **{dev_score}** (mean reward across {dev_trials} tasks)
 Model context length: **{context_length} tokens**
@@ -45,6 +45,27 @@ Focus on **general agent capabilities** that help across all tasks:
 - Keep `agent_evolve/agent.py` importable in a clean `uv run` environment used by `agent_evolve.test_interface_contract`.
 - If a change causes import/test failures, revert or fix before finishing.
 
+## Benchmark budget and discipline
+
+The dev benchmark (`run_debug.sh`) has 4 splits of 5 tasks each. **You must run only one split at a time.** Each benchmark run is expensive — treat every run as precious.
+
+**Before running a benchmark split:**
+1. Make sure you have a clear hypothesis about what your change improves.
+2. Verify the code is syntactically valid and passes interface tests first.
+
+**After a benchmark run completes:**
+1. Read every failed task's logs carefully (`verifier/test-stdout.txt`, `agent/trajectory.json`).
+2. Categorize failures by root cause before making more changes.
+3. Do not immediately re-run. Investigate first, change second, then run again.
+
+**Do not run multiple splits back-to-back without investigating results in between.** The goal is to extract maximum signal from each 5-task run, not to burn through all 4 splits quickly.
+
+To run a single split:
+```
+uv run python agent_evolve/run_recorded_benchmark.py --iteration {iteration} --runner cli/harbor/run_debug.sh --runner-args "--split <N>"
+```
+where `<N>` is 1, 2, 3, or 4.
+
 ## Task flow
 
 1. Read `agent_evolve/README.md` to understand the workdir files and workflow.
@@ -58,12 +79,13 @@ Focus on **general agent capabilities** that help across all tasks:
    - "Shell interaction crashes on EOF"
 5. Choose 1-2 **general** improvements that address the most common failure categories.
 6. Implement focused improvements in `agent_evolve/agent.py` or related existing workdir files.
-7. Re-run the dev benchmark as needed to validate your changes:
-   `uv run python agent_evolve/run_recorded_benchmark.py --iteration {iteration} --runner cli/harbor/run_small.sh`
-8. Validate interface compatibility:
+7. Validate interface compatibility before benchmarking:
    `uv run python -m unittest agent_evolve.test_interface_contract`
-9. Compare new results against prior run(s). Note whether performance improved, regressed, or stayed flat.
-10. Update `agent_evolve/NOTES.md` with:
+8. Run **one** debug split to validate your changes:
+   `uv run python agent_evolve/run_recorded_benchmark.py --iteration {iteration} --runner cli/harbor/run_debug.sh --runner-args "--split <N>"`
+9. **Investigate results thoroughly** before running another split or making more changes.
+10. Compare new results against prior run(s). Note whether performance improved, regressed, or stayed flat.
+11. Update `agent_evolve/NOTES.md` with:
     - failure categories observed (not task-specific fixes)
     - the general improvement hypothesis
     - changes made

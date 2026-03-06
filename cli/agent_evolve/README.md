@@ -30,20 +30,21 @@ to determine which iteration and step to continue from. No work is repeated.
 |------|---------|-------------|
 | `--iterations N` | `25` | Total number of outer loop iterations to run |
 | `--start-iteration N` | `1` | Starting iteration (ignored on resume; state file takes precedence) |
-| `--runner PATH` | `cli/harbor/run_small.sh` | Dev benchmark runner script (10-task sample) |
-| `--eval-runner PATH` | `cli/harbor/run_eval.sh` | Eval benchmark runner script (20 held-out tasks) |
+| `--runner PATH` | `cli/harbor/run_debug.sh` | Dev benchmark runner script (5-task debug split) |
+| `--eval-runner PATH` | `cli/harbor/run_small_benchmark.sh` | Eval benchmark runner (15 tasks, run between iterations) |
 | `--agent-key KEY` | `terminus-2` | Agent key passed to Harbor |
 | `--model-key KEY` | *(from config.json)* | Model key override |
 | `--cursor-model MODEL` | *(default)* | Model for the Cursor agent (inner loop) |
 | `--resume PATH` | *(none)* | Path to existing run directory to resume |
 | `--skip-initial-benchmark` | `false` | Skip iteration-1 dev benchmark if a cached baseline exists |
+| `--runner-args STR` | *(none)* | Extra arguments forwarded to the dev runner (e.g. `"--split 1"`) |
 
 ## Pipeline flow
 
 Each outer iteration runs these steps in order:
 
 ```
-1. Dev benchmark    Run 10-task sample (terminal-bench-sample@2.0)
+1. Dev benchmark    Run 5-task debug split (terminal-bench@2.0 subset).
                     Inner agent sees these results.
                     Non-fatal: failure is recorded, pipeline continues.
 
@@ -54,8 +55,8 @@ Each outer iteration runs these steps in order:
 3. Validation       Runs test_interface_contract to verify agent.py.
                     Fatal: if tests fail, iteration stops.
 
-4. Eval benchmark   Run 20 held-out tasks (terminal-bench@2.0 subset).
-                    Inner agent never sees these results.
+4. Eval benchmark   Run 15-task benchmark (terminal-bench@2.0 subset).
+                    Run between outer loop iterations.
                     Skipped if agent.py is unchanged since last eval.
                     Non-fatal: failure is recorded, pipeline continues.
 
@@ -64,13 +65,13 @@ Each outer iteration runs these steps in order:
 
 ## Datasets
 
-Two non-overlapping subsets of `terminal-bench@2.0`:
+Subsets of `terminal-bench@2.0`:
 
-- **Dev set** (10 tasks): `terminal-bench-sample@2.0`, run via `run_small.sh`.
-  Used by the inner agent to diagnose failures.
-- **Eval set** (20 tasks): Curated subset filtered via `--task-name` flags in
-  `run_eval.sh`. The inner agent never sees eval results. Used to measure
-  generalization.
+- **Dev set** (5 tasks per split): 4 splits of 5 medium tasks each, run via
+  `run_debug.sh --split N`. Used by the inner agent to diagnose failures.
+- **Eval set** (15 tasks): 4 easy + 10 medium + 1 hard, run via `run_small_benchmark.sh`.
+  Run between outer loop iterations. Disjoint from the dev set.
+- **Full set** (89 tasks): All tasks, run via `run_full_benchmark.sh`.
 
 ## Run directory layout
 
