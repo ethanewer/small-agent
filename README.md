@@ -1,12 +1,5 @@
 # small-agent
 
-This repository contains two areas:
-
-- `cli/` -- active CLI codebase (Terminus-2 wrapper)
-- `sft/` -- legacy SFT dataset and training pipeline
-
-## CLI
-
 The CLI provides a local wrapper around the Terminus-2 JSON interaction pattern.
 It runs commands in a persistent local shell and formats output with Rich.
 
@@ -24,7 +17,7 @@ Each model can reference its own env var in config.
 
 ### Configuration
 
-Model settings live under `models` in `cli/config.json`.
+Model settings live under `models` in `config.json`.
 This file is tracked, so prefer env-var references for `api_key` values instead of literal secrets.
 
 ```json
@@ -70,11 +63,10 @@ This file is tracked, so prefer env-var references for `api_key` values instead 
 ### Install
 
 ```bash
-cd cli
 ./setup
 ```
 
-This installs agent CLIs locally under `cli/.local/bin` and `cli/.local/tools` (no global npm/pipx installs).
+This installs agent CLIs locally under `.local/bin` and `.local/tools` (no global npm/pipx installs).
 
 Add local wrappers to your shell path:
 
@@ -125,21 +117,21 @@ importing the external adapter class:
 harbor run --path "<task-or-dataset-path>" --agent-import-path agent:SmallAgentHarborAgent
 ```
 
-The adapter module is `cli/harbor/agent.py`, and the scripts run Harbor from
+The adapter module is `harbor/agent.py`, and the scripts run Harbor from
 that directory so `--agent-import-path agent:SmallAgentHarborAgent` resolves
 correctly.
 
 Runtime separation notes:
 
-- Harbor wrapper runtime (in `cli/harbor/agent.py`) only loads lightweight
-  config helpers from `cli/harbor_config.py`.
+- Harbor wrapper runtime (in `harbor/agent.py`) only loads lightweight
+  config helpers from `harbor_config.py`.
 - Task runtime executes `python3 /tmp/small-agent-cli/cli.py ...` inside the
   benchmark environment and owns heavy CLI dependencies (`litellm`, `pexpect`,
   etc.).
 - This split prevents Harbor wrapper dependency resolution from importing full
   task agent stacks.
 
-The adapter resolves defaults from `cli/config.json`:
+The adapter resolves defaults from `config.json`:
 
 - agent default -> `default_agent`
 - model default -> `default_model`
@@ -155,15 +147,15 @@ Both keys are validated against `config.json` (`agents` and `models`).
 
 The CLI includes helper scripts with fixed public Terminal-Bench datasets:
 
-- `cli/harbor/run_smoke.sh`: single easy task for quick smoke testing
-- `cli/harbor/run_debug.sh --split <1-4>`: 5 medium tasks per split (4 splits)
-- `cli/harbor/run_small_benchmark.sh`: 15-task benchmark (4 easy, 10 medium, 1 hard)
-- `cli/harbor/run_full_benchmark.sh`: all 89 tasks from `terminal-bench@2.0`
+- `harbor/run_smoke.sh`: single easy task for quick smoke testing
+- `harbor/run_debug.sh --split <1-4>`: 5 medium tasks per split (4 splits)
+- `harbor/run_small_benchmark.sh`: 15-task benchmark (4 easy, 10 medium, 1 hard)
+- `harbor/run_full_benchmark.sh`: all 89 tasks from `terminal-bench@2.0`
 
 All scripts accept:
 
-- `--model <key>`: selects a model key from `cli/config.json`
-- `--agent <key>`: selects an agent key from `cli/config.json`
+- `--model <key>`: selects a model key from `config.json`
+- `--agent <key>`: selects an agent key from `config.json`
 - `--dry-run`: prints resolved command without executing Harbor
 
 If `--model`/`--agent` are omitted, scripts use config defaults.
@@ -171,18 +163,17 @@ Extra Harbor CLI arguments are intentionally rejected by these scripts.
 
 Safety defaults enforced by the scripts:
 
-- write job artifacts only under `cli/harbor/jobs/<run-id>/...` (`--jobs-dir` is fixed)
+- write job artifacts only under `harbor/jobs/<run-id>/...` (`--jobs-dir` is fixed)
 - force Docker environment execution (`--env docker`)
 - force environment cleanup (`--delete`)
 - disable forced image rebuilds (`--no-force-build`)
 
-This keeps host-visible benchmark outputs scoped to `cli/harbor/jobs`, while
+This keeps host-visible benchmark outputs scoped to `harbor/jobs`, while
 task execution remains isolated in Harbor-managed Docker environments.
 
 Examples:
 
 ```bash
-cd cli
 ./harbor/run_smoke.sh --dry-run
 ./harbor/run_debug.sh --split 1 --model gpt-5.3-codex --agent qwen --dry-run
 ./harbor/run_small_benchmark.sh --agent terminus-2
@@ -192,49 +183,47 @@ cd cli
 ### Iterative Agent Evolver Pipeline
 
 This repository now includes an overnight evolver loop in
-`cli/agent_evolve/` that:
+`agent_evolve/` that:
 
 - starts from a stripped, core-only Terminus-2-derived agent
 - runs benchmark/eval cycles against Harbor
 - snapshots workdir code each benchmark run
 - stores eval artifacts next to snapshots
 - can stop gracefully (Ctrl+C/SIGTERM) after the in-flight step
-- creates contained run workdirs under `cli/agent_evolve/outputs/`
+- creates contained run workdirs under `agent_evolve/outputs/`
 - runs the inner Cursor agent with `--workspace <run-dir> --sandbox enabled`
   so evolution is contained to each run directory
 
 Key entrypoints:
 
-- outer loop: `cli/agent_evolve/run_outer_loop.py`
-- starting template workdir: `cli/agent_evolve/start_workdir/`
-- benchmark wrapper: `cli/agent_evolve/start_workdir/run_recorded_benchmark.py`
+- outer loop: `agent_evolve/run_outer_loop.py`
+- starting template workdir: `agent_evolve/start_workdir/`
+- benchmark wrapper: `agent_evolve/start_workdir/run_recorded_benchmark.py`
 - inner-loop prompt template:
-  `cli/agent_evolve/headless_inner_loop_prompt.md`
+  `agent_evolve/headless_inner_loop_prompt.md`
 - interface compatibility tests:
-  `cli/agent_evolve/start_workdir/test_interface_contract.py`
+  `agent_evolve/start_workdir/test_interface_contract.py`
 
 Default run (25 iterations, small benchmark):
 
 ```bash
-cd cli
 uv run python agent_evolve/run_outer_loop.py
 ```
 
 Common overrides:
 
 ```bash
-cd cli
-uv run python agent_evolve/run_outer_loop.py --iterations 25 --runner cli/harbor/run_debug.sh --runner-args "--split 1"
+uv run python agent_evolve/run_outer_loop.py --iterations 25 --runner harbor/run_debug.sh --runner-args "--split 1"
 uv run python agent_evolve/run_outer_loop.py --cursor-model gpt-5.3-codex
 ```
 
 Artifacts:
 
-- all outputs are under `cli/agent_evolve/outputs/<run-id>/`
-- current run workdir: `cli/agent_evolve/outputs/<run-id>/agent_evolve/`
-- eval logs/results: `cli/agent_evolve/outputs/<run-id>/eval/`
-- agent code snapshots: `cli/agent_evolve/outputs/<run-id>/snapshots/`
-- run state: `cli/agent_evolve/outputs/<run-id>/run_state.json`
+- all outputs are under `agent_evolve/outputs/<run-id>/`
+- current run workdir: `agent_evolve/outputs/<run-id>/agent_evolve/`
+- eval logs/results: `agent_evolve/outputs/<run-id>/eval/`
+- agent code snapshots: `agent_evolve/outputs/<run-id>/snapshots/`
+- run state: `agent_evolve/outputs/<run-id>/run_state.json`
 
 `run_recorded_benchmark.py` is the required benchmark entrypoint for evolver runs.
 It guarantees each benchmark invocation generates both a code snapshot and copied

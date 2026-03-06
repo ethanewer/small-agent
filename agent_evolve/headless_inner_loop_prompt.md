@@ -62,7 +62,7 @@ The dev benchmark (`run_debug.sh`) has 4 splits of 5 tasks each. **You must run 
 
 To run a single split:
 ```
-uv run python agent_evolve/run_recorded_benchmark.py --iteration {iteration} --runner cli/harbor/run_debug.sh --runner-args "--split <N>"
+uv run python agent_evolve/run_recorded_benchmark.py --iteration {iteration} --runner harbor/run_debug.sh --runner-args "--split <N>"
 ```
 where `<N>` is 1, 2, 3, or 4.
 
@@ -82,7 +82,7 @@ where `<N>` is 1, 2, 3, or 4.
 7. Validate interface compatibility before benchmarking:
    `uv run python -m unittest agent_evolve.test_interface_contract`
 8. Run **one** debug split to validate your changes:
-   `uv run python agent_evolve/run_recorded_benchmark.py --iteration {iteration} --runner cli/harbor/run_debug.sh --runner-args "--split <N>"`
+   `uv run python agent_evolve/run_recorded_benchmark.py --iteration {iteration} --runner harbor/run_debug.sh --runner-args "--split <N>"`
 9. **Investigate results thoroughly** before running another split or making more changes.
 10. Compare new results against prior run(s). Note whether performance improved, regressed, or stayed flat.
 11. Update `agent_evolve/NOTES.md` with:

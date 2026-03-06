@@ -11,6 +11,7 @@ from agents.interface import run_agent_task_with_fallback
 from agents.registry import available_agents, get_agent
 from harbor_config import (
     CONFIG_PATH,
+    ConfigModelEntry,  # noqa: F401 -- re-exported for tests
     LoadedConfig,
     _env_var_name,
     build_runtime_config,

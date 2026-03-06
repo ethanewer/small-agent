@@ -39,7 +39,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument(
         "--runner",
         type=Path,
-        default=Path("cli/harbor/run_debug.sh"),
+        default=Path("harbor/run_debug.sh"),
     )
     parser.add_argument("--agent-key", type=str, default="terminus-2")
     parser.add_argument("--model-key", type=str, default=None)
@@ -47,7 +47,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument(
         "--eval-runner",
         type=Path,
-        default=Path("cli/harbor/run_small_benchmark.sh"),
+        default=Path("harbor/run_small_benchmark.sh"),
         help="Runner script for the eval benchmark (run between outer loop iterations).",
     )
     parser.add_argument(
@@ -290,7 +290,7 @@ def main(argv: list[str]) -> int:  # noqa: C901, PLR0912, PLR0915
     args = parse_args(argv)
     script_path = Path(__file__).resolve()
     root_dir = script_path.parent
-    repo_root = root_dir.parent.parent
+    repo_root = root_dir.parent
     template_root = root_dir / "start_workdir"
     outputs_root = root_dir / "outputs"
 
@@ -312,7 +312,7 @@ def main(argv: list[str]) -> int:  # noqa: C901, PLR0912, PLR0915
     snapshot_root.mkdir(parents=True, exist_ok=True)
     template_path = root_dir / "headless_inner_loop_prompt.md"
     state_path = run_root / "run_state.json"
-    config_path = repo_root / "cli" / "config.json"
+    config_path = repo_root / "config.json"
     context_length = _resolve_context_length(
         config_path=config_path, model_key=args.model_key
     )
@@ -505,7 +505,7 @@ def main(argv: list[str]) -> int:  # noqa: C901, PLR0912, PLR0915
                 "agent_evolve.test_interface_contract",
             ]
             test_env = os.environ.copy()
-            pythonpath_parts = [str(repo_root / "cli"), str(run_root)]
+            pythonpath_parts = [str(repo_root), str(run_root)]
             existing_pythonpath = test_env.get("PYTHONPATH")
             if existing_pythonpath:
                 pythonpath_parts.append(existing_pythonpath)

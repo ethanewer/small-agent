@@ -18,8 +18,8 @@ RESOLVED_N_CONCURRENT=""
 usage_common() {
   cat <<'EOF'
 Options:
-  --model <key>   Model key from cli/config.json models
-  --agent <key>   Agent key from cli/config.json agents
+  --model <key>   Model key from config.json models
+  --agent <key>   Agent key from config.json agents
   --dry-run       Print resolved harbor command and exit
   -h, --help      Show help
 

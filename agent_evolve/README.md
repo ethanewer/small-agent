@@ -9,7 +9,7 @@ and measuring generalization on a held-out eval set.
 Start a fresh run with default settings:
 
 ```
-uv run python cli/agent_evolve/run_outer_loop.py
+uv run python agent_evolve/run_outer_loop.py
 ```
 
 ## Resume a stopped run
@@ -18,7 +18,7 @@ If the pipeline was interrupted (crash, disconnect, Ctrl-C), resume from exactly
 where it left off:
 
 ```
-uv run python cli/agent_evolve/run_outer_loop.py --resume cli/agent_evolve/outputs/run-YYYYMMDDTHHMMSSZ
+uv run python agent_evolve/run_outer_loop.py --resume agent_evolve/outputs/run-YYYYMMDDTHHMMSSZ
 ```
 
 The `--resume` flag reuses the existing run directory and reads `run_state.json`
@@ -30,8 +30,8 @@ to determine which iteration and step to continue from. No work is repeated.
 |------|---------|-------------|
 | `--iterations N` | `25` | Total number of outer loop iterations to run |
 | `--start-iteration N` | `1` | Starting iteration (ignored on resume; state file takes precedence) |
-| `--runner PATH` | `cli/harbor/run_debug.sh` | Dev benchmark runner script (5-task debug split) |
-| `--eval-runner PATH` | `cli/harbor/run_small_benchmark.sh` | Eval benchmark runner (15 tasks, run between iterations) |
+| `--runner PATH` | `harbor/run_debug.sh` | Dev benchmark runner script (5-task debug split) |
+| `--eval-runner PATH` | `harbor/run_small_benchmark.sh` | Eval benchmark runner (15 tasks, run between iterations) |
 | `--agent-key KEY` | `terminus-2` | Agent key passed to Harbor |
 | `--model-key KEY` | *(from config.json)* | Model key override |
 | `--cursor-model MODEL` | *(default)* | Model for the Cursor agent (inner loop) |
@@ -124,7 +124,7 @@ outputs/run-YYYYMMDDTHHMMSSZ/
 ## Troubleshooting
 
 **Stale lock file**: If a run was killed and you see "Another benchmark run
-appears to be active", the lock file at `cli/harbor/jobs/.agent_evolve_benchmark.lock`
+appears to be active", the lock file at `harbor/jobs/.agent_evolve_benchmark.lock`
 is stale. The pipeline auto-detects dead PIDs and cleans up, but if the PID was
 recycled, manually delete the lock file.
 

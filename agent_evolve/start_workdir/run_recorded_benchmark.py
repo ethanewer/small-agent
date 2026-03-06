@@ -30,7 +30,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument(
         "--runner",
         type=Path,
-        default=Path("cli/harbor/run_debug.sh"),
+        default=Path("harbor/run_debug.sh"),
         help="Benchmark runner path relative to repo root.",
     )
     parser.add_argument(
@@ -159,14 +159,13 @@ def main(argv: list[str]) -> int:
     workdir_root = script_path.parent
     repo_root: Path | None = None
     for candidate in script_path.parents:
-        if (candidate / "cli" / "harbor" / "run_small_benchmark.sh").exists():
+        if (candidate / "harbor" / "run_small_benchmark.sh").exists():
             repo_root = candidate
             break
     if repo_root is None:
         raise RuntimeError("Unable to locate repository root from script path.")
 
-    cli_root = repo_root / "cli"
-    jobs_root = cli_root / "harbor" / "jobs"
+    jobs_root = repo_root / "harbor" / "jobs"
     snapshots_iter_dir, evals_iter_dir = _iter_root(
         workdir_root=workdir_root,
         iteration=args.iteration,
@@ -189,7 +188,7 @@ def main(argv: list[str]) -> int:
         before_jobs = _collect_job_dirs(jobs_root=jobs_root)
         completed = subprocess.run(
             command,
-            cwd=cli_root,
+            cwd=repo_root,
             text=True,
             capture_output=True,
             check=False,

@@ -23,13 +23,13 @@ sft/.modelscope_cache*
 sft/checkpoints*
 sft/logs*
 
-# Imported cli local artifacts
-cli/.local/
-cli/harbor/jobs/
+# Local artifacts
+.local/
+harbor/jobs/
 log*
 *.log
 
 # Generated harness reports
-cli/agents/toolmind_harness/alignment_report*.md
-cli/agents/toolmind_harness/reverse_engineering_notes.md
-config*
+agents/toolmind_harness/alignment_report*.md
+agents/toolmind_harness/reverse_engineering_notes.md
+config/
