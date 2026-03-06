@@ -58,11 +58,12 @@ def _iter_root(*, workdir_root: Path, iteration: int) -> tuple[Path, Path]:
     return snapshots_iter_dir, evals_iter_dir
 
 
-def _next_run_dir(*, iter_dir: Path) -> Path:
+def _next_run_dir(*, iter_dir: Path, create_dir: bool = True) -> Path:
     existing = sorted(path for path in iter_dir.glob("run-*") if path.is_dir())
     next_index = len(existing) + 1
     run_dir = iter_dir / f"run-{next_index:04d}"
-    run_dir.mkdir(parents=True, exist_ok=False)
+    if create_dir:
+        run_dir.mkdir(parents=True, exist_ok=False)
     return run_dir
 
 
@@ -152,7 +153,9 @@ def _load_run_summary(*, harbor_job_dir: Path) -> dict[str, object]:
 def main(argv: list[str]) -> int:
     args = parse_args(argv)
     script_path = Path(__file__).resolve()
-    workdir_root = script_path.parents[1]
+    # This script lives at <run_root>/agent_evolve/run_recorded_benchmark.py.
+    # Artifacts should be written under that run root (not repository-level outputs).
+    workdir_root = script_path.parent
     repo_root: Path | None = None
     for candidate in script_path.parents:
         if (candidate / "cli" / "harbor" / "run_small.sh").exists():
@@ -168,7 +171,7 @@ def main(argv: list[str]) -> int:
         iteration=args.iteration,
     )
 
-    snapshot_run_dir = _next_run_dir(iter_dir=snapshots_iter_dir)
+    snapshot_run_dir = _next_run_dir(iter_dir=snapshots_iter_dir, create_dir=False)
     eval_run_dir = _next_run_dir(iter_dir=evals_iter_dir)
     _copy_code_snapshot(workdir_root=workdir_root, target_dir=snapshot_run_dir)
 

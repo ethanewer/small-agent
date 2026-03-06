@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import signal
 from dataclasses import dataclass
@@ -9,7 +10,7 @@ from datetime import UTC, datetime  # pyright: ignore[reportAttributeAccessIssue
 from pathlib import Path
 import subprocess
 import sys
-from typing import cast
+from typing import Mapping, cast
 
 
 @dataclass
@@ -78,7 +79,7 @@ def _load_state(*, state_path: Path) -> dict[str, object]:
     return {}
 
 
-def _save_state(*, state_path: Path, payload: dict[str, object]) -> None:
+def _save_state(*, state_path: Path, payload: Mapping[str, object]) -> None:
     state_path.parent.mkdir(parents=True, exist_ok=True)
     state_path.write_text(
         json.dumps(payload, indent=2, ensure_ascii=True) + "\n",
@@ -122,10 +123,16 @@ def _render_prompt(
     )
 
 
-def _run_command(*, command: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
+def _run_command(
+    *,
+    command: list[str],
+    cwd: Path,
+    env: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         command,
         cwd=cwd,
+        env=env,
         text=True,
         capture_output=True,
         check=False,
@@ -148,10 +155,25 @@ def _record_step_output(
     )
 
 
+def _is_transient_cursor_error(*, completed: subprocess.CompletedProcess[str]) -> bool:
+    if completed.returncode == 0:
+        return False
+
+    error_text = f"{completed.stdout}\n{completed.stderr}".lower()
+    transient_signals = (
+        "http/2 stream closed",
+        "error code cancel",
+        "stream closed with error code cancel",
+        "connection reset",
+    )
+    return any(token in error_text for token in transient_signals)
+
+
 def main(argv: list[str]) -> int:
     args = parse_args(argv)
     script_path = Path(__file__).resolve()
     root_dir = script_path.parent
+    repo_root = root_dir.parent.parent
     template_root = root_dir / "start_workdir"
     outputs_root = root_dir / "outputs"
     run_root = _create_run_root(outputs_root=outputs_root)
@@ -235,7 +257,7 @@ def main(argv: list[str]) -> int:
             "--force",
             "--trust",
             "--sandbox",
-            "enabled",
+            "disabled",
             "--workspace",
             str(run_root),
         ]
@@ -243,6 +265,9 @@ def main(argv: list[str]) -> int:
             cursor_command.extend(["--model", args.cursor_model])
         cursor_command.append(prompt_text)
         cursor_step = _run_command(command=cursor_command, cwd=run_root)
+        if _is_transient_cursor_error(completed=cursor_step):
+            print("Transient Cursor failure detected; retrying cursor step once.")
+            cursor_step = _run_command(command=cursor_command, cwd=run_root)
         _record_step_output(
             target_path=iteration_dir / "outer_cursor_step.json",
             completed=cursor_step,
@@ -260,7 +285,13 @@ def main(argv: list[str]) -> int:
             "unittest",
             "agent_evolve.test_interface_contract",
         ]
-        test_step = _run_command(command=test_command, cwd=run_root)
+        test_env = os.environ.copy()
+        pythonpath_parts = [str(repo_root / "cli"), str(run_root)]
+        existing_pythonpath = test_env.get("PYTHONPATH")
+        if existing_pythonpath:
+            pythonpath_parts.append(existing_pythonpath)
+        test_env["PYTHONPATH"] = os.pathsep.join(pythonpath_parts)
+        test_step = _run_command(command=test_command, cwd=run_root, env=test_env)
         _record_step_output(
             target_path=iteration_dir / "outer_validation_step.json",
             completed=test_step,

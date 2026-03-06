@@ -10,6 +10,9 @@ Execution rules:
 - Keep code edits scoped to `agent_evolve/` unless explicitly required.
 - Do not read or write files outside this workspace run directory.
 - Use `agent_evolve/run_recorded_benchmark.py` for benchmark runs so artifacts are captured.
+- Do not add new dependencies or import modules that are not already available in the workdir/runtime.
+- Keep `agent_evolve/agent.py` importable in a clean `uv run` environment used by `agent_evolve.test_interface_contract`.
+- If a change causes import/test failures, revert or fix before finishing.
 
 Task flow:
 1. Read `agent_evolve/README.md` to understand the workdir files and workflow.
