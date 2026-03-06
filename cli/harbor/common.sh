@@ -174,6 +174,13 @@ append_agent_env_passthrough() {
   done
 }
 
+append_task_name_filters() {
+  local task_name
+  for task_name in "$@"; do
+    HARBOR_COMMAND+=(--task-name "${task_name}")
+  done
+}
+
 build_harbor_dataset_command() {
   resolve_harbor_command
   resolve_safe_jobs_dir

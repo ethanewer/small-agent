@@ -3,10 +3,9 @@ from __future__ import annotations
 import argparse
 import contextlib
 import json
-from datetime import UTC, datetime  # type: ignore
 import os
+from datetime import UTC, datetime  # type: ignore
 from pathlib import Path
-import re
 import shutil
 import subprocess
 import sys
@@ -45,6 +44,12 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         default=None,
         help="Optional model key override passed to Harbor runner.",
     )
+    parser.add_argument(
+        "--run-label",
+        type=str,
+        default="run",
+        help="Label prefix for artifact directories (e.g. 'run' or 'eval').",
+    )
     return parser.parse_args(argv)
 
 
@@ -58,10 +63,12 @@ def _iter_root(*, workdir_root: Path, iteration: int) -> tuple[Path, Path]:
     return snapshots_iter_dir, evals_iter_dir
 
 
-def _next_run_dir(*, iter_dir: Path, create_dir: bool = True) -> Path:
-    existing = sorted(path for path in iter_dir.glob("run-*") if path.is_dir())
+def _next_run_dir(
+    *, iter_dir: Path, label: str = "run", create_dir: bool = True
+) -> Path:
+    existing = sorted(path for path in iter_dir.glob(f"{label}-*") if path.is_dir())
     next_index = len(existing) + 1
-    run_dir = iter_dir / f"run-{next_index:04d}"
+    run_dir = iter_dir / f"{label}-{next_index:04d}"
     if create_dir:
         run_dir.mkdir(parents=True, exist_ok=False)
     return run_dir
@@ -83,60 +90,47 @@ def _collect_job_dirs(*, jobs_root: Path) -> set[str]:
     return {path.name for path in jobs_root.iterdir() if path.is_dir()}
 
 
-def _is_dated_job_dir_name(name: str) -> bool:
-    return bool(re.search(r"\d{4}[-_]?\d{2}[-_]?\d{2}", name))
-
-
-def _resolve_new_job_dir(
-    *, jobs_root: Path, before: set[str], started_at: datetime
-) -> Path:
+def _resolve_new_job_dir(*, jobs_root: Path, before: set[str]) -> Path:
     after = _collect_job_dirs(jobs_root=jobs_root)
-    created_paths = sorted(
-        (jobs_root / name for name in (after - before)), key=lambda path: path.name
-    )
-    if not created_paths:
+    new_names = sorted(after - before)
+    if not new_names:
         raise RuntimeError("Unable to determine newly created Harbor jobs directory.")
 
-    dated_created_paths = [
-        path for path in created_paths if _is_dated_job_dir_name(path.name)
-    ]
-    if dated_created_paths:
-        return dated_created_paths[-1]
+    return jobs_root / new_names[-1]
 
-    started_epoch = started_at.timestamp()
-    all_job_paths = sorted(
-        (path for path in jobs_root.iterdir() if path.is_dir()),
-        key=lambda path: path.stat().st_mtime,
-    )
-    recent_paths = [
-        path for path in all_job_paths if path.stat().st_mtime >= started_epoch - 1.0
-    ]
-    recent_dated_paths = [
-        path for path in recent_paths if _is_dated_job_dir_name(path.name)
-    ]
-    if recent_dated_paths:
-        return recent_dated_paths[-1]
 
-    return created_paths[-1]
+def _is_pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
 
 
 @contextlib.contextmanager
 def _benchmark_lock(*, jobs_root: Path) -> Iterator[None]:
     jobs_root.mkdir(parents=True, exist_ok=True)
     lock_path = jobs_root / ".agent_evolve_benchmark.lock"
-    try:
-        fd = lock_path.open(mode="x", encoding="utf-8")
-    except FileExistsError as exc:
-        raise RuntimeError(
-            f"Another benchmark run appears to be active. Lock file already exists: {lock_path}"
-        ) from exc
+    my_pid = str(os.getpid())
+
+    if lock_path.exists():
+        try:
+            stored_pid = int(lock_path.read_text(encoding="utf-8").strip())
+        except (ValueError, OSError):
+            stored_pid = -1
+
+        if stored_pid > 0 and _is_pid_alive(stored_pid):
+            raise RuntimeError(
+                f"Another benchmark run (PID {stored_pid}) is active. "
+                f"Lock file: {lock_path}"
+            )
+        lock_path.unlink(missing_ok=True)
+
+    lock_path.write_text(my_pid, encoding="utf-8")
 
     try:
-        fd.write(f"pid={os.getpid()} started_at={datetime.now(UTC).isoformat()}\n")
-        fd.flush()
         yield
     finally:
-        fd.close()
         with contextlib.suppress(FileNotFoundError):
             lock_path.unlink()
 
@@ -171,8 +165,11 @@ def main(argv: list[str]) -> int:
         iteration=args.iteration,
     )
 
-    snapshot_run_dir = _next_run_dir(iter_dir=snapshots_iter_dir, create_dir=False)
-    eval_run_dir = _next_run_dir(iter_dir=evals_iter_dir)
+    label = args.run_label
+    snapshot_run_dir = _next_run_dir(
+        iter_dir=snapshots_iter_dir, label=label, create_dir=False
+    )
+    eval_run_dir = _next_run_dir(iter_dir=evals_iter_dir, label=label)
     _copy_code_snapshot(workdir_root=workdir_root, target_dir=snapshot_run_dir)
 
     runner_path = (repo_root / args.runner).resolve()
@@ -180,7 +177,6 @@ def main(argv: list[str]) -> int:
     if args.model_key:
         command.extend(["--model", args.model_key])
 
-    benchmark_started_at = datetime.now(UTC)
     with _benchmark_lock(jobs_root=jobs_root):
         before_jobs = _collect_job_dirs(jobs_root=jobs_root)
         completed = subprocess.run(
@@ -204,7 +200,6 @@ def main(argv: list[str]) -> int:
     harbor_job_dir = _resolve_new_job_dir(
         jobs_root=jobs_root,
         before=before_jobs,
-        started_at=benchmark_started_at,
     )
     target_harbor_dir = eval_run_dir / "harbor_job"
     shutil.copytree(src=harbor_job_dir, dst=target_harbor_dir, dirs_exist_ok=False)
@@ -226,6 +221,7 @@ def main(argv: list[str]) -> int:
     eval_summary = {
         "timestamp_utc": datetime.now(UTC).isoformat(),
         "iteration": args.iteration,
+        "run_label": label,
         "snapshot_path": str(snapshot_run_dir),
         "eval_path": str(eval_run_dir),
         "runner": str(args.runner),
@@ -237,17 +233,13 @@ def main(argv: list[str]) -> int:
         "n_trials": run_summary.get("n_trials"),
         "n_evals": run_summary.get("n_evals"),
     }
-    eval_summary_path = eval_run_dir / "eval_summary.json"
-    eval_summary_path.write_text(
-        json.dumps(eval_summary, indent=2, ensure_ascii=True) + "\n",
-        encoding="utf-8",
-    )
+    summary_json = json.dumps(eval_summary, indent=2, ensure_ascii=True) + "\n"
+    for path in (
+        eval_run_dir / "eval_summary.json",
+        evals_iter_dir.parent / f"latest_{label}.json",
+    ):
+        path.write_text(summary_json, encoding="utf-8")
 
-    latest_eval_path = evals_iter_dir.parent / "latest_eval.json"
-    latest_eval_path.write_text(
-        json.dumps(eval_summary, indent=2, ensure_ascii=True) + "\n",
-        encoding="utf-8",
-    )
     print(json.dumps(eval_summary, ensure_ascii=True))
     return 0
 

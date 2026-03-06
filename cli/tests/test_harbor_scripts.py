@@ -53,7 +53,7 @@ class TestHarborRunnerScripts(unittest.TestCase):
         proc = self._run_script(
             "run_small.sh",
             "--model",
-            "gpt-5.3-codex",
+            "minimax-m2.5",
             "--agent",
             "qwen",
             "--dry-run",
@@ -61,11 +61,11 @@ class TestHarborRunnerScripts(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, msg=f"{proc.stdout}\n{proc.stderr}")
         self.assertRegex(
             proc.stdout,
-            re.compile(r"Resolved model=gpt-5.3-codex agent=qwen n_concurrent=\d+"),
+            re.compile(r"Resolved model=minimax-m2.5 agent=qwen n_concurrent=\d+"),
         )
         self.assertIn("-d terminal-bench-sample@2.0", proc.stdout)
         self.assertRegex(proc.stdout, re.compile(r"--n-concurrent \d+"))
-        self.assertIn("SMALL_AGENT_HARBOR_MODEL=gpt-5.3-codex", proc.stdout)
+        self.assertIn("SMALL_AGENT_HARBOR_MODEL=minimax-m2.5", proc.stdout)
         self.assertIn("SMALL_AGENT_HARBOR_AGENT=qwen", proc.stdout)
 
     def test_run_full_rejects_invalid_model(self) -> None:
@@ -98,6 +98,60 @@ class TestHarborRunnerScripts(unittest.TestCase):
         )
         self.assertEqual(proc.returncode, 0, msg=f"{proc.stdout}\n{proc.stderr}")
         self.assertIn("--agent-env OPENROUTER_API_KEY=test-key", proc.stdout)
+
+    def test_run_eval_uses_config_defaults_and_task_filters(self) -> None:
+        proc = self._run_script("run_eval.sh", "--dry-run")
+        self.assertEqual(proc.returncode, 0, msg=f"{proc.stdout}\n{proc.stderr}")
+        self.assertRegex(
+            proc.stdout,
+            re.compile(
+                r"Resolved model=qwen3-coder-next agent=terminus-2 n_concurrent=\d+"
+            ),
+        )
+        self.assertIn("-d terminal-bench@2.0", proc.stdout)
+        expected_tasks = [
+            "adaptive-rejection-sampler",
+            "break-filter-js-from-html",
+            "build-pmars",
+            "cancel-async-tasks",
+            "cobol-modernization",
+            "constraints-scheduling",
+            "crack-7z-hash",
+            "db-wal-recovery",
+            "extract-elf",
+            "fix-git",
+            "git-leak-recovery",
+            "hf-model-inference",
+            "kv-store-grpc",
+            "largest-eigenval",
+            "modernize-scientific-stack",
+            "nginx-request-logging",
+            "openssl-selfsigned-cert",
+            "overfull-hbox",
+            "prove-plus-comm",
+            "pypi-server",
+        ]
+        for task in expected_tasks:
+            self.assertIn(
+                f"--task-name {task}",
+                proc.stdout,
+                msg=f"Missing --task-name filter for {task}",
+            )
+        self.assertEqual(len(expected_tasks), 20)
+
+    def test_run_eval_accepts_overrides(self) -> None:
+        proc = self._run_script(
+            "run_eval.sh",
+            "--model",
+            "minimax-m2.5",
+            "--agent",
+            "qwen",
+            "--dry-run",
+        )
+        self.assertEqual(proc.returncode, 0, msg=f"{proc.stdout}\n{proc.stderr}")
+        self.assertIn("SMALL_AGENT_HARBOR_MODEL=minimax-m2.5", proc.stdout)
+        self.assertIn("SMALL_AGENT_HARBOR_AGENT=qwen", proc.stdout)
+        self.assertIn("-d terminal-bench@2.0", proc.stdout)
 
 
 if __name__ == "__main__":

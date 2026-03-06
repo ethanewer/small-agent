@@ -5,7 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/common.sh"
 
 DATASET_REF="terminal-bench-sample@2.0"
-N_CONCURRENT=8
+N_CONCURRENT=6
 
 main() {
   if ! parse_common_args "$@"; then
