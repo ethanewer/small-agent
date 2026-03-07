@@ -166,7 +166,6 @@ def _render_prompt(
     *,
     template_path: Path,
     iteration: int,
-    run_root: Path,
     workdir_root: Path,
     eval_root: Path,
     snapshot_root: Path,
@@ -179,7 +178,6 @@ def _render_prompt(
     return text.format(
         iteration=iteration,
         iteration_padded=f"{iteration:04d}",
-        run_root=run_root,
         workdir_root=workdir_root,
         eval_root=eval_root,
         snapshot_root=snapshot_root,
@@ -451,7 +449,6 @@ def main(argv: list[str]) -> int:  # noqa: C901, PLR0912, PLR0915
             prompt_text = _render_prompt(
                 template_path=template_path,
                 iteration=current_iteration,
-                run_root=run_root,
                 workdir_root=workdir_root,
                 eval_root=eval_root,
                 snapshot_root=snapshot_root,
@@ -469,15 +466,15 @@ def main(argv: list[str]) -> int:  # noqa: C901, PLR0912, PLR0915
                 "--sandbox",
                 "disabled",
                 "--workspace",
-                str(run_root),
+                str(workdir_root),
             ]
             if args.cursor_model:
                 cursor_command.extend(["--model", args.cursor_model])
             cursor_command.append(prompt_text)
-            cursor_step = _run_command(command=cursor_command, cwd=run_root)
+            cursor_step = _run_command(command=cursor_command, cwd=workdir_root)
             if _is_transient_cursor_error(completed=cursor_step):
                 print("Transient Cursor failure detected; retrying cursor step once.")
-                cursor_step = _run_command(command=cursor_command, cwd=run_root)
+                cursor_step = _run_command(command=cursor_command, cwd=workdir_root)
             _record_step_output(
                 target_path=iteration_dir / "outer_cursor_step.json",
                 completed=cursor_step,

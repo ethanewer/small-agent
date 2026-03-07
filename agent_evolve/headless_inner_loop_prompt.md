@@ -3,8 +3,7 @@ You are responsible for improving this agent implementation. **Your real objecti
 Current dev score: **{dev_score}** (mean reward across {dev_trials} tasks)
 Model context length: **{context_length} tokens**
 
-Workspace root: `{run_root}`
-Workdir root: `{workdir_root}`
+Workspace root: `{workdir_root}`
 Latest dev eval summary: `{eval_summary_path}`
 Latest dev eval artifacts root: `{eval_artifacts_path}`
 
@@ -37,12 +36,12 @@ Focus on **general agent capabilities** that help across all tasks:
 
 ## Execution rules
 
-- Treat all relative paths in this prompt as relative to workspace root (`{run_root}`).
-- Keep code edits scoped to `agent_evolve/` unless explicitly required.
-- Do not read or write files outside this workspace run directory.
-- Use `agent_evolve/run_recorded_benchmark.py` for benchmark runs so artifacts are captured.
+- Your workspace is `{workdir_root}`. ALL file reads and writes MUST stay inside this directory.
+- **NEVER read, write, or modify files outside `{workdir_root}`.** The repository source code (agents/, harbor/, cli.py, etc.) is off-limits. You are only allowed to edit files inside the workspace directory.
+- The only file you should be editing is `agent.py` (and optionally `NOTES.md`) inside the workspace.
+- Use `run_recorded_benchmark.py` (in the workspace) for benchmark runs so artifacts are captured.
 - Do not add new dependencies or import modules that are not already available in the workdir/runtime.
-- Keep `agent_evolve/agent.py` importable in a clean `uv run` environment used by `agent_evolve.test_interface_contract`.
+- Keep `agent.py` importable in a clean `uv run` environment used by `test_interface_contract`.
 - If a change causes import/test failures, revert or fix before finishing.
 
 ## Benchmark budget and discipline
@@ -62,14 +61,14 @@ The dev benchmark (`run_debug.sh`) has 4 splits of 5 tasks each. **You must run 
 
 To run a single split:
 ```
-uv run python agent_evolve/run_recorded_benchmark.py --iteration {iteration} --runner harbor/run_debug.sh --runner-args "--split <N>"
+uv run python run_recorded_benchmark.py --iteration {iteration} --runner harbor/run_debug.sh --runner-args "--split <N>"
 ```
 where `<N>` is 1, 2, 3, or 4.
 
 ## Task flow
 
-1. Read `agent_evolve/README.md` to understand the workdir files and workflow.
-2. Read `agent_evolve/NOTES.md` and continue documenting observations as you work.
+1. Read `README.md` to understand the workdir files and workflow.
+2. Read `NOTES.md` and continue documenting observations as you work.
 3. Inspect the latest dev benchmark summary/logs from `{eval_summary_path}` and `{eval_artifacts_path}`.
 4. **Categorize failures by root cause** (not by task name). Examples of good categories:
    - "Agent marks complete without verifying output"
@@ -78,14 +77,14 @@ where `<N>` is 1, 2, 3, or 4.
    - "Agent doesn't plan before acting"
    - "Shell interaction crashes on EOF"
 5. Choose 1-2 **general** improvements that address the most common failure categories.
-6. Implement focused improvements in `agent_evolve/agent.py` or related existing workdir files.
+6. Implement focused improvements in `agent.py` or related existing workdir files.
 7. Validate interface compatibility before benchmarking:
-   `uv run python -m unittest agent_evolve.test_interface_contract`
+   `uv run python -m unittest test_interface_contract`
 8. Run **one** debug split to validate your changes:
-   `uv run python agent_evolve/run_recorded_benchmark.py --iteration {iteration} --runner harbor/run_debug.sh --runner-args "--split <N>"`
+   `uv run python run_recorded_benchmark.py --iteration {iteration} --runner harbor/run_debug.sh --runner-args "--split <N>"`
 9. **Investigate results thoroughly** before running another split or making more changes.
 10. Compare new results against prior run(s). Note whether performance improved, regressed, or stayed flat.
-11. Update `agent_evolve/NOTES.md` with:
+11. Update `NOTES.md` with:
     - failure categories observed (not task-specific fixes)
     - the general improvement hypothesis
     - changes made
@@ -96,7 +95,7 @@ where `<N>` is 1, 2, 3, or 4.
 
 Stop when **every remaining failure is attributable to the model's raw ability** (reasoning, knowledge, skill) rather than a harness/infrastructure problem. In other words, keep iterating as long as there are failures you can fix by improving the harness — better prompting structure, shell robustness, error recovery, context management, verification logic, etc. Once the only failures left are ones where the model simply wasn't smart enough to solve the task (and no harness change would help), you are done.
 
-Before stopping, document in `agent_evolve/NOTES.md`:
+Before stopping, document in `NOTES.md`:
 - Which failures you believe are model-ability-limited and why.
 - What harness improvements you made and their impact.
 - Confirmation that interface tests pass.
