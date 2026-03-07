@@ -97,14 +97,16 @@ class TestPromptParity(unittest.TestCase):
 class TestParserParity(unittest.TestCase):
     def test_extract_json_content_handles_wrapped_text(self) -> None:
         response = 'prefix text {"a": 1, "nested": {"b": 2}} suffix text'
-        self.assertEqual(
-            core_agent.extract_json_content(response), '{"a": 1, "nested": {"b": 2}}'
-        )
+        content, warnings = core_agent._extract_json_content(response)
+        self.assertEqual(content, '{"a": 1, "nested": {"b": 2}}')
+        self.assertTrue(any("before" in w for w in warnings))
+        self.assertTrue(any("after" in w for w in warnings))
 
     def test_extract_json_content_handles_escaped_quote_and_brace(self) -> None:
         response = 'noise {"text": "quote \\" and brace }", "ok": true} trailing'
+        content, _ = core_agent._extract_json_content(response)
         self.assertEqual(
-            core_agent.extract_json_content(response),
+            content,
             '{"text": "quote \\" and brace }", "ok": true}',
         )
 
@@ -117,9 +119,11 @@ class TestParserParity(unittest.TestCase):
           "task_complete": "yes"
         }
         """
-        parsed = core_agent.parse_response(text)
-        self.assertTrue(parsed.task_complete)
-        self.assertEqual(parsed.commands[0].duration, 1.0)
+        result = core_agent.parse_response(text)
+        self.assertEqual(result.error, "")
+        assert result.parsed is not None
+        self.assertTrue(result.parsed.task_complete)
+        self.assertEqual(result.parsed.commands[0].duration, 1.0)
 
     def test_parse_response_reports_missing_fields_in_single_error(self) -> None:
         text = """
@@ -128,8 +132,8 @@ class TestParserParity(unittest.TestCase):
           "commands": []
         }
         """
-        with self.assertRaisesRegex(ValueError, "Missing required fields: plan"):
-            core_agent.parse_response(text)
+        result = core_agent.parse_response(text)
+        self.assertIn("Missing required fields: plan", result.error)
 
     def test_parse_response_invalid_duration_falls_back_to_default(self) -> None:
         text = """
@@ -139,8 +143,10 @@ class TestParserParity(unittest.TestCase):
           "commands": [{"keystrokes": "ls\\n", "duration": "slow"}]
         }
         """
-        parsed = core_agent.parse_response(text)
-        self.assertEqual(parsed.commands[0].duration, 1.0)
+        result = core_agent.parse_response(text)
+        self.assertEqual(result.error, "")
+        assert result.parsed is not None
+        self.assertEqual(result.parsed.commands[0].duration, 1.0)
 
     def test_parse_response_tolerates_bad_commands_when_task_complete(self) -> None:
         text = """
@@ -151,9 +157,11 @@ class TestParserParity(unittest.TestCase):
           "task_complete": true
         }
         """
-        parsed = core_agent.parse_response(text)
-        self.assertTrue(parsed.task_complete)
-        self.assertEqual(parsed.commands, [])
+        result = core_agent.parse_response(text)
+        self.assertEqual(result.error, "")
+        assert result.parsed is not None
+        self.assertTrue(result.parsed.task_complete)
+        self.assertEqual(result.parsed.commands, [])
 
     def test_parse_response_rejects_invalid_final_message_type(self) -> None:
         text = """
@@ -164,8 +172,21 @@ class TestParserParity(unittest.TestCase):
           "final_message": 42
         }
         """
-        with self.assertRaises(ValueError):
-            core_agent.parse_response(text)
+        result = core_agent.parse_response(text)
+        self.assertNotEqual(result.error, "")
+
+    def test_parse_response_auto_fixes_incomplete_json(self) -> None:
+        text = '{"analysis":"a","plan":"p","commands":[{"keystrokes":"ls\\n","duration":0.1}]'
+        result = core_agent.parse_response(text)
+        self.assertEqual(result.error, "")
+        assert result.parsed is not None
+        self.assertIn("AUTO-CORRECTED", result.warning)
+
+    def test_parse_response_warns_on_extra_text(self) -> None:
+        text = 'Here is my response: {"analysis":"a","plan":"p","commands":[]}'
+        result = core_agent.parse_response(text)
+        self.assertEqual(result.error, "")
+        self.assertIn("Extra text", result.warning)
 
 
 class TestExecutionAndLoop(unittest.TestCase):
@@ -327,13 +348,25 @@ class TestTlsHandling(unittest.TestCase):
                 api_base="https://openrouter.ai/api/v1",
             ),
         )
+        tls_error = Exception(
+            "OpenrouterException - [SSL: CERTIFICATE_VERIFY_FAILED] "
+            "certificate verify failed: self-signed certificate in certificate chain"
+        )
+
+        class _FakeCompletions:
+            def create(self, **_kwargs: Any) -> None:
+                raise tls_error
+
+        class _FakeChat:
+            completions = _FakeCompletions()
+
+        class _FakeClient:
+            chat = _FakeChat()
+
         with patch.object(
             core_agent,
-            "completion",
-            side_effect=Exception(
-                "OpenrouterException - [SSL: CERTIFICATE_VERIFY_FAILED] "
-                "certificate verify failed: self-signed certificate in certificate chain"
-            ),
+            "_make_openai_client",
+            return_value=_FakeClient(),
         ):
             with self.assertRaisesRegex(RuntimeError, "SMALL_AGENT_CA_BUNDLE"):
                 core_agent.call_model(

@@ -3,7 +3,8 @@ name = "test-cli"
 version = "0.1.0"
 requires-python = ">=3.13"
 dependencies = [
-    "litellm",
+    "httpx",
+    "openai",
     "pexpect",
     "pytest>=9.0.2",
     "rich",

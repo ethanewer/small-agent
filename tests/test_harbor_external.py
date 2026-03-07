@@ -117,7 +117,7 @@ class TestHarborExternalAgent(unittest.TestCase):
 
     def test_agent_import_does_not_pull_task_runtime_modules(self) -> None:
         module_name = "harbor_agent_module_isolation"
-        for module_key in ("litellm", "pexpect", module_name):
+        for module_key in ("openai", "pexpect", module_name):
             sys.modules.pop(module_key, None)
 
         spec = importlib.util.spec_from_file_location(module_name, AGENT_PATH)
@@ -126,7 +126,7 @@ class TestHarborExternalAgent(unittest.TestCase):
         module = importlib.util.module_from_spec(spec)
         sys.modules[module_name] = module
         spec.loader.exec_module(module=module)
-        self.assertNotIn("litellm", sys.modules)
+        self.assertNotIn("openai", sys.modules)
         self.assertNotIn("pexpect", sys.modules)
 
     def test_setup_checks_cli_run_exists(self) -> None:

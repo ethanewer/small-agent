@@ -1,15 +1,17 @@
 from __future__ import annotations
 
-import contextlib
-import io
 import json
 import os
 import re
+import ssl
 import time
 import warnings
 from dataclasses import dataclass
-from typing import Any, Callable, cast
+from typing import Any, Callable
 
+import httpx
+import openai
+import pexpect
 from rich.console import Console
 
 from agents.core.events import AgentEvent
@@ -18,20 +20,10 @@ from agents.core.sink import EventSink
 from agents.core.task import Task
 from agents.interface import AgentRuntimeConfig
 
-os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "true")
-warnings.filterwarnings(
-    action="ignore",
-    message=".*Failed to fetch remote model cost map.*",
-)
 warnings.filterwarnings(
     action="ignore",
     message=".*certificate verify failed.*",
 )
-
-import litellm  # noqa: E402
-import pexpect  # noqa: E402
-
-from litellm import completion  # noqa: E402
 
 _TLS_CERT_ERROR_MARKERS = (
     "certificate verify failed",
@@ -40,8 +32,6 @@ _TLS_CERT_ERROR_MARKERS = (
     "unable to get local issuer certificate",
 )
 _tls_configured = False
-
-litellm.suppress_debug_info = True
 
 PROMPT_SENTINEL = "__EVOLVER_PROMPT__> "
 MAX_OUTPUT_BYTES = 10_000
@@ -88,6 +78,7 @@ class ModelConfig:
     api_base: str
     api_key: str | None = None
     temperature: float | None = None
+    context_length: int | None = None
 
 
 @dataclass
@@ -164,11 +155,7 @@ def _configure_tls_trust() -> None:
 
     try:
         import truststore  # type: ignore
-    except Exception:  # noqa: BLE001
-        _tls_configured = True
-        return
 
-    try:
         truststore.inject_into_ssl()
     except Exception:  # noqa: BLE001
         pass
@@ -191,6 +178,28 @@ def _tls_error_help_message(api_base: str) -> str:
     )
 
 
+def _make_openai_client(
+    *,
+    api_base: str,
+    api_key: str,
+    verify_ssl: bool = True,
+) -> openai.OpenAI:
+    http_client: httpx.Client | None = None
+    if not verify_ssl:
+        http_client = httpx.Client(verify=False)  # noqa: S501
+    else:
+        ca_bundle = os.getenv("REQUESTS_CA_BUNDLE") or os.getenv("SSL_CERT_FILE")
+        if ca_bundle:
+            ctx = ssl.create_default_context(cafile=ca_bundle)
+            http_client = httpx.Client(verify=ctx)
+
+    return openai.OpenAI(
+        base_url=api_base,
+        api_key=api_key,
+        http_client=http_client,
+    )
+
+
 def limit_output_length(output: str, max_bytes: int = MAX_OUTPUT_BYTES) -> str:
     if len(output.encode("utf-8")) <= max_bytes:
         return output
@@ -210,7 +219,15 @@ def limit_output_length(output: str, max_bytes: int = MAX_OUTPUT_BYTES) -> str:
     )
 
 
-def extract_json_content(response: str) -> str:
+@dataclass
+class ParseResult:
+    parsed: ParsedResponse | None
+    error: str
+    warning: str
+
+
+def _extract_json_content(response: str) -> tuple[str, list[str]]:
+    warnings: list[str] = []
     json_start = -1
     json_end = -1
     brace_count = 0
@@ -245,58 +262,227 @@ def extract_json_content(response: str) -> str:
                 break
 
     if json_start == -1 or json_end == -1:
-        raise ValueError("No valid JSON object found in model response")
+        return "", ["No valid JSON object found"]
 
-    return response[json_start:json_end]
+    before_text = response[:json_start].strip()
+    after_text = response[json_end:].strip()
+    if before_text:
+        warnings.append("Extra text detected before JSON object")
+
+    if after_text:
+        warnings.append("Extra text detected after JSON object")
+
+    return response[json_start:json_end], warnings
 
 
-def parse_response(text: str) -> ParsedResponse:
-    json_payload = extract_json_content(response=text)
-    data = json.loads(json_payload)
+def _check_field_order(json_content: str, warnings: list[str]) -> None:
+    expected_order = ["analysis", "plan", "commands"]
+    positions: dict[str, int] = {}
+    for field in expected_order:
+        match = re.search(rf'"{field}"\s*:', json_content)
+        if match:
+            positions[field] = match.start()
+
+    if len(positions) < 2:
+        return
+
+    present = [f for f in expected_order if f in positions]
+    actual = [f for f, _ in sorted(positions.items(), key=lambda x: x[1])]
+    if actual != present:
+        warnings.append(
+            f"Fields appear in wrong order. "
+            f"Found: {' -> '.join(actual)}, expected: {' -> '.join(present)}"
+        )
+
+
+def _parse_commands(
+    commands_data: list[object],
+    warnings: list[str],
+) -> tuple[list[Command], str]:
+    commands: list[Command] = []
+
+    for i, cmd_data in enumerate(commands_data):
+        if not isinstance(cmd_data, dict):
+            return [], f"Command {i + 1} must be an object"
+
+        if "keystrokes" not in cmd_data:
+            return [], f"Command {i + 1} missing required 'keystrokes' field"
+
+        keystrokes = cmd_data["keystrokes"]
+        if not isinstance(keystrokes, str):
+            return [], f"Command {i + 1} 'keystrokes' must be a string"
+
+        if "duration" in cmd_data:
+            duration_value = cmd_data["duration"]
+            if not isinstance(duration_value, (int, float)):
+                warnings.append(
+                    f"Command {i + 1}: Invalid duration value, using default 1.0"
+                )
+                duration = 1.0
+            else:
+                duration = float(duration_value)
+        else:
+            warnings.append(
+                f"Command {i + 1}: Missing duration field, using default 1.0"
+            )
+            duration = 1.0
+
+        known_fields = {"keystrokes", "duration"}
+        unknown = set(cmd_data.keys()) - known_fields
+        if unknown:
+            warnings.append(
+                f"Command {i + 1}: Unknown fields: {', '.join(sorted(unknown))}"
+            )
+
+        if i < len(commands_data) - 1 and not keystrokes.endswith("\n"):
+            warnings.append(
+                f"Command {i + 1} should end with newline when followed "
+                + "by another command. Otherwise the two commands will be "
+                + "concatenated together on the same line."
+            )
+
+        commands.append(Command(keystrokes=keystrokes, duration=max(duration, 0.0)))
+
+    return commands, ""
+
+
+def _fix_incomplete_json(response: str) -> str | None:
+    brace_count = response.count("{") - response.count("}")
+    if brace_count > 0:
+        return response + "}" * brace_count
+
+    return None
+
+
+def _fix_mixed_content(response: str) -> str | None:
+    json_pattern = r"\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}"
+    matches = re.findall(json_pattern, response, re.DOTALL)
+    for match in matches:
+        try:
+            json.loads(match)
+            return match
+        except json.JSONDecodeError:
+            continue
+
+    return None
+
+
+def _try_parse_response(response: str) -> ParseResult:
+    warnings: list[str] = []
+
+    json_content, extract_warnings = _extract_json_content(response)
+    warnings.extend(extract_warnings)
+
+    if not json_content:
+        return ParseResult(
+            parsed=None,
+            error="No valid JSON found in response",
+            warning=_format_warnings(warnings),
+        )
+
+    try:
+        data = json.loads(json_content)
+    except json.JSONDecodeError as exc:
+        return ParseResult(
+            parsed=None,
+            error=f"Invalid JSON: {exc}",
+            warning=_format_warnings(warnings),
+        )
+
+    if not isinstance(data, dict):
+        return ParseResult(
+            parsed=None,
+            error="Response must be a JSON object",
+            warning=_format_warnings(warnings),
+        )
+
     missing_fields = [
         field for field in ("analysis", "plan", "commands") if field not in data
     ]
     if missing_fields:
-        raise ValueError(f"Missing required fields: {', '.join(missing_fields)}")
+        return ParseResult(
+            parsed=None,
+            error=f"Missing required fields: {', '.join(missing_fields)}",
+            warning=_format_warnings(warnings),
+        )
 
     if not isinstance(data["commands"], list):
-        raise ValueError("Field 'commands' must be an array")
-
-    commands: list[Command] = []
-    parse_error: str | None = None
-    for i, command in enumerate(data["commands"]):
-        if not isinstance(command, dict):
-            parse_error = f"Command {i + 1} must be an object"
-            break
-
-        if "keystrokes" not in command:
-            parse_error = f"Command {i + 1} missing required 'keystrokes' field"
-            break
-
-        keystrokes = command["keystrokes"]
-        if not isinstance(keystrokes, str):
-            parse_error = f"Command {i + 1} 'keystrokes' must be a string"
-            break
-
-        duration_value = command.get("duration", 1.0)
-        duration = (
-            float(duration_value) if isinstance(duration_value, (int, float)) else 1.0
+        return ParseResult(
+            parsed=None,
+            error="Field 'commands' must be an array",
+            warning=_format_warnings(warnings),
         )
-        commands.append(Command(keystrokes=keystrokes, duration=max(duration, 0.0)))
+
+    _check_field_order(json_content, warnings)
+
+    commands_data: list[object] = data["commands"]  # pyright: ignore[reportAny]
+    commands, parse_error = _parse_commands(
+        commands_data=commands_data,
+        warnings=warnings,
+    )
 
     task_complete = _coerce_task_complete(data.get("task_complete", False))
     if parse_error:
         if task_complete:
+            warnings.append(parse_error)
             commands = []
         else:
-            raise ValueError(parse_error)
+            return ParseResult(
+                parsed=None,
+                error=parse_error,
+                warning=_format_warnings(warnings),
+            )
 
-    return ParsedResponse(
-        analysis=str(data["analysis"]),
-        plan=str(data["plan"]),
-        commands=commands,
-        task_complete=task_complete,
+    return ParseResult(
+        parsed=ParsedResponse(
+            analysis=str(data["analysis"]),
+            plan=str(data["plan"]),
+            commands=commands,
+            task_complete=task_complete,
+        ),
+        error="",
+        warning=_format_warnings(warnings),
     )
+
+
+def _format_warnings(warnings: list[str]) -> str:
+    if not warnings:
+        return ""
+
+    return "- " + "\n- ".join(warnings)
+
+
+def parse_response(text: str) -> ParseResult:
+    result = _try_parse_response(text)
+    if not result.error:
+        return result
+
+    auto_fixes: list[tuple[str, Callable[[str], str | None]]] = [
+        (
+            "Fixed incomplete JSON by adding missing closing brace",
+            _fix_incomplete_json,
+        ),
+        ("Extracted JSON from mixed content", _fix_mixed_content),
+    ]
+    for fix_name, fix_fn in auto_fixes:
+        fixed = fix_fn(text)
+        if fixed is not None:
+            corrected = _try_parse_response(fixed)
+            if not corrected.error:
+                auto_warning = (
+                    f"AUTO-CORRECTED: {fix_name} - please fix this in future responses"
+                )
+                corrected.warning = _combine_warnings(auto_warning, corrected.warning)
+                return corrected
+
+    return result
+
+
+def _combine_warnings(auto_warning: str, existing_warning: str) -> str:
+    if existing_warning:
+        return f"- {auto_warning}\n{existing_warning}"
+
+    return f"- {auto_warning}"
 
 
 def _coerce_task_complete(value: Any) -> bool:
@@ -343,23 +529,6 @@ def normalize_command_output(output: str, command: Command) -> str:
     return "\n".join(normalized_lines).strip()
 
 
-@contextlib.contextmanager
-def suppress_stdio_fd() -> Any:
-    devnull = os.open(os.devnull, os.O_WRONLY)
-    saved_stdout = os.dup(1)
-    saved_stderr = os.dup(2)
-    try:
-        os.dup2(devnull, 1)
-        os.dup2(devnull, 2)
-        yield
-    finally:
-        os.dup2(saved_stdout, 1)
-        os.dup2(saved_stderr, 2)
-        os.close(saved_stdout)
-        os.close(saved_stderr)
-        os.close(devnull)
-
-
 def build_prompt(instruction: str, terminal_state: str, max_wait_seconds: float) -> str:
     del max_wait_seconds
     return SYSTEM_PROMPT.format(instruction=instruction, terminal_state=terminal_state)
@@ -374,38 +543,35 @@ def call_model(
     _configure_tls_trust()
     model_name = cfg.active_model.model
     completion_kwargs: dict[str, Any] = {}
-    if cfg.active_model.api_base.rstrip("/").endswith("openrouter.ai/api/v1"):
-        completion_kwargs["custom_llm_provider"] = "openrouter"
-        if model_name.startswith("openrouter/"):
-            model_name = model_name.removeprefix("openrouter/")
 
     if cfg.active_model.temperature is not None:
         completion_kwargs["temperature"] = cfg.active_model.temperature
 
+    messages: list[dict[str, str]] = [*history, {"role": "user", "content": prompt}]
     last_error: Exception | None = None
     allow_insecure_tls_retry = True
+    verify_ssl = True
+
     for attempt in range(3):
         try:
-            with (
-                suppress_stdio_fd(),
-                contextlib.redirect_stdout(io.StringIO()),
-                contextlib.redirect_stderr(io.StringIO()),
-            ):
-                result = completion(
-                    model=model_name,
-                    api_base=cfg.active_model.api_base,
-                    api_key=api_key,
-                    messages=history + [{"role": "user", "content": prompt}],
-                    **completion_kwargs,
-                )
-            payload = cast(dict[str, Any], cast(object, result))
-            return str(payload["choices"][0]["message"]["content"])
+            client = _make_openai_client(
+                api_base=cfg.active_model.api_base,
+                api_key=api_key,
+                verify_ssl=verify_ssl,
+            )
+            result = client.chat.completions.create(  # pyright: ignore[reportCallIssue]
+                model=model_name,
+                messages=messages,  # pyright: ignore[reportArgumentType]
+                **completion_kwargs,
+            )
+            content = result.choices[0].message.content
+            return content or ""
         except Exception as err:  # noqa: BLE001
             last_error = err
-            message = str(err).lower()
-            if _is_tls_certificate_error(str(err)):
+            err_msg = str(err)
+            if _is_tls_certificate_error(err_msg):
                 if allow_insecure_tls_retry:
-                    completion_kwargs["ssl_verify"] = False
+                    verify_ssl = False
                     allow_insecure_tls_retry = False
                     continue
 
@@ -413,9 +579,10 @@ def call_model(
                     _tls_error_help_message(api_base=cfg.active_model.api_base)
                 ) from err
 
+            lowered = err_msg.lower()
             if (
                 any(
-                    token in message
+                    token in lowered
                     for token in ("429", "rate", "timeout", "temporarily")
                 )
                 and attempt < 2
@@ -472,6 +639,16 @@ def execute_command(
     return normalize_command_output(output=raw_output, command=cmd)
 
 
+def completion_confirmation_message(terminal_output: str) -> str:
+    return (
+        f"Current terminal state:\n{terminal_output}\n\n"
+        "Are you sure you want to mark the task as complete? "
+        "This will trigger your solution to be graded and you won't be able to "
+        'make any further corrections. If so, include "task_complete": true '
+        "in your JSON response again."
+    )
+
+
 def _append_turn_history(
     history: list[dict[str, str]],
     prompt: str,
@@ -483,6 +660,111 @@ def _append_turn_history(
             {"role": "assistant", "content": model_response},
         ]
     )
+
+
+_FALLBACK_CONTEXT_LIMIT = 1_000_000
+_PROACTIVE_FREE_TOKEN_THRESHOLD = 8_000
+_UNWIND_TARGET_FREE_TOKENS = 4_000
+
+
+def _count_total_tokens(messages: list[dict[str, str]]) -> int:
+    return sum(len(m.get("content", "")) // 4 for m in messages)
+
+
+def _get_model_context_limit(cfg: Config) -> int:
+    if cfg.active_model.context_length and cfg.active_model.context_length > 0:
+        return cfg.active_model.context_length
+
+    return _FALLBACK_CONTEXT_LIMIT
+
+
+def _unwind_messages(
+    history: list[dict[str, str]],
+    cfg: Config,
+) -> None:
+    context_limit = _get_model_context_limit(cfg)
+    while len(history) > 1:
+        current_tokens = _count_total_tokens(history)
+        if context_limit - current_tokens >= _UNWIND_TARGET_FREE_TOKENS:
+            break
+
+        if len(history) >= 2:
+            del history[-2:]
+        else:
+            break
+
+
+def _summarize_history(
+    *,
+    call_model_fn: Callable[..., str],
+    cfg: Config,
+    history: list[dict[str, str]],
+    api_key: str,
+    original_instruction: str,
+    terminal_state: str,
+) -> str:
+    if not history:
+        return original_instruction
+
+    summary_prompt = (
+        "You are about to hand off your work to another AI agent. "
+        "Please provide a comprehensive summary of what you have "
+        "accomplished so far on this task:\n\n"
+        f"Original Task: {original_instruction}\n\n"
+        "Based on the conversation history, please provide a detailed summary covering:\n"
+        "1. Major Actions Completed\n"
+        "2. Important Information Learned\n"
+        "3. Challenging Problems Addressed\n"
+        "4. Current Status\n\n"
+        "Be comprehensive and detailed."
+    )
+
+    try:
+        summary_response = call_model_fn(
+            cfg=cfg,
+            prompt=summary_prompt,
+            history=history,
+            api_key=api_key,
+        )
+    except Exception:  # noqa: BLE001
+        summary_response = "(summary unavailable)"
+
+    handoff_prompt = (
+        f"**Original Task:**\n{original_instruction}\n\n"
+        f"**Summary from Previous Agent:**\n{summary_response}\n\n"
+        f"**Current Terminal Screen:**\n{terminal_state}\n\n"
+        "Continue working on this task from where the previous agent left off."
+    )
+
+    history.clear()
+    return handoff_prompt
+
+
+def _check_proactive_summarization(
+    *,
+    call_model_fn: Callable[..., str],
+    cfg: Config,
+    history: list[dict[str, str]],
+    api_key: str,
+    original_instruction: str,
+    terminal_state: str,
+) -> str | None:
+    context_limit = _get_model_context_limit(cfg)
+    current_tokens = _count_total_tokens(history)
+    free_tokens = context_limit - current_tokens
+
+    if free_tokens < _PROACTIVE_FREE_TOKEN_THRESHOLD:
+        _unwind_messages(history=history, cfg=cfg)
+        return _summarize_history(
+            call_model_fn=call_model_fn,
+            cfg=cfg,
+            history=history,
+            api_key=api_key,
+            original_instruction=original_instruction,
+            terminal_state=terminal_state,
+        )
+
+    return None
 
 
 def _execute_turn_commands(
@@ -519,6 +801,7 @@ def run_agent(
     callbacks = callbacks or AgentCallbacks()
     child = start_shell()
     history: list[dict[str, str]] = []
+    pending_completion = False
     prompt = build_prompt(
         instruction=instruction,
         terminal_state="Current Terminal Screen:\n(empty)",
@@ -527,6 +810,17 @@ def run_agent(
 
     try:
         for turn in range(1, cfg.max_turns + 1):
+            summarized = _check_proactive_summarization(
+                call_model_fn=call_model,
+                cfg=cfg,
+                history=history,
+                api_key=api_key,
+                original_instruction=instruction,
+                terminal_state=prompt,
+            )
+            if summarized is not None:
+                prompt = summarized
+
             try:
                 model_response = call_model(
                     cfg=cfg,
@@ -545,18 +839,20 @@ def run_agent(
                 model_response=model_response,
             )
 
-            try:
-                parsed = parse_response(model_response)
-            except Exception as err:
+            result = parse_response(model_response)
+
+            if result.error:
                 prompt = (
-                    "Previous response had parsing errors:\n"
-                    f"{err}\n\n"
+                    f"Previous response had parsing errors:\n{result.error}\n\n"
                     "Please fix these issues and provide a proper JSON response."
                 )
                 if callbacks.on_issue:
-                    callbacks.on_issue("parser", str(err))
+                    callbacks.on_issue("parser", result.error)
 
                 continue
+
+            parsed = result.parsed
+            assert parsed is not None
 
             if callbacks.on_reasoning:
                 callbacks.on_reasoning(turn, parsed)
@@ -569,12 +865,23 @@ def run_agent(
             )
 
             if parsed.task_complete:
-                if callbacks.on_done:
-                    callbacks.on_done()
+                if pending_completion:
+                    if callbacks.on_done:
+                        callbacks.on_done()
 
-                return 0
+                    return 0
 
-            prompt = terminal_output
+                pending_completion = True
+                prompt = completion_confirmation_message(terminal_output)
+            else:
+                pending_completion = False
+                if result.warning:
+                    prompt = (
+                        f"Previous response had warnings:\n{result.warning}\n\n"
+                        f"{terminal_output}"
+                    )
+                else:
+                    prompt = terminal_output
 
         if callbacks.on_stopped:
             callbacks.on_stopped(cfg.max_turns)
@@ -617,6 +924,7 @@ class Agent:
                 api_base=cfg.model.api_base,
                 api_key=cfg.model.api_key,
                 temperature=cfg.model.temperature,
+                context_length=cfg.model.context_length,
             ),
             verbosity=verbosity,
             max_turns=max_turns,

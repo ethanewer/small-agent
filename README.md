@@ -126,7 +126,7 @@ Runtime separation notes:
 - Harbor wrapper runtime (in `harbor/agent.py`) only loads lightweight
   config helpers from `harbor_config.py`.
 - Task runtime executes `python3 /tmp/small-agent-cli/cli.py ...` inside the
-  benchmark environment and owns heavy CLI dependencies (`litellm`, `pexpect`,
+  benchmark environment and owns heavy CLI dependencies (`openai`, `pexpect`,
   etc.).
 - This split prevents Harbor wrapper dependency resolution from importing full
   task agent stacks.
