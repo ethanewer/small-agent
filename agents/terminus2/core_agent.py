@@ -28,6 +28,14 @@ _TLS_CERT_ERROR_MARKERS = (
 _tls_configured = False
 
 
+class OutputLengthExceededError(Exception):
+    truncated_response: str | None
+
+    def __init__(self, message: str, truncated_response: str | None = None) -> None:
+        super().__init__(message)
+        self.truncated_response = truncated_response
+
+
 def _configure_tls_trust() -> None:
     global _tls_configured
     if _tls_configured:
@@ -579,8 +587,16 @@ def call_model(
                 messages=messages,  # pyright: ignore[reportArgumentType]
                 **completion_kwargs,
             )
-            content = result.choices[0].message.content
-            return content or ""
+            content = result.choices[0].message.content or ""
+            if result.choices[0].finish_reason == "length":
+                raise OutputLengthExceededError(
+                    f"Model {model_name} hit max_tokens limit. Response was truncated.",
+                    truncated_response=content,
+                )
+
+            return content
+        except OutputLengthExceededError:
+            raise
         except Exception as err:  # noqa: BLE001
             last_error = err
             err_msg = str(err)
@@ -608,6 +624,85 @@ def call_model(
             break
 
     raise RuntimeError(f"Model request failed: {last_error}")
+
+
+_OUTPUT_LENGTH_ERROR_MSG = (
+    "ERROR!! NONE of the actions you just requested were performed "
+    "because you exceeded the maximum output length of 4096 tokens. "
+    "Your outputs must be less than 4096 tokens. Re-issue this request, "
+    "breaking it into chunks each of which is less than 4096 tokens."
+)
+
+_MAX_QUERY_ATTEMPTS = 3
+
+
+def _query_model(
+    *,
+    cfg: Config,
+    prompt: str,
+    history: list[dict[str, str]],
+    api_key: str,
+    original_instruction: str,
+    terminal_state: str,
+) -> str:
+    last_error: Exception | None = None
+    current_prompt = prompt
+
+    for _attempt in range(_MAX_QUERY_ATTEMPTS):
+        try:
+            return call_model(
+                cfg=cfg,
+                prompt=current_prompt,
+                history=history,
+                api_key=api_key,
+            )
+        except OutputLengthExceededError as exc:
+            last_error = exc
+            truncated = exc.truncated_response or ""
+
+            warnings_text = ""
+            try:
+                parse_result = parse_response(truncated)
+                if parse_result.warning:
+                    warnings_text = (
+                        f"\n\nParser warnings from your truncated response:\n"
+                        f"{parse_result.warning}"
+                    )
+            except Exception:  # noqa: BLE001
+                pass
+
+            error_msg = _OUTPUT_LENGTH_ERROR_MSG
+            if warnings_text:
+                error_msg += warnings_text
+
+            history.extend(
+                [
+                    {"role": "user", "content": current_prompt},
+                    {"role": "assistant", "content": truncated},
+                ]
+            )
+            current_prompt = error_msg
+        except RuntimeError as exc:
+            err_msg = str(exc).lower()
+            if "context" in err_msg and "length" in err_msg:
+                last_error = exc
+                _unwind_messages(history=history, cfg=cfg)
+                summarized = _summarize_history(
+                    call_model_fn=call_model,
+                    cfg=cfg,
+                    history=history,
+                    api_key=api_key,
+                    original_instruction=original_instruction,
+                    terminal_state=terminal_state,
+                )
+                current_prompt = f"{summarized}\n\n{prompt}"
+                continue
+
+            raise
+
+    raise RuntimeError(
+        f"Model query failed after {_MAX_QUERY_ATTEMPTS} attempts: {last_error}"
+    )
 
 
 def start_shell() -> pexpect.spawn[str]:
@@ -742,14 +837,61 @@ def _summarize_history(
     except Exception:  # noqa: BLE001
         summary_response = "(summary unavailable)"
 
-    handoff_prompt = (
+    question_prompt = (
+        f"You are picking up work from a previous AI agent on this task:\n\n"
         f"**Original Task:**\n{original_instruction}\n\n"
         f"**Summary from Previous Agent:**\n{summary_response}\n\n"
         f"**Current Terminal Screen:**\n{terminal_state}\n\n"
-        "Continue working on this task from where the previous agent left off."
+        "Please begin by asking several questions (at least five, more if necessary) "
+        "about the current state of the solution that are not answered in the "
+        "summary from the prior agent. After you ask these questions you will "
+        "be on your own, so ask everything you need to know."
     )
 
+    try:
+        model_questions = call_model_fn(
+            cfg=cfg,
+            prompt=question_prompt,
+            history=[],
+            api_key=api_key,
+        )
+    except Exception:  # noqa: BLE001
+        model_questions = "(questions unavailable)"
+
+    try:
+        model_answers = call_model_fn(
+            cfg=cfg,
+            prompt=(
+                "The next agent has a few questions for you, please answer each "
+                "of them one by one in detail:\n\n" + model_questions
+            ),
+            history=history,
+            api_key=api_key,
+        )
+    except Exception:  # noqa: BLE001
+        model_answers = "(answers unavailable)"
+
+    first_message = history[0] if history else None
     history.clear()
+    if first_message is not None:
+        history.append(first_message)
+
+    history.extend(
+        [
+            {"role": "user", "content": question_prompt},
+            {"role": "assistant", "content": model_questions},
+        ]
+    )
+
+    handoff_prompt = (
+        "Here are the answers the other agent provided.\n\n"
+        + model_answers
+        + "\n\n"
+        + "Continue working on this task from where the previous agent left off."
+        " You can no longer ask questions. Please follow the spec to interact with "
+        "the terminal."
+    )
+
     return handoff_prompt
 
 
@@ -834,11 +976,13 @@ def run_agent(
                 prompt = summarized
 
             try:
-                model_response = call_model(
+                model_response = _query_model(
                     cfg=cfg,
                     prompt=prompt,
                     history=history,
                     api_key=api_key,
+                    original_instruction=instruction,
+                    terminal_state=prompt,
                 )
             except Exception as err:
                 if callbacks.on_issue:
