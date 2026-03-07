@@ -21,6 +21,7 @@ from agents.interface import (  # noqa: E402
     AgentRuntimeConfig,
     run_agent_task_with_fallback,
 )
+from agents.local_binary import resolve_agent_binary  # noqa: E402
 from agents.qwen.qwen_agent import QwenHeadlessAgent  # noqa: E402
 from agents.registry import get_agent  # noqa: E402
 from agents.terminus2 import agent as terminus_agent  # noqa: E402
@@ -415,6 +416,87 @@ class TestQwenAndTerminusTaskAPI(unittest.TestCase):
         self.assertIn("issue", event_types)
         self.assertIn("done", event_types)
         self.assertIn("stopped", event_types)
+
+
+class TestResolveAgentBinary(unittest.TestCase):
+    def _make_tree(self, cli_root: Path) -> None:
+        (cli_root / "agents").mkdir(parents=True, exist_ok=True)
+        (cli_root / "agents" / "local_binary.py").write_text("", encoding="utf-8")
+
+    def _make_wrapper(self, *, bin_dir: Path, name: str, target: str) -> Path:
+        bin_dir.mkdir(parents=True, exist_ok=True)
+        wrapper = bin_dir / name
+        wrapper.write_text(
+            f'#!/usr/bin/env bash\nset -euo pipefail\nexec "{target}" "$@"\n',
+            encoding="utf-8",
+        )
+        wrapper.chmod(0o755)
+        return wrapper
+
+    def _make_npm_binary(self, *, cli_root: Path, name: str) -> Path:
+        npm_bin = cli_root / ".local" / "tools" / "node_modules" / ".bin"
+        npm_bin.mkdir(parents=True, exist_ok=True)
+        binary = npm_bin / name
+        binary.write_text("#!/usr/bin/env node\n", encoding="utf-8")
+        binary.chmod(0o755)
+        return binary
+
+    def test_returns_wrapper_when_target_exists(self) -> None:
+        import agents.local_binary as mod
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cli_root = Path(tmp).resolve()
+            self._make_tree(cli_root=cli_root)
+            npm_binary = self._make_npm_binary(cli_root=cli_root, name="qwen")
+            self._make_wrapper(
+                bin_dir=cli_root / ".local" / "bin",
+                name="qwen",
+                target=str(npm_binary),
+            )
+            fake_file = str(cli_root / "agents" / "local_binary.py")
+            with patch.object(mod, "__file__", fake_file):
+                result = resolve_agent_binary(default_binary="qwen")
+            self.assertEqual(result, str(cli_root / ".local" / "bin" / "qwen"))
+
+    def test_falls_back_to_npm_binary_when_wrapper_target_missing(self) -> None:
+        import agents.local_binary as mod
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cli_root = Path(tmp).resolve()
+            self._make_tree(cli_root=cli_root)
+            npm_binary = self._make_npm_binary(cli_root=cli_root, name="qwen")
+            self._make_wrapper(
+                bin_dir=cli_root / ".local" / "bin",
+                name="qwen",
+                target="/nonexistent/absolute/path/qwen",
+            )
+            fake_file = str(cli_root / "agents" / "local_binary.py")
+            with patch.object(mod, "__file__", fake_file):
+                result = resolve_agent_binary(default_binary="qwen")
+            self.assertEqual(result, str(npm_binary))
+
+    def test_returns_npm_binary_when_no_wrapper(self) -> None:
+        import agents.local_binary as mod
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cli_root = Path(tmp).resolve()
+            self._make_tree(cli_root=cli_root)
+            npm_binary = self._make_npm_binary(cli_root=cli_root, name="qwen")
+            fake_file = str(cli_root / "agents" / "local_binary.py")
+            with patch.object(mod, "__file__", fake_file):
+                result = resolve_agent_binary(default_binary="qwen")
+            self.assertEqual(result, str(npm_binary))
+
+    def test_returns_default_when_nothing_found(self) -> None:
+        import agents.local_binary as mod
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cli_root = Path(tmp).resolve()
+            self._make_tree(cli_root=cli_root)
+            fake_file = str(cli_root / "agents" / "local_binary.py")
+            with patch.object(mod, "__file__", fake_file):
+                result = resolve_agent_binary(default_binary="qwen")
+            self.assertEqual(result, "qwen")
 
 
 if __name__ == "__main__":

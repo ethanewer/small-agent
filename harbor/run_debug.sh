@@ -10,9 +10,9 @@ N_CONCURRENT=5
 SPLIT_1=(
   adaptive-rejection-sampler
   break-filter-js-from-html
-  build-pmars
   constraints-scheduling
   crack-7z-hash
+  regex-log
 )
 
 SPLIT_2=(

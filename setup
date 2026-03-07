@@ -36,11 +36,14 @@ ensure_dirs() {
 write_wrapper() {
   local name="${1}"
   local target="${2}"
-  cat > "${LOCAL_BIN_DIR}/${name}" <<EOF
+  local rel_target
+  rel_target="$(python3 -c "import os,sys; print(os.path.relpath(sys.argv[1], sys.argv[2]))" "${target}" "${LOCAL_BIN_DIR}")"
+  cat > "${LOCAL_BIN_DIR}/${name}" <<'WRAPPER_EOF'
 #!/usr/bin/env bash
 set -euo pipefail
-exec "${target}" "\$@"
-EOF
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+WRAPPER_EOF
+  printf 'exec "${SCRIPT_DIR}/%s" "$@"\n' "${rel_target}" >> "${LOCAL_BIN_DIR}/${name}"
   chmod +x "${LOCAL_BIN_DIR}/${name}"
 }
 

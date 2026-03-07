@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import filecmp
 import json
 import os
 import shlex
@@ -142,6 +143,29 @@ def _benchmark_lock(*, jobs_root: Path) -> Iterator[None]:
             lock_path.unlink()
 
 
+@contextlib.contextmanager
+def _swap_agent(*, workspace_agent: Path, deployed_agent: Path) -> Iterator[None]:
+    """Temporarily replace the deployed core_agent.py with the workspace agent.py."""
+    if not workspace_agent.exists():
+        yield
+        return
+
+    backup = deployed_agent.with_suffix(".py.bak")
+    shutil.copy2(src=deployed_agent, dst=backup)
+    try:
+        shutil.copy2(src=workspace_agent, dst=deployed_agent)
+        if not filecmp.cmp(workspace_agent, deployed_agent, shallow=False):
+            raise RuntimeError(
+                "Agent swap failed: deployed file does not match workspace agent.py"
+            )
+        print(f"[agent-swap] deployed workspace agent.py -> {deployed_agent}")
+        yield
+    finally:
+        shutil.copy2(src=backup, dst=deployed_agent)
+        backup.unlink(missing_ok=True)
+        print(f"[agent-swap] restored original -> {deployed_agent}")
+
+
 def _load_run_summary(*, harbor_job_dir: Path) -> dict[str, object]:
     for result_path in sorted(harbor_job_dir.glob("*/result.json")):
         data = json.loads(result_path.read_text(encoding="utf-8"))
@@ -184,7 +208,16 @@ def main(argv: list[str]) -> int:
     if args.model_key:
         command.extend(["--model", args.model_key])
 
-    with _benchmark_lock(jobs_root=jobs_root):
+    workspace_agent = workdir_root / "agent.py"
+    deployed_agent = repo_root / "agents" / "terminus2" / "core_agent.py"
+
+    with (
+        _benchmark_lock(jobs_root=jobs_root),
+        _swap_agent(
+            workspace_agent=workspace_agent,
+            deployed_agent=deployed_agent,
+        ),
+    ):
         before_jobs = _collect_job_dirs(jobs_root=jobs_root)
         completed = subprocess.run(
             command,

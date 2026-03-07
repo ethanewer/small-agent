@@ -415,6 +415,10 @@ class SmallAgentHarborAgent(HarborBaseAgent):
             "apt-get update && apt-get install -y --no-install-recommends "
             "python3-pip ca-certificates; "
             "fi; "
+            "if ! command -v node >/dev/null 2>&1; then "
+            "apt-get update && apt-get install -y --no-install-recommends "
+            "nodejs ca-certificates; "
+            "fi; "
             'PIP_BREAK_FLAG=""; '
             "if python3 -m pip install --help 2>/dev/null | "
             "grep -q -- --break-system-packages; then "
