@@ -108,7 +108,7 @@ ensure_local_venv() {
 
   if have_cmd uv; then
     log "Creating local virtual environment with uv."
-    uv venv "${LOCAL_VENV_DIR}" --python python3
+    uv venv "${LOCAL_VENV_DIR}" --python 3.13
     return
   fi
 
