@@ -30,3 +30,8 @@ cache_dir = ".local/cache/pytest"
 
 [tool.mypy]
 cache_dir = ".local/cache/mypy"
+
+[dependency-groups]
+dev = [
+    "matplotlib>=3.10.8",
+]

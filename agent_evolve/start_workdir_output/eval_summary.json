@@ -1,0 +1,13 @@
+{
+  "timestamp_utc": "2026-03-07T03:25:13+00:00",
+  "iteration": 0,
+  "run_label": "baseline",
+  "runner": "run_baseline_eval.sh",
+  "agent_key": "terminus-2",
+  "model_key": null,
+  "reward_mean": 0.3333333333333333,
+  "n_trials": 15,
+  "passed": 5,
+  "total": 15,
+  "note": "Baseline eval using unmodified start_workdir agent.py"
+}
