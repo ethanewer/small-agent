@@ -1,0 +1,49 @@
+{
+    "id": "955cb296-99cf-4890-8ab7-ce21e3fe8087",
+    "started_at": "2026-03-07T14:48:03.758204",
+    "finished_at": "2026-03-07T15:29:30.272877",
+    "n_total_trials": 15,
+    "stats": {
+        "n_trials": 15,
+        "n_errors": 1,
+        "evals": {
+            "small-agent-harbor-external__terminal-bench": {
+                "n_trials": 15,
+                "n_errors": 1,
+                "metrics": [
+                    {
+                        "mean": 0.4
+                    }
+                ],
+                "reward_stats": {
+                    "reward": {
+                        "1.0": [
+                            "log-summary-date-ranges__RmgvrsR",
+                            "prove-plus-comm__Tiw6Drv",
+                            "distribution-search__cFcgZjq",
+                            "cobol-modernization__Q4t65tJ",
+                            "headless-terminal__osHe9af",
+                            "git-multibranch__ohvTEWw"
+                        ],
+                        "0.0": [
+                            "custom-memory-heap-crash__XJM4aYy",
+                            "overfull-hbox__ym3iPKH",
+                            "fix-git__o3VHE5h",
+                            "gcode-to-text__ZEAqQ8R",
+                            "financial-document-processor__qaDTNuV",
+                            "filter-js-from-html__FFfULBt",
+                            "cancel-async-tasks__BX7jN4g",
+                            "large-scale-text-editing__FSiigc9",
+                            "dna-insert__D3EhYcE"
+                        ]
+                    }
+                },
+                "exception_stats": {
+                    "AgentTimeoutError": [
+                        "large-scale-text-editing__FSiigc9"
+                    ]
+                }
+            }
+        }
+    }
+}
