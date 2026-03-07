@@ -1,0 +1,45 @@
+{
+    "id": "93ebe474-dd1d-4588-832d-a4a14ce2d8c8",
+    "started_at": "2026-03-07T14:57:43.287280",
+    "finished_at": "2026-03-07T15:28:39.509501",
+    "n_total_trials": 15,
+    "stats": {
+        "n_trials": 15,
+        "n_errors": 0,
+        "evals": {
+            "small-agent-harbor-external__terminal-bench": {
+                "n_trials": 15,
+                "n_errors": 0,
+                "metrics": [
+                    {
+                        "mean": 0.2
+                    }
+                ],
+                "reward_stats": {
+                    "reward": {
+                        "1.0": [
+                            "log-summary-date-ranges__s54S5Ga",
+                            "prove-plus-comm__oDmiEUK",
+                            "distribution-search__Z6Mc5YC"
+                        ],
+                        "0.0": [
+                            "custom-memory-heap-crash__zhmEn7a",
+                            "cobol-modernization__2abVQew",
+                            "overfull-hbox__7DzFjxD",
+                            "headless-terminal__yHhWYFX",
+                            "fix-git__uTTqLsu",
+                            "git-multibranch__ugSK7ke",
+                            "gcode-to-text__Gz9TYMd",
+                            "financial-document-processor__gfBPMpK",
+                            "filter-js-from-html__gPNrTU8",
+                            "cancel-async-tasks__9WM9CXM",
+                            "large-scale-text-editing__tUhDAdc",
+                            "dna-insert__Nasuxgm"
+                        ]
+                    }
+                },
+                "exception_stats": {}
+            }
+        }
+    }
+}
