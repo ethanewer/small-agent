@@ -65,7 +65,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument(
         "--runner-args",
         type=str,
-        default="",
+        default="--split 1",
         help='Extra arguments forwarded to the dev runner script (e.g. "--split 1").',
     )
     return parser.parse_args(argv)
