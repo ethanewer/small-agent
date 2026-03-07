@@ -44,34 +44,54 @@ class OutputLengthExceededError(Exception):
 
 PROMPT_SENTINEL = "__EVOLVER_PROMPT__> "
 MAX_OUTPUT_BYTES = 10_000
-SYSTEM_PROMPT = """You are an AI assistant tasked with solving command-line tasks in a Linux environment. You will be given a task description and terminal output from previously executed commands.
+SYSTEM_PROMPT = """You are an AI assistant tasked with solving command-line tasks in a Linux environment. You will be given a task description and the output from previously executed commands. Your goal is to solve the task by providing batches of shell commands.
 
-Respond as JSON with this structure:
-{
-  "analysis": "Current state analysis",
-  "plan": "Next-step plan",
+Format your response as JSON with the following structure:
+
+{{
+  "analysis": "Analyze the current state based on the terminal output provided. What do you see? What has been accomplished? What still needs to be done?",
+  "plan": "Describe your plan for the next steps. What commands will you run and why? Be specific about what you expect each command to accomplish.",
   "commands": [
-    {
+    {{
       "keystrokes": "ls -la\\n",
       "duration": 0.1
-    }
+    }},
+    {{
+      "keystrokes": "cd project\\n",
+      "duration": 0.1
+    }}
   ],
-  "task_complete": false
-}
+  "task_complete": true
+}}
 
 Required fields:
-- analysis (string)
-- plan (string)
-- commands (array of command objects)
+- "analysis": Your analysis of the current situation
+- "plan": Your plan for the next steps
+- "commands": Array of command objects to execute
 
-Command object fields:
-- keystrokes (string, required)
-- duration (number, optional, defaults to 1.0)
+Optional fields:
+- "task_complete": Boolean indicating if the task is complete (defaults to false if not present)
 
-Notes:
-- "keystrokes" are sent verbatim.
-- Use "C-c" for Ctrl+C and "C-d" for Ctrl+D.
-- Prefer short durations and poll with empty keystrokes when needed.
+Command object structure:
+- "keystrokes": String containing the exact keystrokes to send to the terminal (required)
+- "duration": Number of seconds to wait for the command to complete before the next command will be executed (defaults to 1.0 if not present)
+
+IMPORTANT: The text inside "keystrokes" will be used completely verbatim as keystrokes. Write commands exactly as you want them sent to the terminal:
+- Most bash commands should end with a newline (\\n) to cause them to execute
+- For special key sequences, use tmux-style escape sequences:
+  - C-c for Ctrl+C
+  - C-d for Ctrl+D
+
+The "duration" attribute specifies the number of seconds to wait for the command to complete (default: 1.0) before the next command will be executed. On immediate tasks (e.g., cd, ls, echo, cat) set a duration of 0.1 seconds. On commands (e.g., gcc, find, rustc) set a duration of 1.0 seconds. On slow commands (e.g., make, python3 [long running script], wget [file]) set an appropriate duration as you determine necessary.
+
+It is better to set a smaller duration than a longer duration. It is always possible to wait again if the prior output has not finished, by running {{"keystrokes": "", "duration": 10.0}} on subsequent requests to wait longer. Never wait longer than 60 seconds; prefer to poll to see intermediate result status.
+
+Important notes:
+- Each command's keystrokes are sent exactly as written to the terminal
+- Do not include extra whitespace before or after the keystrokes unless it's part of the intended command
+- Extra text before or after the JSON will generate warnings but be tolerated
+- The JSON must be valid - use proper escaping for quotes and special characters within strings
+- Commands array can be empty if you want to wait without taking action
 
 Task Description:
 {instruction}
@@ -510,7 +530,7 @@ def clean_terminal_output(output: str) -> str:
 
 
 def normalize_command_output(output: str, command: Command) -> str:
-    cleaned = clean_terminal_output(output=output)
+    cleaned = clean_terminal_output(output)
     command_line = command.keystrokes.strip()
     normalized_lines: list[str] = []
 
@@ -986,9 +1006,19 @@ def run_agent(
 
             result = parse_response(model_response)
 
+            feedback = ""
+            if result.error:
+                feedback += f"ERROR: {result.error}"
+            if result.warning:
+                feedback += (
+                    f"\nWARNINGS: {result.warning}"
+                    if feedback
+                    else f"WARNINGS: {result.warning}"
+                )
+
             if result.error:
                 prompt = (
-                    f"Previous response had parsing errors:\n{result.error}\n\n"
+                    f"Previous response had parsing errors:\n{feedback}\n\n"
                     "Please fix these issues and provide a proper JSON response."
                 )
                 if callbacks.on_issue:
@@ -1020,9 +1050,9 @@ def run_agent(
                 prompt = completion_confirmation_message(terminal_output)
             else:
                 pending_completion = False
-                if result.warning:
+                if feedback:
                     prompt = (
-                        f"Previous response had warnings:\n{result.warning}\n\n"
+                        f"Previous response had warnings:\n{feedback}\n\n"
                         f"{terminal_output}"
                     )
                 else:

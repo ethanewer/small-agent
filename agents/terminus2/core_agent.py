@@ -997,9 +997,19 @@ def run_agent(
 
             result = parse_response(model_response)
 
+            feedback = ""
+            if result.error:
+                feedback += f"ERROR: {result.error}"
+            if result.warning:
+                feedback += (
+                    f"\nWARNINGS: {result.warning}"
+                    if feedback
+                    else f"WARNINGS: {result.warning}"
+                )
+
             if result.error:
                 prompt = (
-                    f"Previous response had parsing errors:\n{result.error}\n\n"
+                    f"Previous response had parsing errors:\n{feedback}\n\n"
                     "Please fix these issues and provide a proper JSON response."
                 )
                 if callbacks.on_issue:
@@ -1043,9 +1053,9 @@ def run_agent(
             else:
                 pending_completion = False
                 pending_final_message = None
-                if result.warning:
+                if feedback:
                     prompt = (
-                        f"Previous response had warnings:\n{result.warning}\n\n"
+                        f"Previous response had warnings:\n{feedback}\n\n"
                         f"{terminal_output}"
                     )
                 else:

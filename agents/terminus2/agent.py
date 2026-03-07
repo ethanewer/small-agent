@@ -219,6 +219,7 @@ class Terminus2Agent:
                 api_base=cfg.model.api_base,
                 api_key=cfg.model.api_key,
                 temperature=cfg.model.temperature,
+                context_length=cfg.model.context_length,
             ),
             verbosity=verbosity,
             max_turns=max_turns,

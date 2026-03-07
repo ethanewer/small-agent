@@ -1,3 +1,0 @@
-# Harbor job dirs contain API keys in config.json and result.json
-harbor_job/
-run_baseline_eval.sh
