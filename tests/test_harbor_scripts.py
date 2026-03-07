@@ -80,9 +80,9 @@ class TestHarborRunnerScripts(unittest.TestCase):
         expected = [
             "adaptive-rejection-sampler",
             "break-filter-js-from-html",
-            "build-pmars",
             "constraints-scheduling",
             "crack-7z-hash",
+            "regex-log",
         ]
         for task in expected:
             self.assertIn(

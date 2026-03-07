@@ -452,7 +452,7 @@ class TestRenderPrompt(unittest.TestCase):
             template.write_text(
                 "Score: {dev_score} Trials: {dev_trials} "
                 "Iter: {iteration} Padded: {iteration_padded} "
-                "Root: {run_root} Workdir: {workdir_root} "
+                "Workdir: {workdir_root} "
                 "Eval: {eval_root} Snap: {snapshot_root} "
                 "Summary: {eval_summary_path} "
                 "Artifacts: {eval_artifacts_path} "
@@ -468,7 +468,6 @@ class TestRenderPrompt(unittest.TestCase):
             result = mod._render_prompt(
                 template_path=template,
                 iteration=3,
-                run_root=Path("/run"),
                 workdir_root=Path("/run/agent"),
                 eval_root=Path("/run/eval"),
                 snapshot_root=Path("/run/snap"),
@@ -485,7 +484,7 @@ class TestRenderPrompt(unittest.TestCase):
             template = Path(tmp) / "t.md"
             template.write_text(
                 "{dev_score}|{dev_trials}|{iteration}|{iteration_padded}"
-                "|{run_root}|{workdir_root}|{eval_root}|{snapshot_root}"
+                "|{workdir_root}|{eval_root}|{snapshot_root}"
                 "|{eval_summary_path}|{eval_artifacts_path}|{context_length}",
                 encoding="utf-8",
             )
@@ -497,7 +496,6 @@ class TestRenderPrompt(unittest.TestCase):
             result = mod._render_prompt(
                 template_path=template,
                 iteration=1,
-                run_root=Path("/r"),
                 workdir_root=Path("/w"),
                 eval_root=Path("/e"),
                 snapshot_root=Path("/s"),
