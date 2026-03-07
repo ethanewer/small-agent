@@ -141,6 +141,18 @@ def _resolve_context_length(*, config_path: Path, model_key: str | None) -> int:
     return 0
 
 
+def _resolve_cursor_model(*, config_path: Path) -> str | None:
+    try:
+        data = json.loads(config_path.read_text(encoding="utf-8"))
+        value = data.get("default_cursor_model")
+        if isinstance(value, str) and value:
+            return value
+    except (json.JSONDecodeError, OSError):
+        pass
+
+    return None
+
+
 def _file_hash(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
@@ -314,6 +326,8 @@ def main(argv: list[str]) -> int:  # noqa: C901, PLR0912, PLR0915
     context_length = _resolve_context_length(
         config_path=config_path, model_key=args.model_key
     )
+    if not args.cursor_model:
+        args.cursor_model = _resolve_cursor_model(config_path=config_path)
 
     stop_state = StopState()
 

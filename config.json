@@ -1,6 +1,7 @@
 {
   "default_agent": "terminus-2",
   "default_model": "qwen3-coder-next",
+  "default_cursor_model": "opus-4.6-thinking",
   "agents": {
     "terminus-2": {
       "final_message": false
