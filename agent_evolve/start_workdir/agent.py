@@ -117,6 +117,7 @@ class Config:
     verbosity: int = 0
     max_turns: int = 50
     max_wait_seconds: float = 60.0
+    final_message_enabled: bool = True
 
 
 @dataclass
@@ -138,7 +139,7 @@ class AgentCallbacks:
     on_reasoning: Callable[[int, ParsedResponse], None] | None = None
     on_command_output: Callable[[Command, str], None] | None = None
     on_issue: Callable[[str, str], None] | None = None
-    on_done: Callable[[], None] | None = None
+    on_done: Callable[[str], None] | None = None
     on_stopped: Callable[[int], None] | None = None
 
 
@@ -1042,7 +1043,7 @@ def run_agent(
             if parsed.task_complete:
                 if pending_completion:
                     if callbacks.on_done:
-                        callbacks.on_done()
+                        callbacks.on_done("Task marked complete.")
 
                     return 0
 
@@ -1138,12 +1139,12 @@ class Agent:
                     )
                 )
 
-        def on_done() -> None:
+        def on_done(done_text: str) -> None:
             if sink:
                 sink.emit(
                     event=AgentEvent(
                         event_type="done",
-                        payload={"message": "Task marked complete."},
+                        payload={"message": done_text},
                     )
                 )
 
