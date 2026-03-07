@@ -249,6 +249,9 @@ run_or_echo() {
     return 0
   fi
 
+  echo "Pruning stale Docker networks before benchmark run..."
+  docker network prune -f 2>/dev/null || true
+
   (
     cd "${SCRIPT_DIR}"
     "${HARBOR_COMMAND[@]}"
