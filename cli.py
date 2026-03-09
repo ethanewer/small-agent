@@ -70,6 +70,12 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         default=None,
         help="Agent key from config.agents to run with.",
     )
+    parser.add_argument(
+        "--no-final-message",
+        action="store_true",
+        default=False,
+        help="Disable the final summary message (used by benchmarks).",
+    )
 
     return parser.parse_args(argv)
 
@@ -501,6 +507,8 @@ def main() -> None:
         raise SystemExit(1) from None
 
     runtime_cfg.agent_config["verbosity"] = args.verbosity
+    if args.no_final_message:
+        runtime_cfg.agent_config["final_message"] = False
 
     cwd = os.getcwd()
 

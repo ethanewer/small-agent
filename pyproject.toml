@@ -24,6 +24,8 @@ include = ["cli.py", "harbor_config.py", "agents/"]
 
 [tool.ruff]
 cache-dir = ".local/cache/ruff"
+extend-exclude = ["*.json"]
+force-exclude = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

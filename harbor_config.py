@@ -21,6 +21,7 @@ class ConfigModelEntry:
     api_key: str | None
     temperature: float | None
     context_length: int | None = None
+    extra_params: dict[str, Any] | None = None
 
 
 @dataclass
@@ -136,12 +137,17 @@ def load_config(path: Path) -> LoadedConfig:
         context_length = (
             int(raw_context_length) if raw_context_length is not None else None
         )
+        raw_extra_params = model_data.get("extra_params")
+        extra_params = (
+            dict(raw_extra_params) if isinstance(raw_extra_params, dict) else None
+        )
         models[model_key] = ConfigModelEntry(
             model=model_name,
             api_base=api_base,
             api_key=model_data.get("api_key"),
             temperature=temperature,
             context_length=context_length,
+            extra_params=extra_params,
         )
 
     default_model = str(data.get("default_model", "")).strip()
@@ -215,6 +221,7 @@ def build_runtime_config(
             api_key=resolved_api_key,
             temperature=selected.temperature,
             context_length=selected.context_length,
+            extra_params=selected.extra_params,
         ),
         agent_config=agent_options,
     )

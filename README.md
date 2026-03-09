@@ -148,7 +148,7 @@ Both keys are validated against `config.json` (`agents` and `models`).
 The CLI includes helper scripts with fixed public Terminal-Bench datasets:
 
 - `harbor/run_smoke.sh`: single easy task for quick smoke testing
-- `harbor/run_debug.sh --split <1-4>`: 5 medium tasks per split (4 splits)
+- `harbor/run_dev_benchmark.sh`: 10 medium tasks for development feedback
 - `harbor/run_small_benchmark.sh`: 15-task benchmark (4 easy, 10 medium, 1 hard)
 - `harbor/run_full_benchmark.sh`: all 89 tasks from `terminal-bench@2.0`
 
@@ -175,7 +175,7 @@ Examples:
 
 ```bash
 ./harbor/run_smoke.sh --dry-run
-./harbor/run_debug.sh --split 1 --model gpt-5.3-codex --agent qwen --dry-run
+./harbor/run_dev_benchmark.sh --model gpt-5.3-codex --agent qwen --dry-run
 ./harbor/run_small_benchmark.sh --agent terminus-2
 ./harbor/run_full_benchmark.sh --agent terminus-2
 ```
@@ -213,7 +213,7 @@ uv run python agent_evolve/run_outer_loop.py
 Common overrides:
 
 ```bash
-uv run python agent_evolve/run_outer_loop.py --iterations 25 --runner harbor/run_debug.sh --runner-args "--split 1"
+uv run python agent_evolve/run_outer_loop.py --iterations 25 --runner harbor/run_dev_benchmark.sh
 uv run python agent_evolve/run_outer_loop.py --cursor-model gpt-5.3-codex
 ```
 

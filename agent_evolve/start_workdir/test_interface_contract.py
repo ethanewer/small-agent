@@ -190,6 +190,7 @@ class TestAgentContract(unittest.TestCase):
             "api_key",
             "temperature",
             "context_length",
+            "extra_params",
         }
         missing = required_fields - field_names
         self.assertFalse(missing, f"CoreModelConfig missing fields: {missing}")

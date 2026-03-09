@@ -36,7 +36,7 @@ class TestHarborRunnerScripts(unittest.TestCase):
         self.assertRegex(
             proc.stdout,
             re.compile(
-                r"Resolved model=qwen3-coder-next agent=terminus-2 n_concurrent=\d+"
+                r"Resolved model=qwen3\.5-flash agent=terminus-2 n_concurrent=\d+"
             ),
         )
         self.assertIn("-d terminal-bench@2.0", proc.stdout)
@@ -70,18 +70,29 @@ class TestHarborRunnerScripts(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, msg=f"{proc.stdout}\n{proc.stderr}")
         self.assertIn("--agent-env OPENROUTER_API_KEY=test-key", proc.stdout)
 
-    # ── run_debug.sh ──────────────────────────────────────────────
+    # ── run_dev_benchmark.sh ─────────────────────────────────────
 
-    def test_run_debug_split_1(self) -> None:
-        proc = self._run_script("run_debug.sh", "--split", "1", "--dry-run")
+    def test_run_dev_benchmark_uses_config_defaults(self) -> None:
+        proc = self._run_script("run_dev_benchmark.sh", "--dry-run")
         self.assertEqual(proc.returncode, 0, msg=f"{proc.stdout}\n{proc.stderr}")
+        self.assertRegex(
+            proc.stdout,
+            re.compile(
+                r"Resolved model=qwen3\.5-flash agent=terminus-2 n_concurrent=\d+"
+            ),
+        )
         self.assertIn("-d terminal-bench@2.0", proc.stdout)
         self.assertIn("--n-concurrent 5", proc.stdout)
         expected = [
             "adaptive-rejection-sampler",
-            "break-filter-js-from-html",
+            "build-cython-ext",
             "constraints-scheduling",
-            "crack-7z-hash",
+            "extract-elf",
+            "git-leak-recovery",
+            "hf-model-inference",
+            "kv-store-grpc",
+            "modernize-scientific-stack",
+            "nginx-request-logging",
             "regex-log",
         ]
         for task in expected:
@@ -90,61 +101,11 @@ class TestHarborRunnerScripts(unittest.TestCase):
                 proc.stdout,
                 msg=f"Missing --task-name filter for {task}",
             )
+        self.assertEqual(len(expected), 10)
 
-    def test_run_debug_split_2(self) -> None:
-        proc = self._run_script("run_debug.sh", "--split", "2", "--dry-run")
-        self.assertEqual(proc.returncode, 0, msg=f"{proc.stdout}\n{proc.stderr}")
-        expected = [
-            "db-wal-recovery",
-            "extract-elf",
-            "git-leak-recovery",
-            "hf-model-inference",
-            "kv-store-grpc",
-        ]
-        for task in expected:
-            self.assertIn(f"--task-name {task}", proc.stdout)
-
-    def test_run_debug_split_3(self) -> None:
-        proc = self._run_script("run_debug.sh", "--split", "3", "--dry-run")
-        self.assertEqual(proc.returncode, 0, msg=f"{proc.stdout}\n{proc.stderr}")
-        expected = [
-            "largest-eigenval",
-            "modernize-scientific-stack",
-            "nginx-request-logging",
-            "openssl-selfsigned-cert",
-            "pypi-server",
-        ]
-        for task in expected:
-            self.assertIn(f"--task-name {task}", proc.stdout)
-
-    def test_run_debug_split_4(self) -> None:
-        proc = self._run_script("run_debug.sh", "--split", "4", "--dry-run")
-        self.assertEqual(proc.returncode, 0, msg=f"{proc.stdout}\n{proc.stderr}")
-        expected = [
-            "build-cython-ext",
-            "caffe-cifar-10",
-            "chess-best-move",
-            "code-from-image",
-            "compile-compcert",
-        ]
-        for task in expected:
-            self.assertIn(f"--task-name {task}", proc.stdout)
-
-    def test_run_debug_missing_split_fails(self) -> None:
-        proc = self._run_script("run_debug.sh", "--dry-run")
-        self.assertNotEqual(proc.returncode, 0)
-        self.assertIn("Missing required --split", proc.stderr)
-
-    def test_run_debug_invalid_split_fails(self) -> None:
-        proc = self._run_script("run_debug.sh", "--split", "5", "--dry-run")
-        self.assertNotEqual(proc.returncode, 0)
-        self.assertIn("Invalid split", proc.stderr)
-
-    def test_run_debug_accepts_overrides(self) -> None:
+    def test_run_dev_benchmark_accepts_overrides(self) -> None:
         proc = self._run_script(
-            "run_debug.sh",
-            "--split",
-            "1",
+            "run_dev_benchmark.sh",
             "--model",
             "minimax-m2.5",
             "--agent",
@@ -163,7 +124,7 @@ class TestHarborRunnerScripts(unittest.TestCase):
         self.assertRegex(
             proc.stdout,
             re.compile(
-                r"Resolved model=qwen3-coder-next agent=terminus-2 n_concurrent=\d+"
+                r"Resolved model=qwen3\.5-flash agent=terminus-2 n_concurrent=\d+"
             ),
         )
         self.assertIn("-d terminal-bench@2.0", proc.stdout)
@@ -205,28 +166,30 @@ class TestHarborRunnerScripts(unittest.TestCase):
         self.assertIn("SMALL_AGENT_HARBOR_MODEL=minimax-m2.5", proc.stdout)
         self.assertIn("SMALL_AGENT_HARBOR_AGENT=qwen", proc.stdout)
 
-    def test_run_small_benchmark_disjoint_from_debug(self) -> None:
-        """All run_small_benchmark tasks must be disjoint from all debug splits."""
+    def test_run_small_benchmark_disjoint_from_dev(self) -> None:
+        """All run_small_benchmark tasks must be disjoint from run_dev_benchmark."""
         small_proc = self._run_script("run_small_benchmark.sh", "--dry-run")
         self.assertEqual(
             small_proc.returncode, 0, msg=f"{small_proc.stdout}\n{small_proc.stderr}"
         )
-        debug_tasks: set[str] = set()
-        for split in ("1", "2", "3", "4"):
-            proc = self._run_script("run_debug.sh", "--split", split, "--dry-run")
-            self.assertEqual(proc.returncode, 0, msg=f"{proc.stdout}\n{proc.stderr}")
-            for m in re.finditer(r"--task-name (\S+)", proc.stdout):
-                debug_tasks.add(m.group(1))
+        dev_proc = self._run_script("run_dev_benchmark.sh", "--dry-run")
+        self.assertEqual(
+            dev_proc.returncode, 0, msg=f"{dev_proc.stdout}\n{dev_proc.stderr}"
+        )
+
+        dev_tasks: set[str] = set()
+        for m in re.finditer(r"--task-name (\S+)", dev_proc.stdout):
+            dev_tasks.add(m.group(1))
 
         small_tasks: set[str] = set()
         for m in re.finditer(r"--task-name (\S+)", small_proc.stdout):
             small_tasks.add(m.group(1))
 
-        overlap = small_tasks & debug_tasks
+        overlap = small_tasks & dev_tasks
         self.assertEqual(
             overlap,
             set(),
-            msg=f"run_small_benchmark tasks overlap with run_debug: {overlap}",
+            msg=f"run_small_benchmark tasks overlap with run_dev_benchmark: {overlap}",
         )
 
     # ── run_full_benchmark.sh ─────────────────────────────────────
@@ -237,7 +200,7 @@ class TestHarborRunnerScripts(unittest.TestCase):
         self.assertRegex(
             proc.stdout,
             re.compile(
-                r"Resolved model=qwen3-coder-next agent=terminus-2 n_concurrent=\d+"
+                r"Resolved model=qwen3\.5-flash agent=terminus-2 n_concurrent=\d+"
             ),
         )
         self.assertIn("-d terminal-bench@2.0", proc.stdout)

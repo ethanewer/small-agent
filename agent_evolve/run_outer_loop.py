@@ -4,6 +4,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import shutil
 import signal
 from dataclasses import dataclass
@@ -39,7 +40,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument(
         "--runner",
         type=Path,
-        default=Path("harbor/run_debug.sh"),
+        default=Path("harbor/run_dev_benchmark.sh"),
     )
     parser.add_argument("--agent-key", type=str, default="terminus-2")
     parser.add_argument("--model-key", type=str, default=None)
@@ -65,8 +66,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument(
         "--runner-args",
         type=str,
-        default="--split 1",
-        help='Extra arguments forwarded to the dev runner script (e.g. "--split 1").',
+        default="",
+        help="Extra arguments forwarded to the dev runner script.",
     )
     return parser.parse_args(argv)
 
@@ -174,6 +175,425 @@ def _read_eval_summary_fields(
         return "N/A", "N/A"
 
 
+def _find_eval_harbor_result(*, eval_root: Path, iteration: int) -> Path | None:
+    """Locate the aggregate result.json for an iteration's eval benchmark."""
+    eval_dir = eval_root / f"iter-{iteration:04d}" / "eval-0001" / "harbor_job"
+    if not eval_dir.exists():
+        return None
+
+    for job_dir in sorted(eval_dir.iterdir()):
+        candidate = job_dir / "result.json"
+        if candidate.is_file():
+            return candidate
+
+    return None
+
+
+def _parse_harbor_result(result_path: Path) -> tuple[float | None, int | None]:
+    """Return (reward_mean, n_trials) from a harbor aggregate result.json."""
+    try:
+        data = json.loads(result_path.read_text(encoding="utf-8"))
+        stats = data.get("stats", {})
+        n_trials = stats.get("n_trials")
+        evals = stats.get("evals", {})
+        for eval_data in evals.values():
+            metrics = eval_data.get("metrics", [])
+            if metrics and isinstance(metrics[0], dict):
+                mean = metrics[0].get("mean")
+                if isinstance(mean, (int, float)):
+                    return float(mean), n_trials
+    except (json.JSONDecodeError, OSError):
+        pass
+
+    return None, None
+
+
+def _best_dev_score(*, eval_root: Path, iteration: int) -> float | None:
+    """Return the best dev run reward_mean across all runs for an iteration."""
+    iter_dir = eval_root / f"iter-{iteration:04d}"
+    if not iter_dir.exists():
+        return None
+
+    best: float | None = None
+    for run_dir in sorted(iter_dir.glob("run-*")):
+        harbor_dir = run_dir / "harbor_job"
+        if not harbor_dir.exists():
+            continue
+        for job_dir in sorted(harbor_dir.iterdir()):
+            result_path = job_dir / "result.json"
+            if result_path.is_file():
+                score, _ = _parse_harbor_result(result_path)
+                if score is not None and (best is None or score > best):
+                    best = score
+
+    return best
+
+
+def _agent_line_count(*, snapshot_root: Path, iteration: int) -> int | None:
+    """Count lines in the eval snapshot's agent.py."""
+    agent_path = snapshot_root / f"iter-{iteration:04d}" / "eval-0001" / "agent.py"
+    if not agent_path.exists():
+        agent_path = snapshot_root / f"iter-{iteration:04d}" / "pre-cursor" / "agent.py"
+    if not agent_path.exists():
+        return None
+
+    try:
+        return len(agent_path.read_text(encoding="utf-8").splitlines())
+    except OSError:
+        return None
+
+
+_ARCH_HEADING_RE = re.compile(r"^###?\s+Architecture\s+[\d.]+[:\s]+(.+)", re.MULTILINE)
+
+
+def _extract_architecture_label(*, snapshot_root: Path, iteration: int) -> str:
+    """Pull the latest architecture heading from a snapshot's NOTES.md."""
+    for label in ("eval-0001", "pre-cursor"):
+        notes_path = snapshot_root / f"iter-{iteration:04d}" / label / "NOTES.md"
+        if notes_path.exists():
+            try:
+                text = notes_path.read_text(encoding="utf-8")
+            except OSError:
+                continue
+            matches = _ARCH_HEADING_RE.findall(text)
+            if matches:
+                raw = matches[-1].strip()
+                raw = re.sub(r"\s*\(current\)", "", raw, flags=re.IGNORECASE)
+                return raw
+
+    return ""
+
+
+def _extract_notes_summary(
+    *, snapshot_root: Path, iteration: int, max_lines: int = 10
+) -> str:
+    """Return a brief summary from a snapshot's NOTES.md."""
+    for label in ("eval-0001", "pre-cursor"):
+        notes_path = snapshot_root / f"iter-{iteration:04d}" / label / "NOTES.md"
+        if notes_path.exists():
+            try:
+                text = notes_path.read_text(encoding="utf-8")
+            except OSError:
+                continue
+            lines = text.splitlines()
+            if len(lines) > max_lines:
+                return "\n".join(lines[:max_lines]) + "\n..."
+            return text
+
+    return "No notes available."
+
+
+@dataclass
+class IterationRecord:
+    iteration: int
+    eval_score: float | None
+    dev_best: float | None
+    n_trials: int | None
+    line_count: int | None
+    architecture: str
+    snapshot_agent_path: str | None
+
+
+def collect_iteration_records(
+    *,
+    run_root: Path,
+    up_to_iteration: int,
+) -> list[IterationRecord]:
+    """Gather summary data for iterations 1..up_to_iteration."""
+    eval_root = run_root / "eval"
+    snapshot_root = run_root / "snapshots"
+    records: list[IterationRecord] = []
+
+    for it in range(1, up_to_iteration + 1):
+        result_path = _find_eval_harbor_result(eval_root=eval_root, iteration=it)
+        eval_score: float | None = None
+        n_trials: int | None = None
+        if result_path is not None:
+            eval_score, n_trials = _parse_harbor_result(result_path)
+
+        dev_best = _best_dev_score(eval_root=eval_root, iteration=it)
+        line_count = _agent_line_count(snapshot_root=snapshot_root, iteration=it)
+        architecture = _extract_architecture_label(
+            snapshot_root=snapshot_root, iteration=it
+        )
+
+        agent_path: str | None = None
+        for label in ("eval-0001", "pre-cursor"):
+            candidate = snapshot_root / f"iter-{it:04d}" / label / "agent.py"
+            if candidate.exists():
+                agent_path = str(candidate)
+                break
+
+        records.append(
+            IterationRecord(
+                iteration=it,
+                eval_score=eval_score,
+                dev_best=dev_best,
+                n_trials=n_trials,
+                line_count=line_count,
+                architecture=architecture,
+                snapshot_agent_path=agent_path,
+            )
+        )
+
+    return records
+
+
+def _baseline_record(*, run_root: Path) -> IterationRecord:
+    """Build a synthetic record for the baseline (iteration 0)."""
+    snapshot_root = run_root / "snapshots"
+    agent_path = snapshot_root / "iter-0001" / "pre-cursor" / "agent.py"
+    line_count: int | None = None
+    if agent_path.exists():
+        try:
+            line_count = len(agent_path.read_text(encoding="utf-8").splitlines())
+        except OSError:
+            pass
+
+    return IterationRecord(
+        iteration=0,
+        eval_score=None,
+        dev_best=None,
+        n_trials=None,
+        line_count=line_count,
+        architecture="Baseline",
+        snapshot_agent_path=str(agent_path) if agent_path.exists() else None,
+    )
+
+
+def _fmt_score(value: float | None) -> str:
+    if value is None:
+        return "N/A"
+    return f"{value:.2f}"
+
+
+def _build_scoreboard_text(
+    *,
+    run_root: Path,
+    up_to_iteration: int,
+    baseline_eval_score: float | None = None,
+) -> str:
+    """Build the scoreboard markdown table for the prompt."""
+    baseline = _baseline_record(run_root=run_root)
+    if baseline_eval_score is not None:
+        baseline.eval_score = baseline_eval_score
+
+    records = collect_iteration_records(
+        run_root=run_root, up_to_iteration=up_to_iteration
+    )
+    all_records = [baseline, *records]
+
+    best_score: float | None = None
+    best_iter: int | None = None
+    for rec in all_records:
+        if rec.eval_score is not None and (
+            best_score is None or rec.eval_score > best_score
+        ):
+            best_score = rec.eval_score
+            best_iter = rec.iteration
+
+    lines: list[str] = []
+    lines.append(
+        "## Eval score history (held-out benchmark — you cannot see these tasks)\n"
+    )
+    if best_iter is not None and best_score is not None:
+        passed = ""
+        for rec in all_records:
+            if rec.iteration == best_iter and rec.n_trials:
+                n_passed = round(best_score * rec.n_trials)
+                passed = f" ({n_passed}/{rec.n_trials} passed)"
+                break
+        lines.append(
+            f"Best iteration so far: **Iter {best_iter}** with eval score "
+            f"**{best_score:.2f}**{passed}\n"
+        )
+
+    lines.append("| Iter | Eval Score | Dev Best | Lines | Architecture |")
+    lines.append("|------|-----------|----------|-------|--------------|")
+    for rec in all_records:
+        lines.append(
+            f"| {rec.iteration} "
+            f"| {_fmt_score(rec.eval_score)} "
+            f"| {_fmt_score(rec.dev_best)} "
+            f"| {rec.line_count or 'N/A'} "
+            f"| {rec.architecture or 'N/A'} |"
+        )
+
+    latest_with_score = [r for r in records if r.eval_score is not None]
+    if best_score is not None and len(latest_with_score) >= 2:
+        consecutive_decline = 0
+        for rec in reversed(latest_with_score):
+            if rec.eval_score is not None and rec.eval_score < best_score:
+                consecutive_decline += 1
+            else:
+                break
+
+        if consecutive_decline >= 2:
+            lines.append("")
+            lines.append(
+                f"WARNING: Eval score has declined for {consecutive_decline} "
+                f"consecutive iterations. Your recent changes are hurting "
+                f"held-out performance. Consider reverting to the architecture "
+                f"from iteration {best_iter} and making smaller, more targeted "
+                f"changes."
+            )
+
+    return "\n".join(lines)
+
+
+def _build_snapshot_index(
+    *,
+    run_root: Path,
+    up_to_iteration: int,
+    baseline_eval_score: float | None = None,
+) -> str:
+    """Build the snapshot index for the prompt."""
+    baseline = _baseline_record(run_root=run_root)
+    if baseline_eval_score is not None:
+        baseline.eval_score = baseline_eval_score
+
+    records = collect_iteration_records(
+        run_root=run_root, up_to_iteration=up_to_iteration
+    )
+    all_records = [baseline, *records]
+
+    best_score: float | None = None
+    best_iter: int | None = None
+    for rec in all_records:
+        if rec.eval_score is not None and (
+            best_score is None or rec.eval_score > best_score
+        ):
+            best_score = rec.eval_score
+            best_iter = rec.iteration
+
+    lines: list[str] = []
+    lines.append("## Prior agent snapshots (read-only, for reference)\n")
+    lines.append("| Iter | Eval Score | Snapshot Path |")
+    lines.append("|------|-----------|--------------|")
+    for rec in all_records:
+        if rec.snapshot_agent_path:
+            lines.append(
+                f"| {rec.iteration} "
+                f"| {_fmt_score(rec.eval_score)} "
+                f"| `{rec.snapshot_agent_path}` |"
+            )
+
+    if best_iter is not None:
+        best_rec = next((r for r in all_records if r.iteration == best_iter), None)
+        if best_rec and best_rec.snapshot_agent_path:
+            lines.append("")
+            lines.append(
+                "To compare your current agent against the best-performing version:"
+            )
+            lines.append(f"  `diff {best_rec.snapshot_agent_path} agent.py`")
+
+    return "\n".join(lines)
+
+
+def update_scoreboard(
+    *,
+    run_root: Path,
+    up_to_iteration: int,
+    baseline_eval_score: float | None = None,
+) -> None:
+    """Regenerate SCOREBOARD.md and scoreboard.json from all completed iterations."""
+    scoreboard_text = _build_scoreboard_text(
+        run_root=run_root,
+        up_to_iteration=up_to_iteration,
+        baseline_eval_score=baseline_eval_score,
+    )
+    (run_root / "SCOREBOARD.md").write_text(scoreboard_text + "\n", encoding="utf-8")
+
+    baseline = _baseline_record(run_root=run_root)
+    if baseline_eval_score is not None:
+        baseline.eval_score = baseline_eval_score
+
+    records = collect_iteration_records(
+        run_root=run_root, up_to_iteration=up_to_iteration
+    )
+    all_records = [baseline, *records]
+
+    json_data = {
+        "updated_at_utc": datetime.now(UTC).isoformat(),
+        "iterations": [
+            {
+                "iteration": rec.iteration,
+                "eval_score": rec.eval_score,
+                "dev_best": rec.dev_best,
+                "n_trials": rec.n_trials,
+                "line_count": rec.line_count,
+                "architecture": rec.architecture,
+                "snapshot_agent_path": rec.snapshot_agent_path,
+            }
+            for rec in all_records
+        ],
+    }
+    (run_root / "scoreboard.json").write_text(
+        json.dumps(json_data, indent=2, ensure_ascii=True) + "\n",
+        encoding="utf-8",
+    )
+
+
+def seed_notes_with_history(
+    *,
+    workdir_root: Path,
+    run_root: Path,
+    up_to_iteration: int,
+    baseline_eval_score: float | None = None,
+) -> None:
+    """Prepend structured iteration history to the workspace NOTES.md."""
+    snapshot_root = run_root / "snapshots"
+    scoreboard_text = _build_scoreboard_text(
+        run_root=run_root,
+        up_to_iteration=up_to_iteration,
+        baseline_eval_score=baseline_eval_score,
+    )
+
+    history_parts: list[str] = []
+    history_parts.append("<!-- BEGIN ITERATION HISTORY (auto-generated) -->\n")
+    history_parts.append(scoreboard_text)
+    history_parts.append("")
+
+    records = collect_iteration_records(
+        run_root=run_root, up_to_iteration=up_to_iteration
+    )
+    if records:
+        history_parts.append("## Per-iteration summaries\n")
+        for rec in records:
+            header = f"### Iter {rec.iteration}"
+            if rec.architecture:
+                header += f" — {rec.architecture}"
+            header += f" (eval: {_fmt_score(rec.eval_score)})"
+            history_parts.append(header)
+            summary = _extract_notes_summary(
+                snapshot_root=snapshot_root, iteration=rec.iteration
+            )
+            history_parts.append(summary)
+            history_parts.append("")
+
+    history_parts.append("<!-- END ITERATION HISTORY -->\n")
+    history_block = "\n".join(history_parts)
+
+    notes_path = workdir_root / "NOTES.md"
+    existing = ""
+    if notes_path.exists():
+        try:
+            existing = notes_path.read_text(encoding="utf-8")
+        except OSError:
+            pass
+
+    existing = re.sub(
+        r"<!-- BEGIN ITERATION HISTORY \(auto-generated\) -->.*?"
+        r"<!-- END ITERATION HISTORY -->\n?",
+        "",
+        existing,
+        flags=re.DOTALL,
+    )
+    existing = existing.lstrip("\n")
+
+    notes_path.write_text(history_block + "\n" + existing, encoding="utf-8")
+
+
 def _render_prompt(
     *,
     template_path: Path,
@@ -183,10 +603,25 @@ def _render_prompt(
     snapshot_root: Path,
     eval_summary_path: Path,
     context_length: int,
+    run_root: Path,
+    baseline_eval_score: float | None = None,
 ) -> str:
     text = template_path.read_text(encoding="utf-8")
     eval_artifacts_path = eval_summary_path.parent
     dev_score, dev_trials = _read_eval_summary_fields(eval_summary_path)
+
+    prior_iteration = iteration - 1
+    scoreboard = _build_scoreboard_text(
+        run_root=run_root,
+        up_to_iteration=max(prior_iteration, 0),
+        baseline_eval_score=baseline_eval_score,
+    )
+    snapshot_index = _build_snapshot_index(
+        run_root=run_root,
+        up_to_iteration=max(prior_iteration, 0),
+        baseline_eval_score=baseline_eval_score,
+    )
+
     return text.format(
         iteration=iteration,
         iteration_padded=f"{iteration:04d}",
@@ -198,6 +633,8 @@ def _render_prompt(
         context_length=context_length,
         dev_score=dev_score,
         dev_trials=dev_trials,
+        scoreboard=scoreboard,
+        snapshot_index=snapshot_index,
     )
 
 
@@ -259,6 +696,7 @@ def _build_state(
     last_completed_step: str | None,
     eval_score: float | None = None,
     last_eval_agent_hash: str | None = None,
+    baseline_eval_score: float | None = None,
     dev_benchmark_failed: bool = False,
     eval_benchmark_failed: bool = False,
     extra: dict[str, object] | None = None,
@@ -275,6 +713,7 @@ def _build_state(
         "run_root": str(run_root),
         "eval_score": eval_score,
         "last_eval_agent_hash": last_eval_agent_hash,
+        "baseline_eval_score": baseline_eval_score,
         "dev_benchmark_failed": dev_benchmark_failed,
         "eval_benchmark_failed": eval_benchmark_failed,
     }
@@ -353,6 +792,11 @@ def main(argv: list[str]) -> int:  # noqa: C901, PLR0912, PLR0915
         eval_score = float(state["eval_score"])  # pyright: ignore[reportArgumentType]
     last_eval_agent_hash: str | None = state.get("last_eval_agent_hash")  # pyright: ignore[reportAssignmentType]
 
+    baseline_eval_score: float | None = None
+    raw_baseline = state.get("baseline_eval_score")
+    if isinstance(raw_baseline, (int, float)):
+        baseline_eval_score = float(raw_baseline)
+
     def _save(
         step: str | None,
         *,
@@ -369,6 +813,7 @@ def main(argv: list[str]) -> int:  # noqa: C901, PLR0912, PLR0915
             last_completed_step=step,
             eval_score=eval_score,
             last_eval_agent_hash=last_eval_agent_hash,
+            baseline_eval_score=baseline_eval_score,
             dev_benchmark_failed=dev_benchmark_failed,
             eval_benchmark_failed=eval_benchmark_failed,
         )
@@ -460,6 +905,13 @@ def main(argv: list[str]) -> int:  # noqa: C901, PLR0912, PLR0915
                     dirs_exist_ok=False,
                 )
 
+            seed_notes_with_history(
+                workdir_root=workdir_root,
+                run_root=run_root,
+                up_to_iteration=current_iteration - 1,
+                baseline_eval_score=baseline_eval_score,
+            )
+
             prompt_text = _render_prompt(
                 template_path=template_path,
                 iteration=current_iteration,
@@ -468,6 +920,8 @@ def main(argv: list[str]) -> int:  # noqa: C901, PLR0912, PLR0915
                 snapshot_root=snapshot_root,
                 eval_summary_path=eval_summary_path,
                 context_length=context_length,
+                run_root=run_root,
+                baseline_eval_score=baseline_eval_score,
             )
             prompt_file = iteration_dir / "cursor_prompt.txt"
             prompt_file.write_text(prompt_text, encoding="utf-8")
@@ -598,7 +1052,16 @@ def main(argv: list[str]) -> int:  # noqa: C901, PLR0912, PLR0915
                             pass
 
                     last_eval_agent_hash = current_hash
+                    if current_iteration == 1 and eval_score is not None:
+                        baseline_eval_score = eval_score
+
                     _save("eval")
+
+            update_scoreboard(
+                run_root=run_root,
+                up_to_iteration=current_iteration,
+                baseline_eval_score=baseline_eval_score,
+            )
 
         last_completed_step = None
         current_iteration += 1
@@ -611,6 +1074,7 @@ def main(argv: list[str]) -> int:  # noqa: C901, PLR0912, PLR0915
         last_completed_step=None,
         eval_score=eval_score,
         last_eval_agent_hash=last_eval_agent_hash,
+        baseline_eval_score=baseline_eval_score,
         extra={"stopped_gracefully": stop_state.requested},
     )
     _save_state(state_path=state_path, payload=final_state)

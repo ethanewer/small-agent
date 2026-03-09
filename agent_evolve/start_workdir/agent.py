@@ -108,6 +108,7 @@ class ModelConfig:
     api_key: str | None = None
     temperature: float | None = None
     context_length: int | None = None
+    extra_params: dict[str, Any] | None = None
 
 
 @dataclass
@@ -576,6 +577,9 @@ def call_model(
 
     if cfg.active_model.temperature is not None:
         completion_kwargs["temperature"] = cfg.active_model.temperature
+
+    if cfg.active_model.extra_params:
+        completion_kwargs["extra_body"] = cfg.active_model.extra_params
 
     messages: list[dict[str, str]] = [*history, {"role": "user", "content": prompt}]
     last_error: Exception | None = None
@@ -1101,6 +1105,7 @@ class Agent:
                 api_key=cfg.model.api_key,
                 temperature=cfg.model.temperature,
                 context_length=cfg.model.context_length,
+                extra_params=cfg.model.extra_params,
             ),
             verbosity=verbosity,
             max_turns=max_turns,

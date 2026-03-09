@@ -31,7 +31,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument(
         "--runner",
         type=Path,
-        default=Path("harbor/run_debug.sh"),
+        default=Path("harbor/run_dev_benchmark.sh"),
         help="Benchmark runner path relative to repo root.",
     )
     parser.add_argument(

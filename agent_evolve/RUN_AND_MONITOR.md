@@ -14,7 +14,7 @@ uv run python agent_evolve/run_outer_loop.py
 
 This runs up to 25 iterations by default. Each iteration:
 
-1. **Dev benchmark** — runs a 5-task debug split (`harbor/run_debug.sh`).
+1. **Dev benchmark** — runs the 10-task dev set (`harbor/run_dev_benchmark.sh`).
 2. **Cursor agent** — reads dev results and modifies `agent.py`.
 3. **Validation** — runs `test_interface_contract` to verify the agent.
 4. **Eval benchmark** — runs the 15-task held-out benchmark (`harbor/run_small_benchmark.sh`).
@@ -48,17 +48,14 @@ Generate a scatterplot image (save as PNG in the run directory) with:
 
 - **X-axis**: Benchmark run index, sorted by timestamp (earliest = 0, then 1, 2, …).
 - **Y-axis**: Score (mean reward), range 0 to 1.
-- **Colors**: Each benchmark type is a different color. Treat each debug split as its own benchmark. The benchmarks are:
+- **Colors**: Each benchmark type is a different color. The benchmarks are:
   - `run_small_benchmark.sh` (eval, 15 tasks)
-  - `run_debug.sh --split 1` (dev split 1, 5 tasks)
-  - `run_debug.sh --split 2` (dev split 2, 5 tasks)
-  - `run_debug.sh --split 3` (dev split 3, 5 tasks)
-  - `run_debug.sh --split 4` (dev split 4, 5 tasks)
-- **Baseline point**: Use `harbor/base_results/qwen3-coder-next-terminus-2-small-benchmark-result.json` as the first data point for `run_small_benchmark.sh` at x = 0. This file records a score of **0.40** (6/15 tasks passed).
+  - `run_dev_benchmark.sh` (dev, 10 tasks)
+- **Baseline point**: Use `harbor/base_results/qwen3.5-flash-nonthinking-terminus-2-small-benchmark-result.json` as the first data point for `run_small_benchmark.sh` at x = 0. This file records a score of **0.53** (8/15 tasks passed).
 - Include a legend mapping colors to benchmark names.
 
 Data sources for the plot:
-- `eval/iter-NNNN/run-*/eval_summary.json` — dev benchmark results (check `runner_args` or directory context to determine which split).
+- `eval/iter-NNNN/run-*/eval_summary.json` — dev benchmark results.
 - `eval/iter-NNNN/eval-*/eval_summary.json` — eval benchmark results.
 - `run_state.json` — current `eval_score` field for the latest eval.
 

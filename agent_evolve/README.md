@@ -30,21 +30,21 @@ to determine which iteration and step to continue from. No work is repeated.
 |------|---------|-------------|
 | `--iterations N` | `25` | Total number of outer loop iterations to run |
 | `--start-iteration N` | `1` | Starting iteration (ignored on resume; state file takes precedence) |
-| `--runner PATH` | `harbor/run_debug.sh` | Dev benchmark runner script (5-task debug split) |
+| `--runner PATH` | `harbor/run_dev_benchmark.sh` | Dev benchmark runner script (10-task dev set) |
 | `--eval-runner PATH` | `harbor/run_small_benchmark.sh` | Eval benchmark runner (15 tasks, run between iterations) |
 | `--agent-key KEY` | `terminus-2` | Agent key passed to Harbor |
 | `--model-key KEY` | *(from config.json)* | Model key override |
 | `--cursor-model MODEL` | *(default)* | Model for the Cursor agent (inner loop) |
 | `--resume PATH` | *(none)* | Path to existing run directory to resume |
 | `--skip-initial-benchmark` | `false` | Skip iteration-1 dev benchmark if a cached baseline exists |
-| `--runner-args STR` | *(none)* | Extra arguments forwarded to the dev runner (e.g. `"--split 1"`) |
+| `--runner-args STR` | *(none)* | Extra arguments forwarded to the dev runner |
 
 ## Pipeline flow
 
 Each outer iteration runs these steps in order:
 
 ```
-1. Dev benchmark    Run 5-task debug split (terminal-bench@2.0 subset).
+1. Dev benchmark    Run 10-task dev set (terminal-bench@2.0 subset).
                     Inner agent sees these results.
                     Non-fatal: failure is recorded, pipeline continues.
 
@@ -67,8 +67,8 @@ Each outer iteration runs these steps in order:
 
 Subsets of `terminal-bench@2.0`:
 
-- **Dev set** (5 tasks per split): 4 splits of 5 medium tasks each, run via
-  `run_debug.sh --split N`. Used by the inner agent to diagnose failures.
+- **Dev set** (10 tasks): 10 medium tasks, run via `run_dev_benchmark.sh`.
+  Used by the inner agent to diagnose failures.
 - **Eval set** (15 tasks): 4 easy + 10 medium + 1 hard, run via `run_small_benchmark.sh`.
   Run between outer loop iterations. Disjoint from the dev set.
 - **Full set** (89 tasks): All tasks, run via `run_full_benchmark.sh`.

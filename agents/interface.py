@@ -16,6 +16,7 @@ class AgentModelConfig:
     api_key: str
     temperature: float | None = None
     context_length: int | None = None
+    extra_params: dict[str, Any] | None = None
 
 
 @dataclass

@@ -8,7 +8,7 @@ All code changes should stay inside this directory unless explicitly required.
 Run benchmark and capture artifacts:
 
 ```
-uv run python agent_evolve/run_recorded_benchmark.py --iteration 1 --runner harbor/run_debug.sh --runner-args "--split 1"
+uv run python agent_evolve/run_recorded_benchmark.py --iteration 1 --runner harbor/run_dev_benchmark.sh
 ```
 
 Run interface contract tests:

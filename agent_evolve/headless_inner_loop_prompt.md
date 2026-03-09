@@ -7,6 +7,10 @@ Workspace root: `{workdir_root}`
 Latest dev eval summary: `{eval_summary_path}`
 Latest dev eval artifacts root: `{eval_artifacts_path}`
 
+{scoreboard}
+
+{snapshot_index}
+
 ## How the workspace agent is deployed
 
 The workspace `agent.py` IS the code that runs during every benchmark. Before each benchmark run, `run_recorded_benchmark.py` automatically deploys your workspace `agent.py` as the active agent, runs the benchmark, then restores the original. You do NOT need to manually copy or "deploy" your code anywhere — editing `agent.py` in the workspace is sufficient. **NEVER modify files outside the workspace.**
@@ -67,9 +71,9 @@ These are important but have diminishing returns once the basics are covered. Do
 
 ## Benchmark budget and discipline
 
-The dev benchmark (`run_debug.sh`) has 4 splits of 5 tasks each. **You must run only one split at a time.** Each benchmark run is expensive — treat every run as precious.
+The dev benchmark (`run_dev_benchmark.sh`) runs 10 medium-difficulty tasks. Each benchmark run is expensive — treat every run as precious.
 
-**Before running a benchmark split:**
+**Before running the dev benchmark:**
 1. Make sure you have a clear hypothesis about what your change improves.
 2. Verify the code is syntactically valid and passes interface tests first.
 
@@ -78,13 +82,10 @@ The dev benchmark (`run_debug.sh`) has 4 splits of 5 tasks each. **You must run 
 2. Categorize failures by root cause before making more changes.
 3. Do not immediately re-run. Investigate first, change second, then run again.
 
-**Do not run multiple splits back-to-back without investigating results in between.** The goal is to extract maximum signal from each 5-task run, not to burn through all 4 splits quickly.
-
-To run a single split:
+To run the dev benchmark:
 ```
-uv run python run_recorded_benchmark.py --iteration {iteration} --runner harbor/run_debug.sh --runner-args "--split <N>"
+uv run python run_recorded_benchmark.py --iteration {iteration} --runner harbor/run_dev_benchmark.sh
 ```
-where `<N>` is 1, 2, 3, or 4.
 
 ## Task flow
 
@@ -99,9 +100,9 @@ where `<N>` is 1, 2, 3, or 4.
 6. Implement focused improvements in `agent.py`.
 7. Validate interface compatibility before benchmarking:
    `uv run python -m unittest test_interface_contract`
-8. Run **one** debug split to validate your changes:
-   `uv run python run_recorded_benchmark.py --iteration {iteration} --runner harbor/run_debug.sh --runner-args "--split <N>"`
-9. **Investigate results thoroughly** before running another split or making more changes.
+8. Run the dev benchmark to validate your changes:
+   `uv run python run_recorded_benchmark.py --iteration {iteration} --runner harbor/run_dev_benchmark.sh`
+9. **Investigate results thoroughly** before making more changes.
 10. Compare new results against prior run(s). Note whether performance improved, regressed, or stayed flat.
 11. Update `NOTES.md` with:
     - failure categories observed (design limitation / robustness bug / model ability)

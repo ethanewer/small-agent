@@ -549,6 +549,7 @@ class SmallAgentHarborAgent(HarborBaseAgent):
             f"--config {shlex.quote(_REMOTE_CLI_ROOT + '/config.json')} "
             f"--agent {shlex.quote(active_agent_key)} "
             f"--model {shlex.quote(active_model_key)} "
+            f"--no-final-message "
             f"{shlex.quote(instruction_clean)}"
         )
         exec_result = await _environment_exec(
