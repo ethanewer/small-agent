@@ -4,9 +4,6 @@
   "default_cursor_model": "opus-4.6-thinking",
   "agents": {
     "terminus-2": {},
-    "terminus-2-qwen3.5-completion": {
-      "default_model": "qwen3.5-35b-a3b"
-    },
     "qwen": {}
   },
   "models": {
@@ -32,14 +29,30 @@
         }
       }
     },
-    "qwen3-coder-next": {
-      "model": "qwen/qwen3-coder-next",
+    "qwen3.5-9b": {
+      "model": "qwen/qwen3.5-9b",
       "api_base": "https://openrouter.ai/api/v1",
       "api_key": "OPENROUTER_API_KEY",
-      "context_length": 262144
+      "context_length": 262144,
+      "extra_params": {
+        "reasoning": {
+          "enabled": false
+        }
+      }
     },
-    "qwen3.5-35b-a3b": {
-      "model": "qwen/qwen3.5-35b-a3b",
+    "qwen3.5-9b-thinking": {
+      "model": "qwen/qwen3.5-9b",
+      "api_base": "https://openrouter.ai/api/v1",
+      "api_key": "OPENROUTER_API_KEY",
+      "context_length": 262144,
+      "extra_params": {
+        "reasoning": {
+          "enabled": true
+        }
+      }
+    },
+    "qwen3-coder-next": {
+      "model": "qwen/qwen3-coder-next",
       "api_base": "https://openrouter.ai/api/v1",
       "api_key": "OPENROUTER_API_KEY",
       "context_length": 262144
