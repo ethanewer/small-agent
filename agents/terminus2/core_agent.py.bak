@@ -7,7 +7,6 @@ import shlex
 import ssl
 import time
 import warnings
-import fnmatch
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
@@ -83,72 +82,28 @@ Return JSON only with fields:
     {{"type": "read_file", "path": "src/main.py", "start_line": 1, "end_line": 200}},
     {{"type": "write_file", "path": "notes.txt", "content": "hello"}},
     {{"type": "append_file", "path": "notes.txt", "content": "\\nmore"}},
-    {{"type": "replace_in_file", "path": "src/main.py", "old": "foo()", "new": "bar()", "count": 1}},
     {{"type": "search", "pattern": "TODO", "path": "."}},
     {{"type": "list_dir", "path": "."}},
-    {{"type": "wait", "seconds": 2.0}}
+    {{"type": "wait", "seconds": 2.0}},
+    {{"type": "delegate", "goal": "diagnose failing test", "context": "include observed error"}}
   ],
-  "plan_steps": ["optional, update only when plan changes"],
-  "completed_steps": ["optional, newly finished items"],
-  "verification_checks": ["optional, concrete checks to run near completion"],
-  "scratchpad_update": "optional compact state update",
+  "plan_steps": ["optional updated step list"],
+  "completed_steps": ["optional completed steps"],
+  "verification_checks": ["optional updated checks"],
+  "scratchpad_update": "compact state update",
   "task_complete": false
 }}
 
 Rules:
 - You may use either actions or commands (legacy), but actions are preferred.
-- Keep actions minimal (1-4) and directly tied to your immediate objective.
-- Use actions (not run_command) for read/search/write/list operations whenever possible.
+- Keep actions minimal and directly tied to the current plan step.
 - Do not set task_complete true unless you have validated requirements.
-- If blocked, describe the blocker in analysis and pivot to a different tactic.
 
 Original Task:
 {instruction}
 
 Scratchpad:
 {scratchpad}
-
-Runtime status:
-{runtime_status}
-
-Latest terminal output:
-{terminal_state}
-"""
-
-REPLAN_PROMPT_TEMPLATE = """You are solving a terminal task.
-This is the REPLAN phase because progress has stalled.
-Do not execute commands in this phase.
-
-Return JSON only with fields:
-{{
-  "analysis": "why prior approach stalled",
-  "plan": "revised strategy",
-  "current_step": "first revised step to execute next",
-  "step_status": "replan",
-  "commands": [],
-  "actions": [],
-  "plan_steps": ["step 1", "step 2"],
-  "completed_steps": ["already done"],
-  "verification_checks": ["check 1", "check 2"],
-  "scratchpad_update": "what changed and why",
-  "task_complete": false
-}}
-
-Rules:
-- commands and actions must both be empty arrays in replan phase.
-- revise strategy, do not repeat the same failing tactic.
-
-Replan trigger:
-{replan_reason}
-
-Original Task:
-{instruction}
-
-Scratchpad:
-{scratchpad}
-
-Runtime status:
-{runtime_status}
 
 Latest terminal output:
 {terminal_state}
@@ -166,9 +121,6 @@ Original Task:
 
 Scratchpad:
 {scratchpad}
-
-Runtime status:
-{runtime_status}
 
 Latest terminal output:
 {terminal_state}
@@ -192,9 +144,6 @@ class Config:
     verbosity: int = 0
     max_turns: int = 50
     max_wait_seconds: float = 60.0
-    max_runtime_seconds: float = 840.0
-    finalization_window_seconds: float = 60.0
-    emergency_stop_seconds: float = 5.0
     final_message_enabled: bool = True
 
 
@@ -202,7 +151,6 @@ class Config:
 class Command:
     keystrokes: str
     duration: float
-    marker_id: str | None = None
 
 
 @dataclass
@@ -211,8 +159,6 @@ class ParsedResponse:
     plan: str
     commands: list[Command]
     task_complete: bool
-    current_step: str = ""
-    step_status: str = ""
     actions: list["Action"] = field(default_factory=list)
     plan_steps: list[str] = field(default_factory=list)
     completed_steps: list[str] = field(default_factory=list)
@@ -231,24 +177,9 @@ class ScratchpadState:
     plan_steps: list[str] = field(default_factory=list)
     completed_steps: list[str] = field(default_factory=list)
     verification_checks: list[str] = field(default_factory=list)
-    background_commands: list[str] = field(default_factory=list)
     observations: list[str] = field(default_factory=list)
     blockers: list[str] = field(default_factory=list)
     current_focus: str = ""
-    active_step: str = ""
-    active_step_attempts: int = 0
-
-
-@dataclass
-class ExecutionContext:
-    cwd: str
-    unavailable_commands: list[str] = field(default_factory=list)
-
-
-@dataclass
-class TurnExecutionLimits:
-    max_actions: int
-    max_wait_seconds: float
 
 
 @dataclass
@@ -463,16 +394,16 @@ def _parse_commands(
             duration_value = cmd_data["duration"]
             if not isinstance(duration_value, (int, float)):
                 warnings.append(
-                    f"Command {i + 1}: Invalid duration value, using default 12.0"
+                    f"Command {i + 1}: Invalid duration value, using default 1.0"
                 )
-                duration = 12.0
+                duration = 1.0
             else:
                 duration = float(duration_value)
         else:
             warnings.append(
-                f"Command {i + 1}: Missing duration field, using default 12.0"
+                f"Command {i + 1}: Missing duration field, using default 1.0"
             )
-            duration = 12.0
+            duration = 1.0
 
         known_fields = {"keystrokes", "duration"}
         unknown = set(cmd_data.keys()) - known_fields
@@ -515,27 +446,6 @@ def _parse_string_list(
             )
 
     return items
-
-
-_VALID_STEP_STATUSES = {"", "in_progress", "completed", "stuck", "replan"}
-
-
-def _parse_step_status(value: object, warnings: list[str]) -> str:
-    if value is None:
-        return ""
-    if not isinstance(value, str):
-        warnings.append("Field 'step_status' should be a string")
-        return ""
-
-    normalized = value.strip().lower()
-    if normalized in _VALID_STEP_STATUSES:
-        return normalized
-
-    warnings.append(
-        "Field 'step_status' should be one of: "
-        + ", ".join(sorted(status for status in _VALID_STEP_STATUSES if status))
-    )
-    return ""
 
 
 def _parse_actions(
@@ -690,13 +600,6 @@ def _try_parse_response(response: str) -> ParseResult:
         field_name="verification_checks",
         warnings=warnings,
     )
-    current_step_value = data.get("current_step", "")
-    current_step = (
-        current_step_value.strip() if isinstance(current_step_value, str) else ""
-    )
-    if current_step_value and not isinstance(current_step_value, str):
-        warnings.append("Field 'current_step' should be a string")
-    step_status = _parse_step_status(data.get("step_status"), warnings)
     scratchpad_update_value = data.get("scratchpad_update", "")
     scratchpad_update = (
         scratchpad_update_value if isinstance(scratchpad_update_value, str) else ""
@@ -708,8 +611,6 @@ def _try_parse_response(response: str) -> ParseResult:
         parsed=ParsedResponse(
             analysis=str(data["analysis"]),
             plan=str(data["plan"]),
-            current_step=current_step,
-            step_status=step_status,
             commands=commands,
             task_complete=task_complete,
             actions=actions,
@@ -816,12 +717,10 @@ def _build_execution_prompt(
     instruction: str,
     scratchpad: ScratchpadState,
     terminal_state: str,
-    runtime_status: str,
 ) -> str:
     return EXECUTION_PROMPT_TEMPLATE.format(
         instruction=instruction,
         scratchpad=_render_scratchpad(scratchpad=scratchpad),
-        runtime_status=runtime_status,
         terminal_state=terminal_state,
     )
 
@@ -831,30 +730,11 @@ def _build_verification_prompt(
     instruction: str,
     scratchpad: ScratchpadState,
     terminal_state: str,
-    runtime_status: str,
 ) -> str:
     return VERIFICATION_PROMPT_TEMPLATE.format(
         instruction=instruction,
         scratchpad=_render_scratchpad(scratchpad=scratchpad),
-        runtime_status=runtime_status,
         terminal_state=terminal_state,
-    )
-
-
-def _build_replan_prompt(
-    *,
-    instruction: str,
-    scratchpad: ScratchpadState,
-    terminal_state: str,
-    runtime_status: str,
-    reason: str,
-) -> str:
-    return REPLAN_PROMPT_TEMPLATE.format(
-        instruction=instruction,
-        scratchpad=_render_scratchpad(scratchpad=scratchpad),
-        runtime_status=runtime_status,
-        terminal_state=terminal_state,
-        replan_reason=reason,
     )
 
 
@@ -863,52 +743,7 @@ def build_prompt(instruction: str, terminal_state: str, max_wait_seconds: float)
     return _build_execution_prompt(
         instruction=instruction,
         scratchpad=ScratchpadState(),
-        runtime_status="elapsed=0s remaining=unknown turns_remaining=unknown",
         terminal_state=terminal_state,
-    )
-
-
-def _build_runtime_status(
-    *,
-    turn: int,
-    max_turns: int,
-    elapsed_seconds: float,
-    remaining_seconds: float,
-    unavailable_commands: list[str] | None = None,
-) -> str:
-    turns_left = max(max_turns - turn + 1, 0)
-    status = (
-        f"elapsed={int(max(elapsed_seconds, 0.0))}s "
-        + f"remaining={int(max(remaining_seconds, 0.0))}s "
-        + f"turns_remaining={turns_left}"
-    )
-    if unavailable_commands:
-        recent_missing = ", ".join(unavailable_commands[-4:])
-        status += f" unavailable_commands={recent_missing}"
-
-    return status
-
-
-def _compute_turn_limits(
-    *, max_wait_seconds: float, remaining_runtime_seconds: float
-) -> TurnExecutionLimits:
-    base_wait = max(max_wait_seconds, 0.1)
-    max_actions = _MAX_ACTIONS_PER_TURN
-    wait_cap = base_wait
-
-    if remaining_runtime_seconds <= 180:
-        max_actions = min(max_actions, 3)
-        wait_cap = min(wait_cap, 40.0)
-    if remaining_runtime_seconds <= 90:
-        max_actions = min(max_actions, 2)
-        wait_cap = min(wait_cap, 25.0)
-    if remaining_runtime_seconds <= 45:
-        max_actions = min(max_actions, 1)
-        wait_cap = min(wait_cap, 12.0)
-
-    return TurnExecutionLimits(
-        max_actions=max_actions,
-        max_wait_seconds=max(wait_cap, 2.0),
     )
 
 
@@ -994,13 +829,6 @@ _OUTPUT_LENGTH_ERROR_MSG = (
 _MAX_QUERY_ATTEMPTS = 3
 _MAX_HISTORY_MESSAGES = 20
 _MAX_SCRATCHPAD_ITEMS = 12
-_MAX_NATIVE_READ_LINES = 400
-_MAX_NATIVE_LIST_ENTRIES = 200
-_MAX_NATIVE_SEARCH_RESULTS = 200
-_MAX_NATIVE_SEARCH_FILE_BYTES = 512_000
-_MAX_ACTIONS_PER_TURN = 4
-_MAX_STEP_ATTEMPTS_BEFORE_REPLAN = 3
-_MAX_AUTO_DELEGATE_CALLS = 1
 
 
 def _query_model(
@@ -1078,12 +906,6 @@ def start_shell() -> pexpect.spawn[str]:
     )
     child.sendline(f"export PS1='{PROMPT_SENTINEL}'")
     child.expect_exact(PROMPT_SENTINEL)
-    # Reduce interactive shell pitfalls that can corrupt command execution.
-    child.sendline(
-        "set +o histexpand; "
-        + "export PAGER=cat GIT_PAGER=cat SYSTEMD_PAGER=cat LESS=FRX"
-    )
-    child.expect_exact(PROMPT_SENTINEL)
     return child
 
 
@@ -1114,23 +936,12 @@ def execute_command(
         raw_output = child.before or ""
     except pexpect.TIMEOUT:
         raw_output = child.before or ""
-        recovered = False
-        recovery_output = ""
-        for _ in range(3):
-            child.sendcontrol("c")
-            try:
-                child.expect_exact(PROMPT_SENTINEL, timeout=2)
-                recovery_output = child.before or ""
-                recovered = True
-                break
-            except pexpect.TIMEOUT:
-                child.sendline("")
-            except pexpect.EOF:
-                raise
-        if not recovered:
-            raise pexpect.EOF("Shell unresponsive after command timeout.")
-
-        raw_output = f"{raw_output}\n{recovery_output}"
+        child.sendcontrol("c")
+        try:
+            child.expect_exact(PROMPT_SENTINEL, timeout=2)
+            raw_output = f"{raw_output}\n{child.before or ''}"
+        except Exception:  # noqa: BLE001
+            pass
         normalized_timeout = normalize_command_output(output=raw_output, command=cmd)
         timeout_note = "[command timed out; sent Ctrl-C]"
         if normalized_timeout:
@@ -1145,30 +956,10 @@ def _append_turn_history(
     prompt: str,
     model_response: str,
 ) -> None:
-    def _compress_history_text(text: str, *, limit: int) -> str:
-        compact = clean_terminal_output(text).strip()
-        if len(compact) <= limit:
-            return compact
-        head = compact[: int(limit * 0.65)]
-        tail = compact[-int(limit * 0.25) :]
-        return f"{head}\n...[history truncated]...\n{tail}"
-
-    prompt_for_history = prompt
-    marker = "Latest terminal output:"
-    if marker in prompt_for_history:
-        prefix, _, _ = prompt_for_history.partition(marker)
-        prompt_for_history = prefix + marker + "\n[omitted to save context]"
-
     history.extend(
         [
-            {
-                "role": "user",
-                "content": _compress_history_text(prompt_for_history, limit=2_000),
-            },
-            {
-                "role": "assistant",
-                "content": _compress_history_text(model_response, limit=2_500),
-            },
+            {"role": "user", "content": prompt},
+            {"role": "assistant", "content": model_response},
         ]
     )
     _trim_history(history=history, max_messages=_MAX_HISTORY_MESSAGES)
@@ -1213,9 +1004,6 @@ def _render_scratchpad(scratchpad: ScratchpadState) -> str:
     checks_lines = (
         "\n".join(f"- {check}" for check in scratchpad.verification_checks) or "- none"
     )
-    background_lines = (
-        "\n".join(f"- {cmd}" for cmd in scratchpad.background_commands[-4:]) or "- none"
-    )
     observations_lines = (
         "\n".join(f"- {obs}" for obs in scratchpad.observations[-6:]) or "- none"
     )
@@ -1223,15 +1011,11 @@ def _render_scratchpad(scratchpad: ScratchpadState) -> str:
         "\n".join(f"- {item}" for item in scratchpad.blockers[-4:]) or "- none"
     )
     current_focus = scratchpad.current_focus or "none"
-    active_step = scratchpad.active_step or "none"
     return (
         f"Current focus: {current_focus}\n\n"
-        f"Active step: {active_step}\n"
-        f"Active step attempts: {scratchpad.active_step_attempts}\n\n"
         f"Plan steps:\n{plan_lines}\n\n"
         f"Completed steps:\n{completed_lines}\n\n"
         f"Verification checks:\n{checks_lines}\n\n"
-        f"Background commands launched:\n{background_lines}\n\n"
         f"Recent observations:\n{observations_lines}\n\n"
         f"Blockers:\n{blockers_lines}"
     )
@@ -1268,16 +1052,6 @@ def _update_scratchpad_from_response(
         )
     if parsed.plan.strip():
         scratchpad.current_focus = _compact_line(parsed.plan)
-    if parsed.current_step:
-        scratchpad.active_step = _compact_line(parsed.current_step)
-    if parsed.step_status == "completed":
-        if scratchpad.active_step:
-            _append_unique_limited(
-                target=scratchpad.completed_steps,
-                values=[scratchpad.active_step],
-                limit=_MAX_SCRATCHPAD_ITEMS,
-            )
-        scratchpad.active_step_attempts = 0
 
 
 def _note_observation(scratchpad: ScratchpadState, note: str) -> None:
@@ -1288,86 +1062,10 @@ def _note_observation(scratchpad: ScratchpadState, note: str) -> None:
     )
 
 
-def _is_background_launch_command(command_text: str) -> bool:
-    text = command_text.strip()
-    if not text:
-        return False
-
-    try:
-        tokens = shlex.split(text, posix=True)
-    except ValueError:
-        # Fallback for malformed quoting: detect a trailing shell background token.
-        return bool(re.search(r"(?<![&>])&\s*$", text))
-
-    if not tokens:
-        return False
-
-    # A standalone '&' token indicates background execution in shell syntax.
-    if "&" in tokens:
-        return True
-
-    # Handle compact forms like "cmd&" while avoiding redirections like "2>&1".
-    return bool(re.search(r"(?<![&>])&\s*$", text))
-
-
-def _note_background_command(*, scratchpad: ScratchpadState, command_text: str) -> None:
-    _append_unique_limited(
-        target=scratchpad.background_commands,
-        values=[command_text],
-        limit=_MAX_SCRATCHPAD_ITEMS,
-    )
-
-
-def _infer_command_timeout_seconds(
-    *, command_text: str, default_seconds: float
-) -> float:
-    lower = command_text.lower()
-    heavy_patterns = (
-        "apt-get ",
-        "apt install",
-        "pip install",
-        "python -m pip",
-        "uv pip",
-        "npm install",
-        "pnpm install",
-        "yarn install",
-        "git clone",
-        "cargo build",
-        "cargo test",
-        "go test",
-        "pytest",
-        "ruff check",
-        "ruff format",
-        "basedpyright",
-        "wget ",
-        "curl ",
-    )
-    if any(pattern in lower for pattern in heavy_patterns):
-        return max(default_seconds, 90.0)
-    return max(default_seconds, 0.0)
-
-
-def _resolve_action_path(*, path: str, base_cwd: str) -> str:
-    expanded = os.path.expanduser(path)
-    if os.path.isabs(expanded):
-        return os.path.abspath(expanded)
-
-    return os.path.abspath(os.path.join(base_cwd, expanded))
-
-
-def _display_path(path: str) -> str:
-    try:
-        return os.path.relpath(path, os.getcwd())
-    except ValueError:
-        return path
-
-
-def _execute_read_file_action(
-    payload: dict[str, Any], *, execution_context: ExecutionContext
-) -> str:
+def _build_read_file_command(payload: dict[str, Any]) -> Command | None:
     path = payload.get("path")
     if not isinstance(path, str) or not path.strip():
-        return "[invalid read_file payload: missing path]"
+        return None
 
     start_line = payload.get("start_line")
     end_line = payload.get("end_line")
@@ -1379,376 +1077,52 @@ def _execute_read_file_action(
         end = max(end_line, start)
     elif isinstance(start_line, int):
         end = start + 199
-    end = min(end, start + _MAX_NATIVE_READ_LINES - 1)
 
-    resolved_path = _resolve_action_path(
-        path=path,
-        base_cwd=execution_context.cwd,
-    )
-    display_path = _display_path(path=resolved_path)
-    if not os.path.exists(resolved_path):
-        return f"[read_file] not found: {display_path}"
-    if not os.path.isfile(resolved_path):
-        return f"[read_file] not a file: {display_path}"
-
-    try:
-        with open(resolved_path, encoding="utf-8", errors="replace") as handle:
-            lines = handle.readlines()
-    except Exception as err:  # noqa: BLE001
-        return f"[read_file] failed for {display_path}: {err}"
-
-    selected = lines[start - 1 : end]
-    if not selected:
-        return f"[read_file] no content for {display_path} in range {start}-{end}"
-
-    numbered_lines = [
-        f"{line_number}|{line.rstrip()}"
-        for line_number, line in enumerate(selected, start=start)
-    ]
-    return (
-        f"[read_file] {display_path} lines {start}-{start + len(selected) - 1}\n"
-        + "\n".join(numbered_lines)
-    )
+    cmd_text = f"sed -n '{start},{end}p' -- {shlex.quote(path)}\n"
+    return Command(keystrokes=cmd_text, duration=1.0)
 
 
-def _iter_search_candidate_files(
-    *, resolved_path: str, glob_pattern: str | None
-) -> list[str]:
-    if os.path.isfile(resolved_path):
-        return [resolved_path]
-    if not os.path.isdir(resolved_path):
-        return []
-
-    candidates: list[str] = []
-    for root, dirs, files in os.walk(resolved_path):
-        dirs[:] = sorted(
-            [entry for entry in dirs if entry not in {".git", "__pycache__"}]
-        )
-        for file_name in sorted(files):
-            absolute_path = os.path.join(root, file_name)
-            if glob_pattern:
-                relative_path = os.path.relpath(absolute_path, resolved_path)
-                if not (
-                    fnmatch.fnmatch(relative_path, glob_pattern)
-                    or fnmatch.fnmatch(file_name, glob_pattern)
-                ):
-                    continue
-            candidates.append(absolute_path)
-    return candidates
-
-
-def _is_probably_binary(path: str) -> bool:
-    try:
-        with open(path, "rb") as handle:
-            sample = handle.read(1024)
-    except OSError:
-        return True
-    return b"\x00" in sample
-
-
-def _execute_search_action(
-    payload: dict[str, Any], *, execution_context: ExecutionContext
-) -> str:
+def _build_search_command(payload: dict[str, Any]) -> Command | None:
     pattern = payload.get("pattern")
     if not isinstance(pattern, str) or not pattern:
-        return "[invalid search payload: missing pattern]"
+        return None
 
     search_path = payload.get("path", ".")
     path_text = search_path if isinstance(search_path, str) and search_path else "."
-    resolved_path = _resolve_action_path(
-        path=path_text,
-        base_cwd=execution_context.cwd,
-    )
-    display_path = _display_path(path=resolved_path)
-    if not os.path.exists(resolved_path):
-        return f"[search] path not found: {display_path}"
-
-    glob_value = payload.get("glob")
-    glob_pattern = (
-        glob_value.strip()
-        if isinstance(glob_value, str) and glob_value.strip()
-        else None
-    )
-    candidates = _iter_search_candidate_files(
-        resolved_path=resolved_path,
-        glob_pattern=glob_pattern,
-    )
-    if not candidates:
-        return f"[search] no files under {display_path}"
-
-    regex: re.Pattern[str] | None = None
-    regex_error = ""
-    try:
-        regex = re.compile(pattern)
-    except re.error as err:
-        regex_error = str(err)
-
-    matches: list[str] = []
-    scanned_files = 0
-    for file_path in candidates:
-        if len(matches) >= _MAX_NATIVE_SEARCH_RESULTS:
-            break
-        if _is_probably_binary(path=file_path):
-            continue
-        try:
-            if os.path.getsize(file_path) > _MAX_NATIVE_SEARCH_FILE_BYTES:
-                continue
-        except OSError:
-            continue
-
-        try:
-            with open(file_path, encoding="utf-8", errors="replace") as handle:
-                for line_number, line in enumerate(handle, start=1):
-                    text = line.rstrip()
-                    if regex is not None:
-                        found = regex.search(text) is not None
-                    else:
-                        found = pattern in text
-                    if found:
-                        matches.append(
-                            f"{_display_path(path=file_path)}:{line_number}:{text}"
-                        )
-                        if len(matches) >= _MAX_NATIVE_SEARCH_RESULTS:
-                            break
-        except OSError:
-            continue
-        scanned_files += 1
-
-    if not matches:
-        reason = (
-            f" (invalid regex, used literal search: {regex_error})"
-            if regex is None and regex_error
-            else ""
+    glob = payload.get("glob")
+    base = f"rg -n --no-heading -- {shlex.quote(pattern)} {shlex.quote(path_text)}"
+    if isinstance(glob, str) and glob.strip():
+        base = (
+            f"rg -n --no-heading --glob {shlex.quote(glob)} -- "
+            f"{shlex.quote(pattern)} {shlex.quote(path_text)}"
         )
-        return f"[search] no matches in {display_path}{reason}"
-
-    suffix = ""
-    if len(matches) >= _MAX_NATIVE_SEARCH_RESULTS:
-        suffix = f"\n[search] limited to {_MAX_NATIVE_SEARCH_RESULTS} matches"
-    header = f"[search] {len(matches)} matches in {display_path}; scanned {scanned_files} files"
-    return header + "\n" + "\n".join(matches) + suffix
+    return Command(keystrokes=base + "\n", duration=1.0)
 
 
-def _execute_write_file_action(
-    payload: dict[str, Any],
-    *,
-    append: bool,
-    execution_context: ExecutionContext,
-) -> str:
+def _build_write_file_command(
+    payload: dict[str, Any], *, append: bool
+) -> Command | None:
     path = payload.get("path")
     content = payload.get("content")
     if not isinstance(path, str) or not path.strip() or not isinstance(content, str):
-        return "[invalid write payload: expected path and content strings]"
-
-    resolved_path = _resolve_action_path(
-        path=path,
-        base_cwd=execution_context.cwd,
-    )
-    display_path = _display_path(path=resolved_path)
-    parent = os.path.dirname(resolved_path)
-    if parent:
-        try:
-            os.makedirs(parent, exist_ok=True)
-        except OSError as err:
-            return f"[write_file] failed to create parent for {display_path}: {err}"
-
-    mode = "a" if append else "w"
-    action_text = "append_file" if append else "write_file"
-    try:
-        with open(resolved_path, mode, encoding="utf-8") as handle:
-            handle.write(content)
-    except OSError as err:
-        return f"[{action_text}] failed for {display_path}: {err}"
-
-    return (
-        f"[{action_text}] wrote {len(content.encode('utf-8'))} bytes to {display_path}"
-    )
-
-
-def _execute_replace_in_file_action(
-    payload: dict[str, Any], *, execution_context: ExecutionContext
-) -> str:
-    path = payload.get("path")
-    old = payload.get("old")
-    new = payload.get("new")
-    if (
-        not isinstance(path, str)
-        or not path.strip()
-        or not isinstance(old, str)
-        or not isinstance(new, str)
-    ):
-        return "[invalid replace_in_file payload: expected path/old/new strings]"
-    if old == "":
-        return "[replace_in_file] 'old' must be non-empty"
-
-    count_value = payload.get("count", 1)
-    replace_all = bool(payload.get("replace_all", False))
-    replace_count = 1
-    if isinstance(count_value, int):
-        replace_count = max(count_value, 1)
-
-    resolved_path = _resolve_action_path(
-        path=path,
-        base_cwd=execution_context.cwd,
-    )
-    display_path = _display_path(path=resolved_path)
-    if not os.path.exists(resolved_path):
-        return f"[replace_in_file] not found: {display_path}"
-    if not os.path.isfile(resolved_path):
-        return f"[replace_in_file] not a file: {display_path}"
-
-    try:
-        with open(resolved_path, encoding="utf-8", errors="replace") as handle:
-            source = handle.read()
-    except OSError as err:
-        return f"[replace_in_file] failed to read {display_path}: {err}"
-
-    occurrences = source.count(old)
-    if occurrences == 0:
-        return f"[replace_in_file] pattern not found in {display_path}"
-
-    if replace_all:
-        updated = source.replace(old, new)
-        replaced = occurrences
-    else:
-        updated = source.replace(old, new, replace_count)
-        replaced = min(replace_count, occurrences)
-    if updated == source:
-        return f"[replace_in_file] no changes applied in {display_path}"
-
-    try:
-        with open(resolved_path, "w", encoding="utf-8") as handle:
-            handle.write(updated)
-    except OSError as err:
-        return f"[replace_in_file] failed to write {display_path}: {err}"
-
-    return f"[replace_in_file] replaced {replaced} occurrence(s) in {display_path}"
-
-
-def _execute_list_dir_action(
-    payload: dict[str, Any], *, execution_context: ExecutionContext
-) -> str:
-    path_value = payload.get("path", ".")
-    path_text = path_value if isinstance(path_value, str) and path_value else "."
-    resolved_path = _resolve_action_path(
-        path=path_text,
-        base_cwd=execution_context.cwd,
-    )
-    display_path = _display_path(path=resolved_path)
-    if not os.path.exists(resolved_path):
-        return f"[list_dir] path not found: {display_path}"
-    if not os.path.isdir(resolved_path):
-        return f"[list_dir] not a directory: {display_path}"
-
-    try:
-        entries = sorted(
-            list(os.scandir(resolved_path)),
-            key=lambda entry: (not entry.is_dir(), entry.name.lower()),
-        )
-    except OSError as err:
-        return f"[list_dir] failed for {display_path}: {err}"
-
-    lines: list[str] = []
-    for entry in entries[:_MAX_NATIVE_LIST_ENTRIES]:
-        kind = "d" if entry.is_dir() else "f"
-        suffix = "/" if entry.is_dir() else ""
-        size_text = "-"
-        if entry.is_file():
-            try:
-                size_text = str(entry.stat().st_size)
-            except OSError:
-                size_text = "?"
-        lines.append(f"{kind} {size_text:>10} {entry.name}{suffix}")
-
-    if not lines:
-        return f"[list_dir] empty: {display_path}"
-
-    truncated_note = ""
-    if len(entries) > _MAX_NATIVE_LIST_ENTRIES:
-        truncated_note = (
-            f"\n[list_dir] truncated to first {_MAX_NATIVE_LIST_ENTRIES} entries"
-        )
-
-    return f"[list_dir] {display_path}\n" + "\n".join(lines) + truncated_note
-
-
-def _extract_cd_target(command: str) -> str | None:
-    text = command.strip()
-    if not text:
         return None
 
-    first_segment = re.split(r"\s*(?:&&|\|\||;)\s*", text, maxsplit=1)[0].strip()
-    if not first_segment:
-        return None
+    delimiter = "__EVOLVER_WRITE_EOF__"
+    while delimiter in content:
+        delimiter += "_X"
 
-    try:
-        tokens = shlex.split(first_segment, posix=True)
-    except ValueError:
-        return None
-    if not tokens or tokens[0] != "cd":
-        return None
-    if len(tokens) == 1:
-        return "~"
-
-    target = tokens[1].strip()
-    if not target or target == "-":
-        return None
-    return target
-
-
-def _maybe_update_execution_cwd(
-    *,
-    command_text: str,
-    exit_code: int | None,
-    execution_context: ExecutionContext,
-) -> None:
-    if exit_code not in {None, 0}:
-        return
-
-    target = _extract_cd_target(command=command_text)
-    if target is None:
-        return
-
-    expanded = os.path.expanduser(target)
-    if os.path.isabs(expanded):
-        execution_context.cwd = os.path.abspath(expanded)
-        return
-
-    execution_context.cwd = os.path.abspath(
-        os.path.join(execution_context.cwd, expanded)
-    )
-
-
-def _build_run_command_from_values(
-    *, raw_command: str, timeout_seconds: float
-) -> Command | None:
-    raw = raw_command
-    if not isinstance(raw, str) or not raw.strip():
-        return None
-
-    inferred_timeout = _infer_command_timeout_seconds(
-        command_text=raw,
-        default_seconds=timeout_seconds,
-    )
-
-    # Keep background and multiline commands untouched to reduce shell control noise.
-    if _is_background_launch_command(raw) or "\n" in raw:
-        keystrokes = raw if raw.endswith("\n") else raw + "\n"
-        return Command(keystrokes=keystrokes, duration=max(inferred_timeout, 0.0))
-
-    marker_id = str(time.time_ns())
-    start_marker = f"__EVOLVER_CMD_START_{marker_id}__"
-    exit_marker = f"__EVOLVER_EXIT_CODE_{marker_id}__"
-    wrapped = (
-        f"printf '{start_marker}\\n'\n"
-        + f"{raw.rstrip()}\n"
-        + f"printf '{exit_marker}%s\\n' \"$?\"\n"
-    )
-    return Command(
-        keystrokes=wrapped,
-        duration=max(inferred_timeout, 0.0),
-        marker_id=marker_id,
-    )
+    quoted_path = shlex.quote(path)
+    redirect = ">>" if append else ">"
+    mode_text = "append" if append else "write"
+    script_lines = [
+        f"mkdir -p -- $(dirname -- {quoted_path})",
+        f"cat {redirect} {quoted_path} <<'{delimiter}'",
+        content,
+        delimiter,
+        f"printf 'file {mode_text} complete\\n'",
+    ]
+    script = "\n".join(script_lines) + "\n"
+    return Command(keystrokes=script, duration=1.0)
 
 
 def _build_run_command(payload: dict[str, Any]) -> Command | None:
@@ -1756,92 +1130,35 @@ def _build_run_command(payload: dict[str, Any]) -> Command | None:
     if not isinstance(raw, str) or not raw.strip():
         return None
 
-    timeout_value = payload.get("timeout", 20.0)
-    timeout = 20.0
+    timeout_value = payload.get("timeout", 1.0)
+    timeout = 1.0
     if isinstance(timeout_value, int | float):
         timeout = float(timeout_value)
 
-    return _build_run_command_from_values(
-        raw_command=raw,
-        timeout_seconds=timeout,
-    )
+    # Keep background and multiline commands untouched to reduce shell control noise.
+    if "&" in raw or "\n" in raw:
+        keystrokes = raw if raw.endswith("\n") else raw + "\n"
+        return Command(keystrokes=keystrokes, duration=max(timeout, 0.0))
+
+    marker = f"__EVOLVER_EXIT_CODE_{time.time_ns()}__"
+    wrapped = f"{raw.rstrip()}\nprintf '{marker}%s\\n' \"$?\"\n"
+    return Command(keystrokes=wrapped, duration=max(timeout, 0.0))
 
 
-def _extract_command_metadata(
-    output: str, *, expected_marker_id: str | None = None
-) -> tuple[str, int | None]:
-    def _strip_markers(text: str) -> str:
-        without_start = re.sub(r"__EVOLVER_CMD_START_\d+__", "", text)
-        return re.sub(r"__EVOLVER_EXIT_CODE_\d+__\d+", "", without_start).strip()
-
-    if expected_marker_id:
-        start_token = f"__EVOLVER_CMD_START_{expected_marker_id}__"
-        exit_match = re.search(
-            rf"__EVOLVER_EXIT_CODE_{re.escape(expected_marker_id)}__(\d+)",
-            output,
-        )
-        if exit_match:
-            exit_code = int(exit_match.group(1))
-            start_index = output.rfind(start_token, 0, exit_match.start())
-            if start_index >= 0:
-                segment = output[start_index + len(start_token) : exit_match.start()]
-            else:
-                segment = output[: exit_match.start()]
-            return _strip_markers(segment), exit_code
-
-        start_index = output.rfind(start_token)
-        if start_index >= 0:
-            segment = output[start_index + len(start_token) :]
-            return _strip_markers(segment), None
-
-    marker_matches = list(re.finditer(r"__EVOLVER_EXIT_CODE_(\d+)__(\d+)", output))
-    if marker_matches:
-        marker_match = marker_matches[-1]
-        marker_id = marker_match.group(1)
-        exit_code = int(marker_match.group(2))
-        start_token = f"__EVOLVER_CMD_START_{marker_id}__"
-        start_index = output.rfind(start_token, 0, marker_match.start())
-        if start_index >= 0:
-            segment = output[start_index + len(start_token) : marker_match.start()]
-        else:
-            segment = output[: marker_match.start()]
-        return _strip_markers(segment), exit_code
-
-    return _strip_markers(output), None
+def _build_list_dir_command(payload: dict[str, Any]) -> Command:
+    path_value = payload.get("path", ".")
+    path_text = path_value if isinstance(path_value, str) and path_value else "."
+    return Command(keystrokes=f"ls -la -- {shlex.quote(path_text)}\n", duration=0.2)
 
 
-def _extract_missing_command_names(output: str) -> list[str]:
-    patterns = (
-        r"(?:^|[\r\n])(?:bash|sh|/bin/bash):\s*(?:line \d+:\s*)?([A-Za-z0-9_.+-]+): command not found",
-        r"(?:^|[\r\n])([A-Za-z0-9_.+-]+): command not found",
-    )
-    candidates: list[str] = []
-    for pattern in patterns:
-        matches = re.findall(pattern, output, flags=re.IGNORECASE)
-        for match in matches:
-            name = match.strip().lower()
-            if name:
-                candidates.append(name)
+def _extract_exit_status(output: str) -> tuple[str, int | None]:
+    marker_match = re.search(r"__EVOLVER_EXIT_CODE_\d+__(\d+)", output)
+    if not marker_match:
+        return output, None
 
-    unique: list[str] = []
-    for name in candidates:
-        if name not in unique:
-            unique.append(name)
-    return unique
-
-
-def _record_unavailable_commands(
-    *, output: str, execution_context: ExecutionContext
-) -> None:
-    missing = _extract_missing_command_names(output=output)
-    if not missing:
-        return
-
-    for name in missing:
-        if name not in execution_context.unavailable_commands:
-            execution_context.unavailable_commands.append(name)
-    if len(execution_context.unavailable_commands) > 8:
-        del execution_context.unavailable_commands[:-8]
+    exit_code = int(marker_match.group(1))
+    cleaned_output = re.sub(r"__EVOLVER_EXIT_CODE_\d+__\d+", "", output).strip()
+    return cleaned_output, exit_code
 
 
 def _delegate_reasoning(
@@ -1878,23 +1195,16 @@ def _execute_turn_commands(
     *,
     child: pexpect.spawn[str],
     parsed: ParsedResponse,
-    limits: TurnExecutionLimits,
+    max_wait_seconds: float,
     callbacks: AgentCallbacks,
     cfg: Config,
     api_key: str,
     instruction: str,
     scratchpad: ScratchpadState,
-    execution_context: ExecutionContext,
 ) -> tuple[str, int]:
     combined_output_parts: list[str] = []
-    executed_actions = 0
-    actions_to_execute = parsed.actions[: limits.max_actions]
-    if len(parsed.actions) > limits.max_actions:
-        combined_output_parts.append(
-            f"[actions truncated to {limits.max_actions}; execute smaller batches]"
-        )
-
-    for action in actions_to_execute:
+    executed_shell_commands = 0
+    for action in parsed.actions:
         action_type = action.action_type.strip().lower()
         payload = action.payload
         built_command: Command | None = None
@@ -1902,64 +1212,16 @@ def _execute_turn_commands(
 
         if action_type == "run_command":
             built_command = _build_run_command(payload=payload)
-            raw_command = payload.get("command")
-            if isinstance(raw_command, str) and _is_background_launch_command(
-                raw_command
-            ):
-                _note_background_command(
-                    scratchpad=scratchpad,
-                    command_text=_compact_line(raw_command),
-                )
         elif action_type == "read_file":
-            native_output = _execute_read_file_action(
-                payload=payload,
-                execution_context=execution_context,
-            )
-            combined_output_parts.append(native_output)
-            executed_actions += 1
-            continue
+            built_command = _build_read_file_command(payload=payload)
         elif action_type == "write_file":
-            native_output = _execute_write_file_action(
-                payload=payload,
-                append=False,
-                execution_context=execution_context,
-            )
-            combined_output_parts.append(native_output)
-            executed_actions += 1
-            continue
+            built_command = _build_write_file_command(payload=payload, append=False)
         elif action_type == "append_file":
-            native_output = _execute_write_file_action(
-                payload=payload,
-                append=True,
-                execution_context=execution_context,
-            )
-            combined_output_parts.append(native_output)
-            executed_actions += 1
-            continue
-        elif action_type == "replace_in_file":
-            native_output = _execute_replace_in_file_action(
-                payload=payload,
-                execution_context=execution_context,
-            )
-            combined_output_parts.append(native_output)
-            executed_actions += 1
-            continue
+            built_command = _build_write_file_command(payload=payload, append=True)
         elif action_type == "search":
-            native_output = _execute_search_action(
-                payload=payload,
-                execution_context=execution_context,
-            )
-            combined_output_parts.append(native_output)
-            executed_actions += 1
-            continue
+            built_command = _build_search_command(payload=payload)
         elif action_type == "list_dir":
-            native_output = _execute_list_dir_action(
-                payload=payload,
-                execution_context=execution_context,
-            )
-            combined_output_parts.append(native_output)
-            executed_actions += 1
-            continue
+            built_command = _build_list_dir_command(payload=payload)
         elif action_type == "wait":
             seconds = payload.get("seconds", 1.0)
             wait_seconds = float(seconds) if isinstance(seconds, int | float) else 1.0
@@ -1997,30 +1259,12 @@ def _execute_turn_commands(
         output = execute_command(
             child=child,
             cmd=built_command,
-            max_wait_seconds=limits.max_wait_seconds,
+            max_wait_seconds=max_wait_seconds,
         )
-        if action_type in {"run_command", "wait"}:
-            executed_actions += 1
-        output, exit_code = _extract_command_metadata(
-            output=output,
-            expected_marker_id=built_command.marker_id,
-        )
-        if action_type == "run_command":
-            raw_command = payload.get("command")
-            if isinstance(raw_command, str):
-                _maybe_update_execution_cwd(
-                    command_text=raw_command,
-                    exit_code=exit_code,
-                    execution_context=execution_context,
-                )
+        executed_shell_commands += 1
+        output, exit_code = _extract_exit_status(output=output)
         if exit_code is not None:
-            output = (
-                f"{output}\n[exit_code={exit_code} cwd={_display_path(path=execution_context.cwd)}]"
-            ).strip()
-        _record_unavailable_commands(
-            output=output,
-            execution_context=execution_context,
-        )
+            output = f"{output}\n[exit_code={exit_code}]".strip()
 
         if callbacks.on_command_output:
             callbacks.on_command_output(built_command, output)
@@ -2028,121 +1272,23 @@ def _execute_turn_commands(
         if output:
             combined_output_parts.append(output)
 
-    commands_to_execute = parsed.commands[: limits.max_actions]
-    if len(parsed.commands) > limits.max_actions:
-        combined_output_parts.append(
-            f"[commands truncated to {limits.max_actions}; execute smaller batches]"
-        )
-
-    for cmd in commands_to_execute:
-        if _is_background_launch_command(cmd.keystrokes):
-            _note_background_command(
-                scratchpad=scratchpad,
-                command_text=_compact_line(cmd.keystrokes),
-            )
-        stripped_keystrokes = cmd.keystrokes.strip()
-        if stripped_keystrokes in {"C-c", "C-d"} or cmd.keystrokes == "":
-            command_to_run = cmd
-        else:
-            legacy_text = cmd.keystrokes.rstrip("\n")
-            wrapped_legacy = _build_run_command_from_values(
-                raw_command=legacy_text,
-                timeout_seconds=cmd.duration,
-            )
-            command_to_run = wrapped_legacy or cmd
+    for cmd in parsed.commands:
         output = execute_command(
             child=child,
-            cmd=command_to_run,
-            max_wait_seconds=limits.max_wait_seconds,
+            cmd=cmd,
+            max_wait_seconds=max_wait_seconds,
         )
-        executed_actions += 1
-        output, exit_code = _extract_command_metadata(
-            output=output,
-            expected_marker_id=command_to_run.marker_id,
-        )
-        _maybe_update_execution_cwd(
-            command_text=cmd.keystrokes,
-            exit_code=exit_code,
-            execution_context=execution_context,
-        )
-        if exit_code is not None:
-            output = (
-                f"{output}\n[exit_code={exit_code} cwd={_display_path(path=execution_context.cwd)}]"
-            ).strip()
-        _record_unavailable_commands(
-            output=output,
-            execution_context=execution_context,
-        )
-
+        executed_shell_commands += 1
         if callbacks.on_command_output:
-            callbacks.on_command_output(command_to_run, output)
+            callbacks.on_command_output(cmd, output)
 
         if output:
             combined_output_parts.append(output)
 
     terminal_output = "\n".join(combined_output_parts).strip()
-    return (limit_output_length(terminal_output or "[no new output]"), executed_actions)
-
-
-def _response_signature(parsed: ParsedResponse) -> str:
-    action_parts = [
-        f"{action.action_type}:{json.dumps(action.payload, sort_keys=True, ensure_ascii=True)}"
-        for action in parsed.actions[:8]
-    ]
-    command_parts = [
-        _compact_line(cmd.keystrokes, max_len=160) for cmd in parsed.commands[:8]
-    ]
-    return (
-        "actions="
-        + "|".join(action_parts)
-        + ";commands="
-        + "|".join(command_parts)
-        + f";step={_compact_line(parsed.current_step, max_len=80)}"
-        + f";status={parsed.step_status}"
-        + f";complete={parsed.task_complete}"
-    )
-
-
-def _parsed_includes_liveness_check(parsed: ParsedResponse) -> bool:
-    keywords = (
-        "curl",
-        "http://",
-        "https://",
-        "lsof",
-        "netstat",
-        "ss ",
-        "pgrep",
-        "ps ",
-        "jobs",
-        "grpc",
-        "localhost",
-        "127.0.0.1",
-    )
-    candidate_texts: list[str] = []
-    for action in parsed.actions:
-        if action.action_type.strip().lower() != "run_command":
-            continue
-        command = action.payload.get("command")
-        if isinstance(command, str):
-            candidate_texts.append(command.lower())
-    for command in parsed.commands:
-        candidate_texts.append(command.keystrokes.lower())
-
-    return any(any(keyword in text for keyword in keywords) for text in candidate_texts)
-
-
-def _verification_output_has_hard_failure(output: str) -> bool:
-    lowered = output.lower()
-    hard_failure_markers = (
-        "connection refused",
-        "traceback",
-        "command not found",
-        "no such file or directory",
-        "permission denied",
-        "address already in use",
-        "[exit_code=127",
-    )
-    return any(marker in lowered for marker in hard_failure_markers)
+    return limit_output_length(
+        terminal_output or "[no new output]"
+    ), executed_shell_commands
 
 
 def run_agent(
@@ -2156,9 +1302,8 @@ def run_agent(
     child: pexpect.spawn[str] | None = None
     history: list[dict[str, str]] = []
     scratchpad = ScratchpadState()
-    execution_context = ExecutionContext(cwd=os.getcwd())
     terminal_output = "Current Terminal Screen:\n(empty)"
-    start_time = time.monotonic()
+    pending_completion = False
 
     try:
         child = start_shell()
@@ -2183,68 +1328,16 @@ def run_agent(
         elif planning_result.error and callbacks.on_issue:
             callbacks.on_issue("planning", planning_result.error)
 
-        initial_elapsed = max(time.monotonic() - start_time, 0.0)
-        initial_remaining = cfg.max_runtime_seconds - initial_elapsed
-        initial_runtime_status = _build_runtime_status(
-            turn=1,
-            max_turns=cfg.max_turns,
-            elapsed_seconds=initial_elapsed,
-            remaining_seconds=initial_remaining,
-            unavailable_commands=execution_context.unavailable_commands,
-        )
         prompt = _build_execution_prompt(
             instruction=instruction,
             scratchpad=scratchpad,
             terminal_state=terminal_output,
-            runtime_status=initial_runtime_status,
         )
-        phase = "execution"
-        verification_attempted = False
-        replan_count = 0
         consecutive_no_progress_turns = 0
         consecutive_tool_failure_turns = 0
-        previous_signature = ""
-        previous_terminal_output = ""
-        repeated_turn_pattern_count = 0
+        verification_actions_executed = False
 
         for turn in range(1, cfg.max_turns + 1):
-            elapsed_seconds = max(time.monotonic() - start_time, 0.0)
-            remaining_runtime = cfg.max_runtime_seconds - elapsed_seconds
-            runtime_status = _build_runtime_status(
-                turn=turn,
-                max_turns=cfg.max_turns,
-                elapsed_seconds=elapsed_seconds,
-                remaining_seconds=remaining_runtime,
-                unavailable_commands=execution_context.unavailable_commands,
-            )
-            if remaining_runtime <= cfg.emergency_stop_seconds:
-                _note_observation(
-                    scratchpad=scratchpad,
-                    note="Runtime budget exhausted; stopping early before harness timeout.",
-                )
-                if callbacks.on_done:
-                    callbacks.on_done(
-                        "Stopped due to runtime budget exhaustion; verifier can now run."
-                    )
-                return 0
-
-            if (
-                remaining_runtime <= cfg.finalization_window_seconds
-                and phase != "verification"
-            ):
-                phase = "verification"
-                verification_attempted = True
-                prompt = (
-                    "Runtime is low. Prioritize a minimal, high-confidence finish: "
-                    "run one decisive verification or final fix, then conclude.\n\n"
-                    + _build_verification_prompt(
-                        instruction=instruction,
-                        scratchpad=scratchpad,
-                        terminal_state=terminal_output,
-                        runtime_status=runtime_status,
-                    )
-                )
-
             try:
                 model_response = _query_model(
                     cfg=cfg,
@@ -2294,34 +1387,17 @@ def run_agent(
             )
             if callbacks.on_reasoning:
                 callbacks.on_reasoning(turn, parsed)
-            if phase == "replan":
-                phase = "execution"
-                prompt = (
-                    "Use the revised plan now. Execute a small, concrete action batch.\n\n"
-                    + _build_execution_prompt(
-                        instruction=instruction,
-                        scratchpad=scratchpad,
-                        terminal_state=terminal_output,
-                        runtime_status=runtime_status,
-                    )
-                )
-                continue
 
-            turn_limits = _compute_turn_limits(
-                max_wait_seconds=cfg.max_wait_seconds,
-                remaining_runtime_seconds=remaining_runtime,
-            )
             try:
-                terminal_output, _ = _execute_turn_commands(
+                terminal_output, executed_shell_commands = _execute_turn_commands(
                     child=child,
                     parsed=parsed,
-                    limits=turn_limits,
+                    max_wait_seconds=cfg.max_wait_seconds,
                     callbacks=callbacks,
                     cfg=cfg,
                     api_key=api_key,
                     instruction=instruction,
                     scratchpad=scratchpad,
-                    execution_context=execution_context,
                 )
             except pexpect.EOF:
                 if callbacks.on_issue:
@@ -2330,10 +1406,10 @@ def run_agent(
                     )
                 child.close(force=True)
                 child = start_shell()
-                execution_context.cwd = os.getcwd()
                 terminal_output = (
                     "[shell restarted after EOF; continue from current plan]"
                 )
+                executed_shell_commands = 0
 
             if terminal_output and terminal_output != "[no new output]":
                 _note_observation(
@@ -2359,158 +1435,53 @@ def run_agent(
             else:
                 consecutive_tool_failure_turns = 0
 
-            current_signature = _response_signature(parsed=parsed)
-            if (
-                current_signature == previous_signature
-                and terminal_output == previous_terminal_output
-            ):
-                repeated_turn_pattern_count += 1
-            else:
-                repeated_turn_pattern_count = 0
-            previous_signature = current_signature
-            previous_terminal_output = terminal_output
-
-            if repeated_turn_pattern_count >= 2:
-                scratchpad.blockers.append(
-                    "Repeated identical actions/output detected; force strategy pivot"
-                )
-                if len(scratchpad.blockers) > 4:
-                    del scratchpad.blockers[:-4]
-
-            elapsed_after_turn = max(time.monotonic() - start_time, 0.0)
-            remaining_runtime_after_turn = cfg.max_runtime_seconds - elapsed_after_turn
-            runtime_status_after_turn = _build_runtime_status(
-                turn=turn,
-                max_turns=cfg.max_turns,
-                elapsed_seconds=elapsed_after_turn,
-                remaining_seconds=remaining_runtime_after_turn,
-                unavailable_commands=execution_context.unavailable_commands,
-            )
-            replan_reasons: list[str] = []
-            if phase == "execution" and replan_count < 2:
-                if parsed.step_status in {"stuck", "replan"}:
-                    replan_reasons.append(
-                        "Model reported the current tactic is blocked."
-                    )
-                if repeated_turn_pattern_count >= 2:
-                    replan_reasons.append(
-                        "Repeated identical actions/output suggests a local loop."
-                    )
-                if consecutive_no_progress_turns >= 3:
-                    replan_reasons.append(
-                        "Several turns produced no meaningful new output."
-                    )
-                if consecutive_tool_failure_turns >= 2:
-                    replan_reasons.append(
-                        "Consecutive tool/command failures indicate strategy mismatch."
-                    )
-            if replan_reasons and not parsed.task_complete:
-                replan_count += 1
-                phase = "replan"
-                consecutive_no_progress_turns = 0
-                consecutive_tool_failure_turns = 0
-                repeated_turn_pattern_count = 0
-                prompt = _build_replan_prompt(
-                    instruction=instruction,
-                    scratchpad=scratchpad,
-                    terminal_state=terminal_output,
-                    runtime_status=runtime_status_after_turn,
-                    reason="\n".join(f"- {reason}" for reason in replan_reasons),
-                )
-                continue
+            if pending_completion and executed_shell_commands > 0:
+                verification_actions_executed = True
 
             if parsed.task_complete:
-                if phase == "verification":
+                if pending_completion:
+                    if not verification_actions_executed:
+                        prompt = (
+                            "You requested completion again, but no concrete verification "
+                            "commands were executed during verification phase. Run checks "
+                            "first, then decide completion.\n\n"
+                            + _build_verification_prompt(
+                                instruction=instruction,
+                                scratchpad=scratchpad,
+                                terminal_state=terminal_output,
+                            )
+                        )
+                        continue
+
                     if callbacks.on_done:
                         callbacks.on_done("Task marked complete.")
 
                     return 0
 
-                phase = "verification"
-                verification_attempted = True
-                prompt = (
-                    "Before finalizing, run one high-signal verification for the core "
-                    "requirements. If gaps remain, set task_complete to false and fix them.\n\n"
-                    + _build_verification_prompt(
-                        instruction=instruction,
-                        scratchpad=scratchpad,
-                        terminal_state=terminal_output,
-                        runtime_status=runtime_status_after_turn,
-                    )
-                )
-                continue
-
-            execution_prompt = _build_execution_prompt(
-                instruction=instruction,
-                scratchpad=scratchpad,
-                terminal_state=terminal_output,
-                runtime_status=runtime_status_after_turn,
-            )
-            verification_prompt = _build_verification_prompt(
-                instruction=instruction,
-                scratchpad=scratchpad,
-                terminal_state=terminal_output,
-                runtime_status=runtime_status_after_turn,
-            )
-            turns_left = cfg.max_turns - turn
-
-            if phase == "verification":
-                if (
-                    remaining_runtime_after_turn
-                    <= cfg.finalization_window_seconds * 0.5
-                    or turns_left <= 2
-                ):
-                    prompt = (
-                        "Runtime is almost exhausted. Make one final decisive check or fix; "
-                        "if still uncertain, return best effort with task_complete false.\n\n"
-                        + verification_prompt
-                    )
-                else:
-                    phase = "execution"
-                    prompt = (
-                        "Verification found remaining work. Continue execution with a "
-                        "different focused tactic.\n\n" + execution_prompt
-                    )
-                continue
-
-            phase = "execution"
-            if feedback:
-                prompt = (
-                    f"Previous response had warnings:\n{feedback}\n\n{execution_prompt}"
+                pending_completion = True
+                verification_actions_executed = False
+                prompt = _build_verification_prompt(
+                    instruction=instruction,
+                    scratchpad=scratchpad,
+                    terminal_state=terminal_output,
                 )
             else:
-                prompt = execution_prompt
-            if turns_left <= 5:
-                prompt = (
-                    "Turn budget is low. Prioritize high-confidence completion: "
-                    "finish core work and verify before task_complete.\n\n" + prompt
+                pending_completion = False
+                execution_prompt = _build_execution_prompt(
+                    instruction=instruction,
+                    scratchpad=scratchpad,
+                    terminal_state=terminal_output,
                 )
-            if consecutive_tool_failure_turns >= 2:
-                prompt = (
-                    "Recent turns repeatedly failed due missing commands/tools. Pivot to "
-                    "an alternative approach available in this environment.\n\n"
-                    + prompt
-                )
-            if repeated_turn_pattern_count >= 2:
-                prompt = (
-                    "Recent turns repeated the same actions and output. Choose a different "
-                    "tactic immediately.\n\n" + prompt
-                )
-            if consecutive_no_progress_turns >= 3:
-                prompt = (
-                    "Recent turns produced little/no progress. Run a new diagnostic and "
-                    "then pivot strategy.\n\n" + prompt
-                )
-            if (
-                remaining_runtime_after_turn <= cfg.finalization_window_seconds
-                and not verification_attempted
-            ):
-                phase = "verification"
-                verification_attempted = True
-                prompt = (
-                    "Runtime is low. Prioritize a final high-signal check and conclude.\n\n"
-                    + verification_prompt
-                )
+                if feedback:
+                    prompt = f"Previous response had warnings:\n{feedback}\n\n{execution_prompt}"
+                else:
+                    prompt = execution_prompt
+                if consecutive_tool_failure_turns >= 2:
+                    prompt = (
+                        "Recent turns repeatedly failed due missing commands/tools. "
+                        "Pivot to an alternative approach available in this environment "
+                        "instead of retrying the same failing command.\n\n" + prompt
+                    )
 
         if callbacks.on_stopped:
             callbacks.on_stopped(cfg.max_turns)
@@ -2547,30 +1518,6 @@ class Agent:
             key="max_wait_seconds",
             default=60.0,
         )
-        max_runtime_seconds = _cfg_float(
-            cfg=cfg,
-            key="max_runtime_seconds",
-            default=840.0,
-        )
-        finalization_window_seconds = _cfg_float(
-            cfg=cfg,
-            key="finalization_window_seconds",
-            default=60.0,
-        )
-        emergency_stop_seconds = _cfg_float(
-            cfg=cfg,
-            key="emergency_stop_seconds",
-            default=5.0,
-        )
-        if finalization_window_seconds <= 0:
-            finalization_window_seconds = 60.0
-        if emergency_stop_seconds <= 0:
-            emergency_stop_seconds = 5.0
-        if emergency_stop_seconds >= finalization_window_seconds:
-            emergency_stop_seconds = max(finalization_window_seconds * 0.25, 5.0)
-        if max_runtime_seconds <= finalization_window_seconds:
-            max_runtime_seconds = finalization_window_seconds + 60.0
-
         core_cfg = Config(
             active_model_key=cfg.model.model,
             active_model=ModelConfig(
@@ -2584,9 +1531,6 @@ class Agent:
             verbosity=verbosity,
             max_turns=max_turns,
             max_wait_seconds=max_wait_seconds,
-            max_runtime_seconds=max_runtime_seconds,
-            finalization_window_seconds=finalization_window_seconds,
-            emergency_stop_seconds=emergency_stop_seconds,
         )
 
         def on_reasoning(turn: int, parsed: ParsedResponse) -> None:

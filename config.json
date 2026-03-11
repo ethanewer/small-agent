@@ -1,7 +1,7 @@
 {
   "default_agent": "terminus-2",
   "default_model": "qwen3.5-flash",
-  "default_cursor_model": "opus-4.6-thinking",
+  "default_cursor_model": "gpt-5.3-codex-high",
   "agents": {
     "terminus-2": {},
     "qwen": {}
