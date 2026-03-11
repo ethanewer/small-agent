@@ -345,7 +345,7 @@ def _parse_commands(
                 + "concatenated together on the same line."
             )
 
-        commands.append(Command(keystrokes=keystrokes, duration=max(duration, 0.0)))
+        commands.append(Command(keystrokes=keystrokes, duration=float(duration)))
 
     return commands, ""
 
@@ -638,6 +638,16 @@ _OUTPUT_LENGTH_ERROR_MSG = (
 )
 
 _MAX_QUERY_ATTEMPTS = 3
+_TIMEOUT_TEMPLATE = """Previous command:
+{command}
+
+The previous command timed out after {timeout_sec} seconds
+
+It is possible that the command is not yet finished executing. If that is the case, then do nothing. It is also possible that you have entered an interactive shell and should continue sending keystrokes as normal.
+
+Here is the current state of the terminal:
+
+{terminal_state}"""
 
 
 def _query_model(
@@ -654,12 +664,18 @@ def _query_model(
 
     for _attempt in range(_MAX_QUERY_ATTEMPTS):
         try:
-            return call_model(
+            response = call_model(
                 cfg=cfg,
                 prompt=current_prompt,
                 history=history,
                 api_key=api_key,
             )
+            _append_turn_history(
+                history=history,
+                prompt=current_prompt,
+                model_response=response,
+            )
+            return response
         except OutputLengthExceededError as exc:
             last_error = exc
             truncated = exc.truncated_response or ""
@@ -683,6 +699,7 @@ def _query_model(
                 [
                     {"role": "user", "content": current_prompt},
                     {"role": "assistant", "content": truncated},
+                    {"role": "user", "content": error_msg},
                 ]
             )
             current_prompt = error_msg
@@ -699,7 +716,7 @@ def _query_model(
                     original_instruction=original_instruction,
                     terminal_state=terminal_state,
                 )
-                current_prompt = f"{summarized}\n\n{prompt}"
+                current_prompt = f"{summarized}\n\n{current_prompt}"
                 continue
 
             raise
@@ -724,11 +741,29 @@ def start_shell() -> pexpect.spawn[str]:
 
 def execute_command(
     child: pexpect.spawn[str], cmd: Command, max_wait_seconds: float
-) -> str:
+) -> tuple[str, bool]:
+    def _drain_available_output() -> str:
+        chunks: list[str] = []
+        while True:
+            try:
+                chunk = child.read_nonblocking(size=4096, timeout=0)
+            except pexpect.TIMEOUT:
+                break
+            except pexpect.EOF:
+                break
+
+            if not chunk:
+                break
+
+            chunks.append(chunk)
+
+        return "".join(chunks)
+
     effective_wait = min(max(cmd.duration, 0.0), max(max_wait_seconds, 0.1))
     if cmd.keystrokes == "":
         time.sleep(effective_wait)
-        return ""
+        raw_output = _drain_available_output()
+        return normalize_command_output(output=raw_output, command=cmd), False
 
     if cmd.keystrokes.strip() == "C-c":
         child.sendcontrol("c")
@@ -741,14 +776,16 @@ def execute_command(
         else:
             child.send(keystrokes)
 
-    timeout = min(max(cmd.duration, 0.0) + 2.0, max(max_wait_seconds, 0.1))
+    timeout = effective_wait
     try:
         child.expect_exact(PROMPT_SENTINEL, timeout=timeout)
         raw_output = child.before or ""
+        timed_out = False
     except pexpect.TIMEOUT:
         raw_output = child.before or ""
+        timed_out = True
 
-    return normalize_command_output(output=raw_output, command=cmd)
+    return normalize_command_output(output=raw_output, command=cmd), timed_out
 
 
 def completion_confirmation_message(terminal_output: str) -> str:
@@ -831,15 +868,12 @@ def _summarize_history(
         "Be comprehensive and detailed."
     )
 
-    try:
-        summary_response = call_model_fn(
-            cfg=cfg,
-            prompt=summary_prompt,
-            history=history,
-            api_key=api_key,
-        )
-    except Exception:  # noqa: BLE001
-        summary_response = "(summary unavailable)"
+    summary_response = call_model_fn(
+        cfg=cfg,
+        prompt=summary_prompt,
+        history=history,
+        api_key=api_key,
+    )
 
     question_prompt = (
         f"You are picking up work from a previous AI agent on this task:\n\n"
@@ -852,28 +886,22 @@ def _summarize_history(
         "be on your own, so ask everything you need to know."
     )
 
-    try:
-        model_questions = call_model_fn(
-            cfg=cfg,
-            prompt=question_prompt,
-            history=[],
-            api_key=api_key,
-        )
-    except Exception:  # noqa: BLE001
-        model_questions = "(questions unavailable)"
+    model_questions = call_model_fn(
+        cfg=cfg,
+        prompt=question_prompt,
+        history=[],
+        api_key=api_key,
+    )
 
-    try:
-        model_answers = call_model_fn(
-            cfg=cfg,
-            prompt=(
-                "The next agent has a few questions for you, please answer each "
-                "of them one by one in detail:\n\n" + model_questions
-            ),
-            history=history,
-            api_key=api_key,
-        )
-    except Exception:  # noqa: BLE001
-        model_answers = "(answers unavailable)"
+    model_answers = call_model_fn(
+        cfg=cfg,
+        prompt=(
+            "The next agent has a few questions for you, please answer each "
+            "of them one by one in detail:\n\n" + model_questions
+        ),
+        history=history,
+        api_key=api_key,
+    )
 
     first_message = history[0] if history else None
     history.clear()
@@ -913,7 +941,6 @@ def _check_proactive_summarization(
     free_tokens = context_limit - current_tokens
 
     if free_tokens < _PROACTIVE_FREE_TOKEN_THRESHOLD:
-        _unwind_messages(history=history, cfg=cfg)
         return _summarize_history(
             call_model_fn=call_model_fn,
             cfg=cfg,
@@ -934,19 +961,34 @@ def _execute_turn_commands(
 ) -> str:
     combined_output_parts: list[str] = []
     for cmd in parsed.commands:
-        output = execute_command(
+        normalized_duration = min(max(cmd.duration, 0.0), 60.0)
+        command = Command(
+            keystrokes=cmd.keystrokes,
+            duration=normalized_duration,
+        )
+        output, timed_out = execute_command(
             child=child,
-            cmd=cmd,
+            cmd=command,
             max_wait_seconds=max_wait_seconds,
         )
         if callbacks.on_command_output:
-            callbacks.on_command_output(cmd, output)
+            callbacks.on_command_output(command, output)
+
+        if timed_out:
+            timeout_sec = min(normalized_duration, max(max_wait_seconds, 0.1))
+            timeout_terminal_state = limit_output_length(output)
+            timeout_output = _TIMEOUT_TEMPLATE.format(
+                timeout_sec=timeout_sec,
+                command=command.keystrokes,
+                terminal_state=timeout_terminal_state,
+            )
+            return limit_output_length(timeout_output)
 
         if output:
             combined_output_parts.append(output)
 
     terminal_output = "\n".join(combined_output_parts).strip()
-    return limit_output_length(terminal_output or "[no new output]")
+    return limit_output_length(terminal_output)
 
 
 def run_agent(
@@ -960,9 +1002,10 @@ def run_agent(
     history: list[dict[str, str]] = []
     pending_completion = False
     pending_final_message: str | None = None
+    terminal_state = "Current Terminal Screen:\n(empty)"
     prompt = build_prompt(
         instruction=instruction,
-        terminal_state="Current Terminal Screen:\n(empty)",
+        terminal_state=terminal_state,
         max_wait_seconds=cfg.max_wait_seconds,
     )
 
@@ -974,7 +1017,7 @@ def run_agent(
                 history=history,
                 api_key=api_key,
                 original_instruction=instruction,
-                terminal_state=prompt,
+                terminal_state=terminal_state,
             )
             if summarized is not None:
                 prompt = summarized
@@ -986,18 +1029,13 @@ def run_agent(
                     history=history,
                     api_key=api_key,
                     original_instruction=instruction,
-                    terminal_state=prompt,
+                    terminal_state=terminal_state,
                 )
             except Exception as err:
                 if callbacks.on_issue:
                     callbacks.on_issue("model", str(err))
 
                 return 1
-            _append_turn_history(
-                history=history,
-                prompt=prompt,
-                model_response=model_response,
-            )
 
             result = parse_response(model_response)
 
@@ -1033,6 +1071,7 @@ def run_agent(
                 max_wait_seconds=cfg.max_wait_seconds,
                 callbacks=callbacks,
             )
+            terminal_state = terminal_output
 
             if parsed.task_complete:
                 if parsed.final_message and parsed.final_message.strip():
