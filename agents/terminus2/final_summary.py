@@ -2,7 +2,15 @@ from __future__ import annotations
 
 import json
 import re
+from dataclasses import dataclass
 from typing import Any, Protocol
+
+
+@dataclass
+class ModelResult:
+    content: str
+    prompt_tokens: int
+    completion_tokens: int
 
 
 class CallModelFn(Protocol):
@@ -12,7 +20,7 @@ class CallModelFn(Protocol):
         prompt: str,
         history: list[dict[str, str]],
         api_key: str,
-    ) -> str: ...
+    ) -> ModelResult: ...
 
 
 def post_run_summary_prompt() -> str:
@@ -36,12 +44,13 @@ def build_done_text(
 ) -> str:
     response: str | None = None
     try:
-        response = call_model_fn(
+        result = call_model_fn(
             cfg=cfg,
             prompt=post_run_summary_prompt(),
             history=history,
             api_key=api_key,
         )
+        response = result.content
     except Exception:
         response = None
 

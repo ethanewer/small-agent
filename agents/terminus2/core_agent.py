@@ -12,7 +12,7 @@ from typing import Any, Callable
 import httpx
 import openai
 import pexpect
-from agents.terminus2.final_summary import build_done_text
+from agents.terminus2.final_summary import ModelResult, build_done_text
 
 warnings.filterwarnings(
     action="ignore",
@@ -563,7 +563,7 @@ def call_model(
     prompt: str,
     history: list[dict[str, str]],
     api_key: str,
-) -> str:
+) -> ModelResult:
     _configure_tls_trust()
     model_name = cfg.active_model.model
     completion_kwargs: dict[str, Any] = {}
@@ -598,7 +598,15 @@ def call_model(
                     truncated_response=content,
                 )
 
-            return content
+            usage = result.usage
+            prompt_tokens = usage.prompt_tokens if usage else 0
+            completion_tokens = usage.completion_tokens if usage else 0
+
+            return ModelResult(
+                content=content,
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+            )
         except OutputLengthExceededError:
             raise
         except Exception as err:  # noqa: BLE001
@@ -658,13 +666,13 @@ def _query_model(
     api_key: str,
     original_instruction: str,
     terminal_state: str,
-) -> str:
+) -> ModelResult:
     last_error: Exception | None = None
     current_prompt = prompt
 
     for _attempt in range(_MAX_QUERY_ATTEMPTS):
         try:
-            response = call_model(
+            model_result = call_model(
                 cfg=cfg,
                 prompt=current_prompt,
                 history=history,
@@ -673,9 +681,9 @@ def _query_model(
             _append_turn_history(
                 history=history,
                 prompt=current_prompt,
-                model_response=response,
+                model_response=model_result.content,
             )
-            return response
+            return model_result
         except OutputLengthExceededError as exc:
             last_error = exc
             truncated = exc.truncated_response or ""
@@ -816,7 +824,8 @@ _PROACTIVE_FREE_TOKEN_THRESHOLD = 8_000
 _UNWIND_TARGET_FREE_TOKENS = 4_000
 
 
-def _count_total_tokens(messages: list[dict[str, str]]) -> int:
+def _estimate_total_tokens(messages: list[dict[str, str]]) -> int:
+    """Rough per-message estimate used only during iterative history unwinding."""
     return sum(len(m.get("content", "")) // 4 for m in messages)
 
 
@@ -833,7 +842,7 @@ def _unwind_messages(
 ) -> None:
     context_limit = _get_model_context_limit(cfg)
     while len(history) > 1:
-        current_tokens = _count_total_tokens(history)
+        current_tokens = _estimate_total_tokens(history)
         if context_limit - current_tokens >= _UNWIND_TARGET_FREE_TOKENS:
             break
 
@@ -845,7 +854,7 @@ def _unwind_messages(
 
 def _summarize_history(
     *,
-    call_model_fn: Callable[..., str],
+    call_model_fn: Callable[..., ModelResult],
     cfg: Config,
     history: list[dict[str, str]],
     api_key: str,
@@ -868,7 +877,7 @@ def _summarize_history(
         "Be comprehensive and detailed."
     )
 
-    summary_response = call_model_fn(
+    summary_result = call_model_fn(
         cfg=cfg,
         prompt=summary_prompt,
         history=history,
@@ -878,7 +887,7 @@ def _summarize_history(
     question_prompt = (
         f"You are picking up work from a previous AI agent on this task:\n\n"
         f"**Original Task:**\n{original_instruction}\n\n"
-        f"**Summary from Previous Agent:**\n{summary_response}\n\n"
+        f"**Summary from Previous Agent:**\n{summary_result.content}\n\n"
         f"**Current Terminal Screen:**\n{terminal_state}\n\n"
         "Please begin by asking several questions (at least five, more if necessary) "
         "about the current state of the solution that are not answered in the "
@@ -886,18 +895,18 @@ def _summarize_history(
         "be on your own, so ask everything you need to know."
     )
 
-    model_questions = call_model_fn(
+    questions_result = call_model_fn(
         cfg=cfg,
         prompt=question_prompt,
         history=[],
         api_key=api_key,
     )
 
-    model_answers = call_model_fn(
+    answers_result = call_model_fn(
         cfg=cfg,
         prompt=(
             "The next agent has a few questions for you, please answer each "
-            "of them one by one in detail:\n\n" + model_questions
+            "of them one by one in detail:\n\n" + questions_result.content
         ),
         history=history,
         api_key=api_key,
@@ -911,13 +920,13 @@ def _summarize_history(
     history.extend(
         [
             {"role": "user", "content": question_prompt},
-            {"role": "assistant", "content": model_questions},
+            {"role": "assistant", "content": questions_result.content},
         ]
     )
 
     handoff_prompt = (
         "Here are the answers the other agent provided.\n\n"
-        + model_answers
+        + answers_result.content
         + "\n\n"
         + "Continue working on this task from where the previous agent left off."
         " You can no longer ask questions. Please follow the spec to interact with "
@@ -929,15 +938,15 @@ def _summarize_history(
 
 def _check_proactive_summarization(
     *,
-    call_model_fn: Callable[..., str],
+    call_model_fn: Callable[..., ModelResult],
     cfg: Config,
     history: list[dict[str, str]],
     api_key: str,
     original_instruction: str,
     terminal_state: str,
+    current_tokens: int,
 ) -> str | None:
     context_limit = _get_model_context_limit(cfg)
-    current_tokens = _count_total_tokens(history)
     free_tokens = context_limit - current_tokens
 
     if free_tokens < _PROACTIVE_FREE_TOKEN_THRESHOLD:
@@ -1003,6 +1012,7 @@ def run_agent(
     pending_completion = False
     pending_final_message: str | None = None
     terminal_state = "Current Terminal Screen:\n(empty)"
+    last_prompt_tokens = 0
     prompt = build_prompt(
         instruction=instruction,
         terminal_state=terminal_state,
@@ -1018,12 +1028,13 @@ def run_agent(
                 api_key=api_key,
                 original_instruction=instruction,
                 terminal_state=terminal_state,
+                current_tokens=last_prompt_tokens,
             )
             if summarized is not None:
                 prompt = summarized
 
             try:
-                model_response = _query_model(
+                model_result = _query_model(
                     cfg=cfg,
                     prompt=prompt,
                     history=history,
@@ -1037,7 +1048,11 @@ def run_agent(
 
                 return 1
 
-            result = parse_response(model_response)
+            last_prompt_tokens = (
+                model_result.prompt_tokens + model_result.completion_tokens
+            )
+
+            result = parse_response(model_result.content)
 
             feedback = ""
             if result.error:
