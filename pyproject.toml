@@ -7,8 +7,6 @@ dependencies = [
     "openai",
     "pytest>=9.0.2",
     "rich",
-    "jinja2",
-    "transformers",
     "truststore",
 ]
 
@@ -36,6 +34,4 @@ cache_dir = ".local/cache/pytest"
 cache_dir = ".local/cache/mypy"
 
 [dependency-groups]
-dev = [
-    "matplotlib>=3.10.8",
-]
+dev = []

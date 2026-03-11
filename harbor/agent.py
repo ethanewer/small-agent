@@ -265,28 +265,73 @@ async def _environment_is_dir(*, environment: Any, path: str) -> bool:
     return exit_code == 0
 
 
+_UPLOAD_EXCLUDE_DIRS: set[str] = {
+    "sft",
+    "harbor",
+    ".git",
+    ".venv",
+    ".ruff_cache",
+    ".local",
+    "__pycache__",
+    "node_modules",
+    "config",
+    "agent_evolve",
+}
+
+_UPLOAD_EXCLUDE_FILES: set[str] = {
+    "uv.lock",
+    ".env",
+}
+
+
+def _stage_upload_dir(source_dir: Path) -> Path:
+    """Create a lightweight staging copy that excludes heavy directories."""
+    import shutil
+    import tempfile
+
+    staging = Path(tempfile.mkdtemp(prefix="harbor-upload-"))
+    for entry in source_dir.iterdir():
+        if entry.name in _UPLOAD_EXCLUDE_DIRS and entry.is_dir():
+            continue
+        if entry.name in _UPLOAD_EXCLUDE_FILES and entry.is_file():
+            continue
+        dest = staging / entry.name
+        if entry.is_dir():
+            shutil.copytree(src=entry, dst=dest, symlinks=True)
+        else:
+            shutil.copy2(src=entry, dst=dest)
+
+    return staging
+
+
 async def _environment_upload_dir(
     *,
     environment: Any,
     source_dir: Path,
     target_dir: str,
 ) -> None:
+    import shutil
+
     uploader = getattr(environment, "upload_dir", None)
     if not callable(uploader):
         raise RuntimeError("Harbor environment does not expose an upload_dir method.")
 
-    attempts: list[dict[str, Any]] = [
-        {"source_dir": source_dir, "target_dir": target_dir},
-        {"source_dir": str(source_dir), "target_dir": target_dir},
-    ]
-    for kwargs in attempts:
-        try:
-            await _maybe_await(uploader(**kwargs))
-            return
-        except TypeError:
-            continue
+    staged = _stage_upload_dir(source_dir=source_dir)
+    try:
+        attempts: list[dict[str, Any]] = [
+            {"source_dir": staged, "target_dir": target_dir},
+            {"source_dir": str(staged), "target_dir": target_dir},
+        ]
+        for kwargs in attempts:
+            try:
+                await _maybe_await(uploader(**kwargs))
+                return
+            except TypeError:
+                continue
 
-    await _maybe_await(uploader(str(source_dir), target_dir))
+        await _maybe_await(uploader(str(staged), target_dir))
+    finally:
+        shutil.rmtree(path=staged, ignore_errors=True)
 
 
 class SmallAgentHarborAgent(HarborBaseAgent):
