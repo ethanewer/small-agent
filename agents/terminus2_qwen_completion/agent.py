@@ -106,7 +106,13 @@ def _render_command_output(
         input_text = command.keystrokes
 
     display_input = input_text.replace("\n", "\\n")
-    normalized_output = output.strip() if output else ""
+    raw = output
+    for prefix in ("New Terminal Output:\n", "Current Terminal Screen:\n"):
+        if raw.startswith(prefix):
+            raw = raw[len(prefix) :]
+            break
+
+    normalized_output = raw.strip() if raw else ""
     output_text = normalized_output if normalized_output else "[no output]"
     if verbosity == 0:
         in_prefix = "in: "

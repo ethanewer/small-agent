@@ -975,10 +975,13 @@ def _execute_turn_commands(
             cmd=command,
             max_wait_seconds=max_wait_seconds,
         )
+        terminal_output = session.get_incremental_output()
         if callbacks.on_command_output:
-            callbacks.on_command_output(command, "")
+            callbacks.on_command_output(command, terminal_output)
 
-    terminal_output = session.get_incremental_output()
+    if not parsed.commands:
+        terminal_output = session.get_incremental_output()
+
     return limit_output_length(terminal_output)
 
 
