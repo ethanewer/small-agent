@@ -3,13 +3,11 @@ from __future__ import annotations
 from agents.interface import Agent
 from agents.qwen import QwenHeadlessAgent
 from agents.terminus2.agent import Terminus2Agent
-from agents.terminus2_qwen_completion.agent import Terminus2QwenCompletionAgent
 
 
 def available_agents() -> dict[str, Agent]:
     return {
         "terminus-2": Terminus2Agent(),
-        "terminus-2-qwen3.5-completion": Terminus2QwenCompletionAgent(),
         "qwen": QwenHeadlessAgent(),
     }
 
