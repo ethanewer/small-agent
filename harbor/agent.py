@@ -424,14 +424,14 @@ class SmallAgentHarborAgent(HarborBaseAgent):
             "grep -q -- --break-system-packages; then "
             'PIP_BREAK_FLAG="--break-system-packages"; '
             "fi; "
-            'if ! python3 -c "import pexpect, rich, openai, httpx" '
+            'if ! python3 -c "import rich, openai, httpx" '
             ">/dev/null 2>&1; then "
             "python3 -m pip install --disable-pip-version-check --no-input "
-            "$PIP_BREAK_FLAG pexpect rich openai httpx || "
+            "$PIP_BREAK_FLAG rich openai httpx || "
             "python3 -m pip install --disable-pip-version-check --no-input "
             "$PIP_BREAK_FLAG "
             "--trusted-host pypi.org --trusted-host files.pythonhosted.org "
-            "pexpect rich openai httpx; "
+            "rich openai httpx; "
             "fi"
         )
         _record_setup_stage(

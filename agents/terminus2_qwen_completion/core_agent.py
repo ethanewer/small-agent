@@ -11,8 +11,8 @@ from typing import Any, Callable
 
 import httpx
 import openai
-import pexpect
 from agents.terminus2.final_summary import ModelResult, build_done_text
+from agents.terminus2.tmux_session import TmuxSession, start_session
 from agents.terminus2_qwen_completion.tokenizer import count_tokens, render_messages
 
 warnings.filterwarnings(
@@ -102,7 +102,6 @@ def _make_openai_client(
     )
 
 
-PROMPT_SENTINEL = "__TERMINUS2_PROMPT__> "
 MAX_OUTPUT_BYTES = 10_000
 SYSTEM_PROMPT = """You are an AI assistant tasked with solving command-line tasks in a Linux environment. You will be given a task description and the output from previously executed commands. Your goal is to solve the task by providing batches of shell commands.
 
@@ -203,6 +202,8 @@ class AgentCallbacks:
     on_issue: Callable[[str, str], None] | None = None
     on_done: Callable[[str], None] | None = None
     on_stopped: Callable[[int], None] | None = None
+    on_rendered_prompt: Callable[[str], None] | None = None
+    on_stream_chunk: Callable[[str], None] | None = None
 
 
 def limit_output_length(output: str, max_bytes: int = MAX_OUTPUT_BYTES) -> str:
@@ -520,40 +521,6 @@ def _normalized_final_message(value: Any) -> str | None:
     raise ValueError("'final_message' must be a string when provided")
 
 
-def clean_terminal_output(output: str) -> str:
-    ansi_escape = re.compile(r"\x1B\[[0-?]*[ -/]*[@-~]")
-    return ansi_escape.sub("", output).replace("\r", "")
-
-
-def normalize_command_output(output: str, command: Command) -> str:
-    cleaned = clean_terminal_output(output)
-    command_line = command.keystrokes.strip()
-    normalized_lines: list[str] = []
-
-    for line in cleaned.splitlines():
-        stripped = line.strip()
-        if not stripped:
-            continue
-
-        if stripped in {PROMPT_SENTINEL.strip(), "%", "'", '"'}:
-            continue
-
-        if stripped.startswith("%"):
-            continue
-
-        if command_line and stripped == command_line:
-            continue
-
-        if stripped.startswith(PROMPT_SENTINEL):
-            stripped = stripped.removeprefix(PROMPT_SENTINEL).strip()
-            if not stripped:
-                continue
-
-        normalized_lines.append(stripped)
-
-    return "\n".join(normalized_lines).strip()
-
-
 def build_prompt(instruction: str, terminal_state: str, max_wait_seconds: float) -> str:
     del max_wait_seconds
     return SYSTEM_PROMPT.format(instruction=instruction, terminal_state=terminal_state)
@@ -562,11 +529,21 @@ def build_prompt(instruction: str, terminal_state: str, max_wait_seconds: float)
 _STOP_SEQUENCES = ["<|im_end|>"]
 
 
+def _strip_thinking_block(content: str) -> str:
+    close_tag = "</think>"
+    idx = content.find(close_tag)
+    if idx != -1:
+        return content[idx + len(close_tag) :].lstrip("\n")
+
+    return content
+
+
 def call_model(
     cfg: Config,
     prompt: str,
     history: list[dict[str, str]],
     api_key: str,
+    callbacks: AgentCallbacks | None = None,
 ) -> ModelResult:
     _configure_tls_trust()
     model_name = cfg.active_model.model
@@ -578,8 +555,22 @@ def call_model(
     if cfg.active_model.extra_params:
         completion_kwargs["extra_body"] = cfg.active_model.extra_params
 
+    enable_thinking = bool(
+        cfg.active_model.extra_params
+        and cfg.active_model.extra_params.get("reasoning", {}).get("enabled")
+    )
+
     messages: list[dict[str, str]] = [*history, {"role": "user", "content": prompt}]
-    rendered_prompt = render_messages(messages, add_generation_prompt=True)
+    rendered_prompt = render_messages(
+        messages,
+        add_generation_prompt=True,
+        enable_thinking=enable_thinking,
+    )
+
+    if callbacks and callbacks.on_rendered_prompt:
+        callbacks.on_rendered_prompt(rendered_prompt)
+
+    stream = callbacks is not None and callbacks.on_stream_chunk is not None
 
     last_error: Exception | None = None
     allow_insecure_tls_retry = True
@@ -592,22 +583,41 @@ def call_model(
                 api_key=api_key,
                 verify_ssl=verify_ssl,
             )
-            result = client.completions.create(  # pyright: ignore[reportCallIssue]
-                model=model_name,
-                prompt=rendered_prompt,
-                stop=_STOP_SEQUENCES,
-                **completion_kwargs,
-            )
-            content = result.choices[0].text or ""
-            if result.choices[0].finish_reason == "length":
+            if stream:
+                assert callbacks is not None and callbacks.on_stream_chunk is not None
+                content, finish_reason = _call_model_streaming(
+                    client=client,
+                    model_name=model_name,
+                    rendered_prompt=rendered_prompt,
+                    completion_kwargs=completion_kwargs,
+                    on_chunk=callbacks.on_stream_chunk,
+                )
+            else:
+                result = client.completions.create(  # pyright: ignore[reportCallIssue]
+                    model=model_name,
+                    prompt=rendered_prompt,
+                    stop=_STOP_SEQUENCES,
+                    **completion_kwargs,
+                )
+                content = result.choices[0].text or ""
+                finish_reason = result.choices[0].finish_reason
+
+            if enable_thinking:
+                content = _strip_thinking_block(content)
+
+            if finish_reason == "length":
                 raise OutputLengthExceededError(
                     f"Model {model_name} hit max_tokens limit. Response was truncated.",
                     truncated_response=content,
                 )
 
-            usage = result.usage
-            prompt_tokens = usage.prompt_tokens if usage else 0
-            completion_tokens = usage.completion_tokens if usage else 0
+            if not stream:
+                usage = result.usage  # pyright: ignore[reportPossiblyUnboundVariable]
+                prompt_tokens = usage.prompt_tokens if usage else 0
+                completion_tokens = usage.completion_tokens if usage else 0
+            else:
+                prompt_tokens = count_tokens(rendered_prompt)
+                completion_tokens = count_tokens(content)
 
             return ModelResult(
                 content=content,
@@ -645,6 +655,40 @@ def call_model(
     raise RuntimeError(f"Model request failed: {last_error}")
 
 
+def _call_model_streaming(
+    *,
+    client: openai.OpenAI,
+    model_name: str,
+    rendered_prompt: str,
+    completion_kwargs: dict[str, Any],
+    on_chunk: Callable[[str], None],
+) -> tuple[str, str | None]:
+    stream = client.completions.create(  # pyright: ignore[reportCallIssue]
+        model=model_name,
+        prompt=rendered_prompt,
+        stop=_STOP_SEQUENCES,
+        stream=True,
+        **completion_kwargs,
+    )
+    chunks: list[str] = []
+    finish_reason: str | None = None
+    for event in stream:
+        if not event.choices:  # pyright: ignore[reportUnknownMemberType]
+            continue
+
+        choice = event.choices[0]  # pyright: ignore[reportUnknownMemberType]
+        text = choice.text or ""  # pyright: ignore[reportUnknownMemberType,reportAttributeAccessIssue]
+        if text:
+            chunks.append(text)
+            on_chunk(text)
+
+        fr = choice.finish_reason  # pyright: ignore[reportUnknownMemberType,reportAttributeAccessIssue]
+        if fr:
+            finish_reason = str(fr)
+
+    return "".join(chunks), finish_reason
+
+
 _OUTPUT_LENGTH_ERROR_MSG = (
     "ERROR!! NONE of the actions you just requested were performed "
     "because you exceeded the maximum output length of 4096 tokens. "
@@ -653,16 +697,6 @@ _OUTPUT_LENGTH_ERROR_MSG = (
 )
 
 _MAX_QUERY_ATTEMPTS = 3
-_TIMEOUT_TEMPLATE = """Previous command:
-{command}
-
-The previous command timed out after {timeout_sec} seconds
-
-It is possible that the command is not yet finished executing. If that is the case, then do nothing. It is also possible that you have entered an interactive shell and should continue sending keystrokes as normal.
-
-Here is the current state of the terminal:
-
-{terminal_state}"""
 
 
 def _query_model(
@@ -673,6 +707,7 @@ def _query_model(
     api_key: str,
     original_instruction: str,
     terminal_state: str,
+    callbacks: AgentCallbacks | None = None,
 ) -> ModelResult:
     last_error: Exception | None = None
     current_prompt = prompt
@@ -684,6 +719,7 @@ def _query_model(
                 prompt=current_prompt,
                 history=history,
                 api_key=api_key,
+                callbacks=callbacks,
             )
             _append_turn_history(
                 history=history,
@@ -741,66 +777,19 @@ def _query_model(
     )
 
 
-def start_shell() -> pexpect.spawn[str]:
-    child = pexpect.spawn(
-        "/bin/bash",
-        ["--noprofile", "--norc", "-i"],
-        encoding="utf-8",
-        timeout=15,
-        echo=False,
-    )
-    child.sendline(f"export PS1='{PROMPT_SENTINEL}'")
-    child.expect_exact(PROMPT_SENTINEL)
-    return child
-
-
 def execute_command(
-    child: pexpect.spawn[str], cmd: Command, max_wait_seconds: float
-) -> tuple[str, bool]:
-    def _drain_available_output() -> str:
-        chunks: list[str] = []
-        while True:
-            try:
-                chunk = child.read_nonblocking(size=4096, timeout=0)
-            except pexpect.TIMEOUT:
-                break
-            except pexpect.EOF:
-                break
-
-            if not chunk:
-                break
-
-            chunks.append(chunk)
-
-        return "".join(chunks)
-
+    session: TmuxSession, cmd: Command, max_wait_seconds: float
+) -> None:
     effective_wait = min(max(cmd.duration, 0.0), max(max_wait_seconds, 0.1))
+
     if cmd.keystrokes == "":
         time.sleep(effective_wait)
-        raw_output = _drain_available_output()
-        return normalize_command_output(output=raw_output, command=cmd), False
+        return
 
-    if cmd.keystrokes.strip() == "C-c":
-        child.sendcontrol("c")
-    elif cmd.keystrokes.strip() == "C-d":
-        child.sendcontrol("d")
-    else:
-        keystrokes = cmd.keystrokes
-        if keystrokes.endswith("\n") and keystrokes.count("\n") == 1:
-            child.sendline(keystrokes.rstrip("\n"))
-        else:
-            child.send(keystrokes)
-
-    timeout = effective_wait
-    try:
-        child.expect_exact(PROMPT_SENTINEL, timeout=timeout)
-        raw_output = child.before or ""
-        timed_out = False
-    except pexpect.TIMEOUT:
-        raw_output = child.before or ""
-        timed_out = True
-
-    return normalize_command_output(output=raw_output, command=cmd), timed_out
+    session.send_keys(
+        keys=cmd.keystrokes,
+        min_timeout_sec=effective_wait,
+    )
 
 
 def completion_confirmation_message(terminal_output: str) -> str:
@@ -970,40 +959,26 @@ def _check_proactive_summarization(
 
 
 def _execute_turn_commands(
-    child: pexpect.spawn[str],
+    session: TmuxSession,
     parsed: ParsedResponse,
     max_wait_seconds: float,
     callbacks: AgentCallbacks,
 ) -> str:
-    combined_output_parts: list[str] = []
     for cmd in parsed.commands:
         normalized_duration = min(max(cmd.duration, 0.0), 60.0)
         command = Command(
             keystrokes=cmd.keystrokes,
             duration=normalized_duration,
         )
-        output, timed_out = execute_command(
-            child=child,
+        execute_command(
+            session=session,
             cmd=command,
             max_wait_seconds=max_wait_seconds,
         )
         if callbacks.on_command_output:
-            callbacks.on_command_output(command, output)
+            callbacks.on_command_output(command, "")
 
-        if timed_out:
-            timeout_sec = min(normalized_duration, max(max_wait_seconds, 0.1))
-            timeout_terminal_state = limit_output_length(output)
-            timeout_output = _TIMEOUT_TEMPLATE.format(
-                timeout_sec=timeout_sec,
-                command=command.keystrokes,
-                terminal_state=timeout_terminal_state,
-            )
-            return limit_output_length(timeout_output)
-
-        if output:
-            combined_output_parts.append(output)
-
-    terminal_output = "\n".join(combined_output_parts).strip()
+    terminal_output = session.get_incremental_output()
     return limit_output_length(terminal_output)
 
 
@@ -1014,11 +989,11 @@ def run_agent(
     callbacks: AgentCallbacks | None = None,
 ) -> int:
     callbacks = callbacks or AgentCallbacks()
-    child = start_shell()
+    session = start_session()
     history: list[dict[str, str]] = []
     pending_completion = False
     pending_final_message: str | None = None
-    terminal_state = "Current Terminal Screen:\n(empty)"
+    terminal_state = session.get_incremental_output()
     last_prompt_tokens = 0
     prompt = build_prompt(
         instruction=instruction,
@@ -1028,6 +1003,9 @@ def run_agent(
 
     try:
         for turn in range(1, cfg.max_turns + 1):
+            if not session.is_session_alive():
+                break
+
             summarized = _check_proactive_summarization(
                 call_model_fn=call_model,
                 cfg=cfg,
@@ -1048,6 +1026,7 @@ def run_agent(
                     api_key=api_key,
                     original_instruction=instruction,
                     terminal_state=terminal_state,
+                    callbacks=callbacks,
                 )
             except Exception as err:
                 if callbacks.on_issue:
@@ -1088,13 +1067,12 @@ def run_agent(
                 callbacks.on_reasoning(turn, parsed)
 
             terminal_output = _execute_turn_commands(
-                child=child,
+                session=session,
                 parsed=parsed,
                 max_wait_seconds=cfg.max_wait_seconds,
                 callbacks=callbacks,
             )
-            if terminal_output:
-                terminal_state = terminal_output
+            terminal_state = terminal_output
 
             if parsed.task_complete:
                 if parsed.final_message and parsed.final_message.strip():
@@ -1119,18 +1097,17 @@ def run_agent(
             else:
                 pending_completion = False
                 pending_final_message = None
-                effective_output = terminal_output if terminal_output else "[no output]"
                 if feedback:
                     prompt = (
                         f"Previous response had warnings:\n{feedback}\n\n"
-                        f"{effective_output}"
+                        f"{terminal_output}"
                     )
                 else:
-                    prompt = effective_output
+                    prompt = terminal_output
 
         if callbacks.on_stopped:
             callbacks.on_stopped(cfg.max_turns)
 
         return 1
     finally:
-        child.close(force=True)
+        session.close()

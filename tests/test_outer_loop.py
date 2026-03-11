@@ -473,6 +473,7 @@ class TestRenderPrompt(unittest.TestCase):
                 snapshot_root=Path("/run/snap"),
                 eval_summary_path=summary,
                 context_length=65536,
+                run_root=Path(tmp),
             )
             self.assertNotIn("{", result)
             self.assertIn("0.50", result)
@@ -501,6 +502,7 @@ class TestRenderPrompt(unittest.TestCase):
                 snapshot_root=Path("/s"),
                 eval_summary_path=summary,
                 context_length=0,
+                run_root=Path(tmp),
             )
             self.assertTrue(result.startswith("0.90|20|"))
 

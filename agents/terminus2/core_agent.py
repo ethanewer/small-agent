@@ -11,8 +11,8 @@ from typing import Any, Callable
 
 import httpx
 import openai
-import pexpect
 from agents.terminus2.final_summary import ModelResult, build_done_text
+from agents.terminus2.tmux_session import TmuxSession, start_session
 
 warnings.filterwarnings(
     action="ignore",
@@ -101,7 +101,6 @@ def _make_openai_client(
     )
 
 
-PROMPT_SENTINEL = "__TERMINUS2_PROMPT__> "
 MAX_OUTPUT_BYTES = 10_000
 SYSTEM_PROMPT = """You are an AI assistant tasked with solving command-line tasks in a Linux environment. You will be given a task description and the output from previously executed commands. Your goal is to solve the task by providing batches of shell commands.
 
@@ -519,40 +518,6 @@ def _normalized_final_message(value: Any) -> str | None:
     raise ValueError("'final_message' must be a string when provided")
 
 
-def clean_terminal_output(output: str) -> str:
-    ansi_escape = re.compile(r"\x1B\[[0-?]*[ -/]*[@-~]")
-    return ansi_escape.sub("", output).replace("\r", "")
-
-
-def normalize_command_output(output: str, command: Command) -> str:
-    cleaned = clean_terminal_output(output)
-    command_line = command.keystrokes.strip()
-    normalized_lines: list[str] = []
-
-    for line in cleaned.splitlines():
-        stripped = line.strip()
-        if not stripped:
-            continue
-
-        if stripped in {PROMPT_SENTINEL.strip(), "%", "'", '"'}:
-            continue
-
-        if stripped.startswith("%"):
-            continue
-
-        if command_line and stripped == command_line:
-            continue
-
-        if stripped.startswith(PROMPT_SENTINEL):
-            stripped = stripped.removeprefix(PROMPT_SENTINEL).strip()
-            if not stripped:
-                continue
-
-        normalized_lines.append(stripped)
-
-    return "\n".join(normalized_lines).strip()
-
-
 def build_prompt(instruction: str, terminal_state: str, max_wait_seconds: float) -> str:
     del max_wait_seconds
     return SYSTEM_PROMPT.format(instruction=instruction, terminal_state=terminal_state)
@@ -646,16 +611,6 @@ _OUTPUT_LENGTH_ERROR_MSG = (
 )
 
 _MAX_QUERY_ATTEMPTS = 3
-_TIMEOUT_TEMPLATE = """Previous command:
-{command}
-
-The previous command timed out after {timeout_sec} seconds
-
-It is possible that the command is not yet finished executing. If that is the case, then do nothing. It is also possible that you have entered an interactive shell and should continue sending keystrokes as normal.
-
-Here is the current state of the terminal:
-
-{terminal_state}"""
 
 
 def _query_model(
@@ -734,66 +689,19 @@ def _query_model(
     )
 
 
-def start_shell() -> pexpect.spawn[str]:
-    child = pexpect.spawn(
-        "/bin/bash",
-        ["--noprofile", "--norc", "-i"],
-        encoding="utf-8",
-        timeout=15,
-        echo=False,
-    )
-    child.sendline(f"export PS1='{PROMPT_SENTINEL}'")
-    child.expect_exact(PROMPT_SENTINEL)
-    return child
-
-
 def execute_command(
-    child: pexpect.spawn[str], cmd: Command, max_wait_seconds: float
-) -> tuple[str, bool]:
-    def _drain_available_output() -> str:
-        chunks: list[str] = []
-        while True:
-            try:
-                chunk = child.read_nonblocking(size=4096, timeout=0)
-            except pexpect.TIMEOUT:
-                break
-            except pexpect.EOF:
-                break
-
-            if not chunk:
-                break
-
-            chunks.append(chunk)
-
-        return "".join(chunks)
-
+    session: TmuxSession, cmd: Command, max_wait_seconds: float
+) -> None:
     effective_wait = min(max(cmd.duration, 0.0), max(max_wait_seconds, 0.1))
+
     if cmd.keystrokes == "":
         time.sleep(effective_wait)
-        raw_output = _drain_available_output()
-        return normalize_command_output(output=raw_output, command=cmd), False
+        return
 
-    if cmd.keystrokes.strip() == "C-c":
-        child.sendcontrol("c")
-    elif cmd.keystrokes.strip() == "C-d":
-        child.sendcontrol("d")
-    else:
-        keystrokes = cmd.keystrokes
-        if keystrokes.endswith("\n") and keystrokes.count("\n") == 1:
-            child.sendline(keystrokes.rstrip("\n"))
-        else:
-            child.send(keystrokes)
-
-    timeout = effective_wait
-    try:
-        child.expect_exact(PROMPT_SENTINEL, timeout=timeout)
-        raw_output = child.before or ""
-        timed_out = False
-    except pexpect.TIMEOUT:
-        raw_output = child.before or ""
-        timed_out = True
-
-    return normalize_command_output(output=raw_output, command=cmd), timed_out
+    session.send_keys(
+        keys=cmd.keystrokes,
+        min_timeout_sec=effective_wait,
+    )
 
 
 def completion_confirmation_message(terminal_output: str) -> str:
@@ -963,40 +871,26 @@ def _check_proactive_summarization(
 
 
 def _execute_turn_commands(
-    child: pexpect.spawn[str],
+    session: TmuxSession,
     parsed: ParsedResponse,
     max_wait_seconds: float,
     callbacks: AgentCallbacks,
 ) -> str:
-    combined_output_parts: list[str] = []
     for cmd in parsed.commands:
         normalized_duration = min(max(cmd.duration, 0.0), 60.0)
         command = Command(
             keystrokes=cmd.keystrokes,
             duration=normalized_duration,
         )
-        output, timed_out = execute_command(
-            child=child,
+        execute_command(
+            session=session,
             cmd=command,
             max_wait_seconds=max_wait_seconds,
         )
         if callbacks.on_command_output:
-            callbacks.on_command_output(command, output)
+            callbacks.on_command_output(command, "")
 
-        if timed_out:
-            timeout_sec = min(normalized_duration, max(max_wait_seconds, 0.1))
-            timeout_terminal_state = limit_output_length(output)
-            timeout_output = _TIMEOUT_TEMPLATE.format(
-                timeout_sec=timeout_sec,
-                command=command.keystrokes,
-                terminal_state=timeout_terminal_state,
-            )
-            return limit_output_length(timeout_output)
-
-        if output:
-            combined_output_parts.append(output)
-
-    terminal_output = "\n".join(combined_output_parts).strip()
+    terminal_output = session.get_incremental_output()
     return limit_output_length(terminal_output)
 
 
@@ -1007,11 +901,11 @@ def run_agent(
     callbacks: AgentCallbacks | None = None,
 ) -> int:
     callbacks = callbacks or AgentCallbacks()
-    child = start_shell()
+    session = start_session()
     history: list[dict[str, str]] = []
     pending_completion = False
     pending_final_message: str | None = None
-    terminal_state = "Current Terminal Screen:\n(empty)"
+    terminal_state = session.get_incremental_output()
     last_prompt_tokens = 0
     prompt = build_prompt(
         instruction=instruction,
@@ -1021,6 +915,9 @@ def run_agent(
 
     try:
         for turn in range(1, cfg.max_turns + 1):
+            if not session.is_session_alive():
+                break
+
             summarized = _check_proactive_summarization(
                 call_model_fn=call_model,
                 cfg=cfg,
@@ -1081,7 +978,7 @@ def run_agent(
                 callbacks.on_reasoning(turn, parsed)
 
             terminal_output = _execute_turn_commands(
-                child=child,
+                session=session,
                 parsed=parsed,
                 max_wait_seconds=cfg.max_wait_seconds,
                 callbacks=callbacks,
@@ -1124,4 +1021,4 @@ def run_agent(
 
         return 1
     finally:
-        child.close(force=True)
+        session.close()

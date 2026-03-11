@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 import textwrap
 
 from rich.console import Console
@@ -228,13 +229,16 @@ class Terminus2QwenCompletionAgent:
             final_message_enabled=final_message_enabled,
         )
 
+        use_stream_view = verbosity >= 1
+
         def on_reasoning(turn: int, parsed: ParsedResponse) -> None:
-            _render_response(
-                console=console,
-                turn=turn,
-                parsed=parsed,
-                verbosity=verbosity,
-            )
+            if not use_stream_view:
+                _render_response(
+                    console=console,
+                    turn=turn,
+                    parsed=parsed,
+                    verbosity=verbosity,
+                )
             if sink:
                 sink.emit(
                     event=AgentEvent(
@@ -245,12 +249,13 @@ class Terminus2QwenCompletionAgent:
                 )
 
         def on_command_output(command: Command, output: str) -> None:
-            _render_command_output(
-                console=console,
-                command=command,
-                output=output,
-                verbosity=verbosity,
-            )
+            if not use_stream_view:
+                _render_command_output(
+                    console=console,
+                    command=command,
+                    output=output,
+                    verbosity=verbosity,
+                )
             if sink:
                 sink.emit(
                     event=AgentEvent(
@@ -279,6 +284,10 @@ class Terminus2QwenCompletionAgent:
                 )
 
         def on_done(done_text: str) -> None:
+            if use_stream_view:
+                sys.stdout.write("\n")
+                sys.stdout.flush()
+
             console.print(Panel(done_text, title="Done", border_style="green"))
             if sink:
                 sink.emit(
@@ -289,6 +298,10 @@ class Terminus2QwenCompletionAgent:
                 )
 
         def on_stopped(stopped_max_turns: int) -> None:
+            if use_stream_view:
+                sys.stdout.write("\n")
+                sys.stdout.flush()
+
             console.print(
                 Panel(
                     f"Reached max turns ({stopped_max_turns}) without completion.",
@@ -304,12 +317,23 @@ class Terminus2QwenCompletionAgent:
                     )
                 )
 
+        def on_rendered_prompt(rendered: str) -> None:
+            sys.stdout.write("\033[2J\033[H")
+            sys.stdout.write(rendered)
+            sys.stdout.flush()
+
+        def on_stream_chunk(chunk: str) -> None:
+            sys.stdout.write(chunk)
+            sys.stdout.flush()
+
         callbacks = AgentCallbacks(
             on_reasoning=on_reasoning,
             on_command_output=on_command_output,
             on_issue=on_issue,
             on_done=on_done,
             on_stopped=on_stopped,
+            on_rendered_prompt=on_rendered_prompt if use_stream_view else None,
+            on_stream_chunk=on_stream_chunk if use_stream_view else None,
         )
         exit_code = run_agent(
             instruction=task.instruction,

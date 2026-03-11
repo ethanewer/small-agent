@@ -343,6 +343,7 @@ def resolve_model_key(
     config: LoadedConfig,
     cli_model_key: str | None,
     selected_model_key: str | None,
+    agent_key: str | None = None,
 ) -> str:
     if cli_model_key:
         cleaned = cli_model_key.strip()
@@ -356,6 +357,12 @@ def resolve_model_key(
 
     if selected_model_key:
         return selected_model_key
+
+    if agent_key:
+        agent_cfg = config.agents.get(agent_key, {})
+        agent_default = agent_cfg.get("default_model")
+        if isinstance(agent_default, str) and agent_default.strip() in config.models:
+            return agent_default.strip()
 
     return config.default_model
 
@@ -450,6 +457,7 @@ def main() -> None:
             config=loaded_config,
             cli_model_key=args.model,
             selected_model_key=selected_model_from_instruction,
+            agent_key=active_agent_key,
         )
     except ValueError as err:
         console.print(Panel(str(err), title="Config Error", border_style="red"))

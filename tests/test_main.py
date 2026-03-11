@@ -34,29 +34,35 @@ sys.modules["cli"] = cli
 cli_spec.loader.exec_module(cli)
 
 
-class FakeChild:
+class FakeSession:
     def __init__(self) -> None:
-        self.before = ""
-        self.send_calls: list[str] = []
-        self.sendline_calls: list[str] = []
-        self.sendcontrol_calls: list[str] = []
-        self.expect_calls: list[tuple[str, float]] = []
+        self.send_keys_calls: list[list[str]] = []
         self.closed = False
+        self._incremental_output = "Current Terminal Screen:\n(empty)"
 
-    def send(self, value: str) -> None:
-        self.send_calls.append(value)
+    def send_keys(
+        self,
+        keys: str | list[str],
+        *,
+        min_timeout_sec: float = 0.0,
+    ) -> None:
+        del min_timeout_sec
+        if isinstance(keys, str):
+            keys = [keys]
+        self.send_keys_calls.append(keys)
 
-    def sendline(self, value: str) -> None:
-        self.sendline_calls.append(value)
+    def get_incremental_output(self) -> str:
+        return self._incremental_output
 
-    def sendcontrol(self, value: str) -> None:
-        self.sendcontrol_calls.append(value)
+    def is_session_alive(self) -> bool:
+        return not self.closed
 
-    def expect_exact(self, sentinel: str, timeout: float) -> None:
-        self.expect_calls.append((sentinel, timeout))
+    def capture_pane(self, *, capture_entire: bool = False) -> str:
+        del capture_entire
+        return ""
 
-    def close(self, force: bool = False) -> None:
-        self.closed = force
+    def close(self) -> None:
+        self.closed = True
 
 
 def _as_any(value: object) -> Any:
@@ -202,32 +208,26 @@ class TestExecutionAndLoop(unittest.TestCase):
         self.assertTrue(limited.endswith("abcdef"))
 
     def test_execute_command_wait_keystrokes_only_sleeps(self) -> None:
-        child = FakeChild()
+        session = FakeSession()
         cmd = core_agent.Command(keystrokes="", duration=0.25)
         with patch("time.sleep") as sleep_mock:
-            output = core_agent.execute_command(
-                child=_as_any(child),
+            core_agent.execute_command(
+                session=_as_any(session),
                 cmd=cmd,
                 max_wait_seconds=60.0,
             )
-        self.assertEqual(output, "")
         sleep_mock.assert_called_once_with(0.25)
-        self.assertEqual(child.send_calls, [])
-        self.assertEqual(child.sendline_calls, [])
-        self.assertEqual(child.sendcontrol_calls, [])
+        self.assertEqual(session.send_keys_calls, [])
 
-    def test_execute_command_single_newline_uses_sendline(self) -> None:
-        child = FakeChild()
-        child.before = "ok"
+    def test_execute_command_single_newline_uses_send_keys(self) -> None:
+        session = FakeSession()
         cmd = core_agent.Command(keystrokes="echo hi\n", duration=0.1)
-        output = core_agent.execute_command(
-            child=_as_any(child),
+        core_agent.execute_command(
+            session=_as_any(session),
             cmd=cmd,
             max_wait_seconds=60.0,
         )
-        self.assertEqual(child.sendline_calls, ["echo hi"])
-        self.assertEqual(child.send_calls, [])
-        self.assertEqual(output, "ok")
+        self.assertEqual(session.send_keys_calls, [["echo hi\n"]])
 
     def test_run_agent_uses_terminus2_parse_error_feedback_and_confirmation(
         self,
@@ -237,7 +237,7 @@ class TestExecutionAndLoop(unittest.TestCase):
             active_model=core_agent.ModelConfig(model="x", api_base="y"),
             max_turns=6,
         )
-        child = FakeChild()
+        session = FakeSession()
         prompts: list[str] = []
         responses = iter(
             [
@@ -253,13 +253,17 @@ class TestExecutionAndLoop(unittest.TestCase):
             prompt: str,
             history: list[dict[str, str]],
             api_key: str,
-        ) -> str:
+        ) -> Any:
             del cfg, history, api_key
             prompts.append(prompt)
-            return next(responses)
+            return final_summary.ModelResult(
+                content=next(responses),
+                prompt_tokens=0,
+                completion_tokens=0,
+            )
 
         with (
-            patch.object(core_agent, "start_shell", return_value=child),
+            patch.object(core_agent, "start_session", return_value=session),
             patch.object(core_agent, "call_model", side_effect=fake_call_model),
         ):
             exit_code = core_agent.run_agent(
@@ -273,11 +277,12 @@ class TestExecutionAndLoop(unittest.TestCase):
         self.assertIn(
             "Please fix these issues and provide a proper JSON response.", prompts[1]
         )
+        incremental = session.get_incremental_output()
         self.assertEqual(
-            prompts[2], core_agent.completion_confirmation_message("[no new output]")
+            prompts[2], core_agent.completion_confirmation_message(incremental)
         )
         self.assertEqual(prompts[3], final_summary.post_run_summary_prompt())
-        self.assertTrue(child.closed)
+        self.assertTrue(session.closed)
 
     def test_run_agent_skips_final_summary_prompt_when_disabled(self) -> None:
         cfg = core_agent.Config(
@@ -286,7 +291,7 @@ class TestExecutionAndLoop(unittest.TestCase):
             max_turns=4,
             final_message_enabled=False,
         )
-        child = FakeChild()
+        session = FakeSession()
         prompts: list[str] = []
         done_messages: list[str] = []
         responses = iter(
@@ -301,16 +306,20 @@ class TestExecutionAndLoop(unittest.TestCase):
             prompt: str,
             history: list[dict[str, str]],
             api_key: str,
-        ) -> str:
+        ) -> Any:
             del cfg, history, api_key
             prompts.append(prompt)
-            return next(responses)
+            return final_summary.ModelResult(
+                content=next(responses),
+                prompt_tokens=0,
+                completion_tokens=0,
+            )
 
         callbacks = core_agent.AgentCallbacks(
             on_done=lambda done_text: done_messages.append(done_text)
         )
         with (
-            patch.object(core_agent, "start_shell", return_value=child),
+            patch.object(core_agent, "start_session", return_value=session),
             patch.object(core_agent, "call_model", side_effect=fake_call_model),
         ):
             exit_code = core_agent.run_agent(
@@ -322,11 +331,12 @@ class TestExecutionAndLoop(unittest.TestCase):
 
         self.assertEqual(exit_code, 0)
         self.assertEqual(len(prompts), 2)
+        incremental = session.get_incremental_output()
         self.assertEqual(
-            prompts[1], core_agent.completion_confirmation_message("[no new output]")
+            prompts[1], core_agent.completion_confirmation_message(incremental)
         )
         self.assertEqual(done_messages, [])
-        self.assertTrue(child.closed)
+        self.assertTrue(session.closed)
 
 
 class TestTlsHandling(unittest.TestCase):
