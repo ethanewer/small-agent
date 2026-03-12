@@ -29,7 +29,7 @@ def execute(
     try:
         content = path.read_text(errors="replace")
     except Exception:
-        content = None
+        content = ""
 
     snapshots[str(path)] = content
 

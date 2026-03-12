@@ -66,6 +66,8 @@ def execute(args: dict[str, Any], env: dict[str, Any]) -> str:
 
     raw_file_type = args.get("type")
     file_type = str(raw_file_type).strip() if raw_file_type is not None else None
+    if file_type == "":
+        file_type = None
 
     head_limit, head_limit_error = _coerce_optional_int(
         value=args.get("head_limit"),
@@ -94,6 +96,10 @@ def execute(args: dict[str, Any], env: dict[str, Any]) -> str:
         search_path = str(target)
     else:
         search_path = cwd
+
+    target_path = Path(search_path)
+    if not target_path.exists():
+        return f"Error: Path does not exist: {target_path}"
 
     cmd = ["rg"]
 

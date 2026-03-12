@@ -29,7 +29,7 @@ def execute(args: dict[str, Any], env: dict[str, Any]) -> str:
     try:
         response = input("Your response: ").strip()
     except (EOFError, KeyboardInterrupt):
-        response = ""
+        return "(No response provided)"
 
     if not response:
         return "(No response provided)"
@@ -41,6 +41,10 @@ def execute(args: dict[str, Any], env: dict[str, Any]) -> str:
             if 1 <= idx <= len(options):
                 selected.append(options[idx - 1])
         if selected:
-            return ", ".join(selected)
+            if multiple:
+                return f"User selected {len(selected)} option(s): {', '.join(selected)}"
+            return f"User selected: {selected[0]}"
 
+    if options and not multiple:
+        return f"User selected: {response}"
     return response

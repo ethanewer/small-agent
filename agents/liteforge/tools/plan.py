@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -17,13 +18,18 @@ def execute(args: dict[str, Any], env: dict[str, Any]) -> str:
         return "Error: content is required"
 
     cwd = Path(env.get("cwd", "."))
-    plans_dir = cwd / ".forge" / "plans"
+    plans_dir = cwd / "plans"
     plans_dir.mkdir(parents=True, exist_ok=True)
 
-    safe_name = plan_name.replace(" ", "-").replace("/", "-")
-    safe_version = version.replace(" ", "-").replace("/", "-")
-    filename = f"{safe_name}-{safe_version}.md"
+    current_date = datetime.now().strftime("%Y-%m-%d")
+    filename = f"{current_date}-{plan_name}-{version}.md"
     filepath = plans_dir / filename
+
+    if filepath.exists():
+        return (
+            "Error: Plan file already exists at "
+            f"{filepath}. Use a different plan name or version to avoid conflicts."
+        )
 
     filepath.write_text(content)
 

@@ -9,6 +9,7 @@ from agents.core.task import Task
 from agents.interface import AgentModelConfig, AgentRuntimeConfig
 from agents.liteforge.context import Context
 from agents.liteforge.runtime_agent import LiteforgeAgent
+from agents.liteforge.tools.registry import ALL_TOOL_NAMES, READONLY_TOOL_NAMES
 from agents.registry import available_agents
 
 
@@ -238,3 +239,153 @@ def test_liteforge_caps_configured_max_tokens_to_context_length(monkeypatch) -> 
     )
     assert result.success
     assert recorded["max_tokens"] == 8000
+
+
+def test_liteforge_plan_mode_replans_then_executes_with_shared_state(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    recorded: dict[str, list[object]] = {
+        "tool_name_sequences": [],
+        "context_ids": [],
+        "executor_ids": [],
+        "contexts": [],
+    }
+    responses = iter(["Add a rollback step", "yes"])
+
+    class FakeToolExecutor:
+        def __init__(self, *, env: dict[str, object]) -> None:
+            del env
+
+    class FakeOrchestrator:
+        def __init__(
+            self,
+            *,
+            context,
+            executor,
+            model,
+            tools,
+            max_requests_per_turn,
+            max_tool_failure_per_turn,
+            stream,
+        ) -> None:
+            del model
+            del max_requests_per_turn
+            del max_tool_failure_per_turn
+            del stream
+            tool_names = [tool["function"]["name"] for tool in tools]
+            recorded["tool_name_sequences"].append(tool_names)
+            recorded["context_ids"].append(id(context))
+            recorded["executor_ids"].append(id(executor))
+            recorded["contexts"].append(context)
+            self.context = context
+            self._context = context
+            self._tool_names = tool_names
+
+        def run(self) -> bool:
+            if self._tool_names == list(READONLY_TOOL_NAMES):
+                self._context.add_assistant_message(
+                    content="Plan drafted", tool_calls=None
+                )
+            else:
+                self._context.add_assistant_message(
+                    content="Plan executed fully",
+                    tool_calls=None,
+                )
+            return True
+
+    monkeypatch.setattr("agents.liteforge.runtime_agent.ToolExecutor", FakeToolExecutor)
+    monkeypatch.setattr("agents.liteforge.runtime_agent.Orchestrator", FakeOrchestrator)
+    monkeypatch.setattr("builtins.input", lambda _prompt="": next(responses))
+
+    cfg = _runtime_cfg(cwd=str(tmp_path))
+    cfg.agent_config["plan_mode"] = True
+    cfg.agent_config["readonly"] = True
+
+    result = LiteforgeAgent().run_task(
+        task=Task.from_instruction(
+            instruction="implement feature", task_id="lf-plan-1"
+        ),
+        cfg=cfg,
+        console=Console(record=True),
+        sink=None,
+    )
+
+    assert result.success
+    assert result.exit_code == 0
+    assert result.final_message == "Plan executed fully"
+    assert recorded["tool_name_sequences"] == [
+        list(READONLY_TOOL_NAMES),
+        list(READONLY_TOOL_NAMES),
+        list(ALL_TOOL_NAMES),
+    ]
+    assert len(set(recorded["context_ids"])) == 1
+    assert len(set(recorded["executor_ids"])) == 1
+
+    final_context = recorded["contexts"][-1]
+    assert isinstance(final_context, Context)
+    user_texts = [
+        msg.content or "" for msg in final_context.messages if msg.role == "user"
+    ]
+    assert any(
+        "<feedback>Add a rollback step</feedback>" in text for text in user_texts
+    )
+    assert any(
+        "The user has approved the plan. Now execute it completely." in text
+        for text in user_texts
+    )
+
+
+def test_liteforge_plan_mode_rejects_without_execution_phase(monkeypatch) -> None:
+    recorded_tool_name_sequences: list[list[str]] = []
+    responses = iter(["no"])
+
+    class FakeToolExecutor:
+        def __init__(self, *, env: dict[str, object]) -> None:
+            del env
+
+    class FakeOrchestrator:
+        def __init__(
+            self,
+            *,
+            context,
+            executor,
+            model,
+            tools,
+            max_requests_per_turn,
+            max_tool_failure_per_turn,
+            stream,
+        ) -> None:
+            del executor
+            del model
+            del max_requests_per_turn
+            del max_tool_failure_per_turn
+            del stream
+            tool_names = [tool["function"]["name"] for tool in tools]
+            recorded_tool_name_sequences.append(tool_names)
+            self.context = context
+            self._context = context
+
+        def run(self) -> bool:
+            self._context.add_assistant_message(content="Plan drafted", tool_calls=None)
+            return True
+
+    monkeypatch.setattr("agents.liteforge.runtime_agent.ToolExecutor", FakeToolExecutor)
+    monkeypatch.setattr("agents.liteforge.runtime_agent.Orchestrator", FakeOrchestrator)
+    monkeypatch.setattr("builtins.input", lambda _prompt="": next(responses))
+
+    cfg = _runtime_cfg()
+    cfg.agent_config["plan_mode"] = True
+    cfg.agent_config["readonly"] = True
+
+    result = LiteforgeAgent().run_task(
+        task=Task.from_instruction(instruction="plan only", task_id="lf-plan-2"),
+        cfg=cfg,
+        console=Console(record=True),
+        sink=None,
+    )
+
+    assert result.success
+    assert result.exit_code == 0
+    assert result.final_message == "Plan drafted"
+    assert recorded_tool_name_sequences == [list(READONLY_TOOL_NAMES)]

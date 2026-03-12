@@ -29,33 +29,34 @@ def execute(
     except Exception as e:
         return f"Error: Failed to read file {path}: {e}"
 
+    line_ending = "\r\n" if "\r\n" in content else "\n"
+    normalized_old = old_string.replace("\r\n", "\n").replace("\n", line_ending)
+    normalized_new = new_string.replace("\r\n", "\n").replace("\n", line_ending)
+
     if not old_string:
         return "Error: old_string cannot be empty"
 
-    if old_string == new_string:
-        return "Error: old_string and new_string must be different"
-
-    count = content.count(old_string)
-
-    if count == 0:
-        return (
-            f"Error: old_string not found in {path}. "
-            "Make sure the text matches exactly, including whitespace and indentation."
-        )
-
-    if count > 1 and not replace_all:
-        return (
-            f"Error: old_string found {count} times in {path}. "
-            "Provide more context to make it unique, or use replace_all=true."
-        )
-
     snapshots[str(path)] = content
 
+    count = content.count(normalized_old)
+    if count == 0:
+        return (
+            "Error: Could not find match for search text: "
+            f"'{old_string}'. File may have changed externally, consider reading the file again."
+        )
+
+    if not replace_all and count > 1:
+        return (
+            "Error: Multiple matches found for search text: "
+            f"'{old_string}'. Either provide a more specific search pattern "
+            "or use replace_all to replace all occurrences."
+        )
+
     if replace_all:
-        new_content = content.replace(old_string, new_string)
+        new_content = content.replace(normalized_old, normalized_new)
         path.write_text(new_content)
         return f"Replaced {count} occurrence(s) in {path}"
-    else:
-        new_content = content.replace(old_string, new_string, 1)
-        path.write_text(new_content)
-        return f"Replaced 1 occurrence in {path}"
+
+    new_content = content.replace(normalized_old, normalized_new, 1)
+    path.write_text(new_content)
+    return f"Replaced 1 occurrence in {path}"

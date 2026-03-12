@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any
 
@@ -21,20 +22,25 @@ def execute(
         path = Path(env.get("cwd", ".")) / path
 
     if path.exists() and not overwrite:
-        existing = path.read_text(errors="replace")
         return (
-            f"Error: File already exists at {path}. "
-            f"Set overwrite=true to overwrite. Current content:\n{existing}"
+            "Error: Cannot overwrite existing file: overwrite flag not set. "
+            f"File already exists at {path}"
         )
 
     snapshots[str(path)] = path.read_text(errors="replace") if path.exists() else None
 
     path.parent.mkdir(parents=True, exist_ok=True)
 
-    if content and not content.endswith("\n"):
-        content += "\n"
+    target_line_ending = "\n"
+    if path.exists() and overwrite:
+        existing = path.read_text(errors="replace")
+        target_line_ending = "\r\n" if "\r\n" in existing else "\n"
+    elif os.name == "nt":
+        target_line_ending = "\r\n"
 
-    path.write_text(content)
+    normalized_content = content.replace("\r\n", "\n").replace("\n", target_line_ending)
+
+    path.write_text(normalized_content)
 
     action = "Updated" if snapshots.get(str(path)) is not None else "Created"
     return f"{action} file: {path}"

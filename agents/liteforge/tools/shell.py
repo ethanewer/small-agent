@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import re
 import subprocess
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -18,15 +19,17 @@ def _strip_ansi(text: str) -> str:
     return ANSI_ESCAPE_RE.sub("", text)
 
 
-def _truncate_output(text: str, label: str) -> str:
+def _truncate_output(text: str, label: str) -> tuple[str, bool]:
     lines = text.split("\n")
     truncated_lines = []
+    line_truncated = False
     for line in lines:
         if len(line) > STDOUT_MAX_LINE_LENGTH:
             truncated_lines.append(
                 line[:STDOUT_MAX_LINE_LENGTH]
                 + f"... [truncated, line exceeds {STDOUT_MAX_LINE_LENGTH} chars]"
             )
+            line_truncated = True
         else:
             truncated_lines.append(line)
 
@@ -36,10 +39,15 @@ def _truncate_output(text: str, label: str) -> str:
         prefix = truncated_lines[:STDOUT_MAX_PREFIX_LENGTH]
         suffix = truncated_lines[-STDOUT_MAX_SUFFIX_LENGTH:]
         omitted = total - max_lines
-        return "\n".join(
-            prefix + [f"\n... [{omitted} lines omitted from {label}] ...\n"] + suffix
+        return (
+            "\n".join(
+                prefix
+                + [f"\n... [{omitted} lines omitted from {label}] ...\n"]
+                + suffix
+            ),
+            True,
         )
-    return "\n".join(truncated_lines)
+    return "\n".join(truncated_lines), line_truncated
 
 
 def execute(args: dict[str, Any], env: dict[str, Any]) -> str:
@@ -47,9 +55,10 @@ def execute(args: dict[str, Any], env: dict[str, Any]) -> str:
     cwd = args.get("cwd")
     keep_ansi = args.get("keep_ansi", False)
     env_vars = args.get("env")
+    _description = args.get("description")
 
     if not command or not command.strip():
-        return "Error: command is required and cannot be empty"
+        return "Error: Command string is empty or contains only whitespace"
 
     work_dir = cwd or str(env.get("cwd", "."))
     work_path = Path(work_dir)
@@ -91,14 +100,40 @@ def execute(args: dict[str, Any], env: dict[str, Any]) -> str:
         stdout = _strip_ansi(stdout)
         stderr = _strip_ansi(stderr)
 
-    stdout = _truncate_output(stdout, "stdout")
-    stderr = _truncate_output(stderr, "stderr")
+    stdout, stdout_truncated = _truncate_output(stdout, "stdout")
+    stderr, stderr_truncated = _truncate_output(stderr, "stderr")
 
     parts = []
     if stdout.strip():
         parts.append(stdout.rstrip())
     if stderr.strip():
         parts.append(f"STDERR:\n{stderr.rstrip()}")
+
+    if stdout_truncated:
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                delete=False,
+                prefix="forge_shell_stdout_",
+                suffix=".txt",
+            ) as tmp:
+                tmp.write(result.stdout)
+                parts.append(f"STDOUT full output: {tmp.name}")
+        except Exception:
+            pass
+
+    if stderr_truncated:
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                delete=False,
+                prefix="forge_shell_stderr_",
+                suffix=".txt",
+            ) as tmp:
+                tmp.write(result.stderr)
+                parts.append(f"STDERR full output: {tmp.name}")
+        except Exception:
+            pass
 
     exit_info = f"Exit code: {result.returncode}"
     parts.append(exit_info)

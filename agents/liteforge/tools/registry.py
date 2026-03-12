@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any
 
@@ -20,7 +21,7 @@ TOOL_DESCRIPTION_FILES = {
     "todo_read": "todo_read.md",
 }
 
-TOOL_DESCRIPTIONS_DIR = (
+_DEFAULT_REPO_DESCRIPTIONS_DIR = (
     Path(__file__).parent.parent.parent.parent
     / "forge-repo"
     / "crates"
@@ -31,28 +32,60 @@ TOOL_DESCRIPTIONS_DIR = (
 )
 
 
-def _nullable(schema: dict) -> dict:
+def _resolve_descriptions_dir() -> Path:
+    env_repo = os.environ.get("FORGE_REPO_PATH", "").strip()
+    candidates = []
+    if env_repo:
+        candidates.append(
+            Path(env_repo)
+            / "crates"
+            / "forge_domain"
+            / "src"
+            / "tools"
+            / "descriptions"
+        )
+    candidates.append(_DEFAULT_REPO_DESCRIPTIONS_DIR)
+    # Local machine canonical clone location.
+    candidates.append(
+        Path("/Users/ethanewer/mycode/forge-repo")
+        / "crates"
+        / "forge_domain"
+        / "src"
+        / "tools"
+        / "descriptions"
+    )
+
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return _DEFAULT_REPO_DESCRIPTIONS_DIR
+
+
+TOOL_DESCRIPTIONS_DIR = _resolve_descriptions_dir()
+
+
+def _nullable(schema: dict[str, Any]) -> dict[str, Any]:
     """Wrap a schema in anyOf with null, matching Rust schemars AddNullable."""
     return {"anyOf": [schema, {"type": "null"}]}
 
 
-def _int_or_null(fmt: str = "int32") -> dict:
+def _int_or_null(fmt: str = "int32") -> dict[str, Any]:
     return _nullable({"type": "integer", "format": fmt})
 
 
-def _bool_or_null() -> dict:
+def _bool_or_null() -> dict[str, Any]:
     return _nullable({"type": "boolean"})
 
 
-def _string_or_null() -> dict:
+def _string_or_null() -> dict[str, Any]:
     return _nullable({"type": "string"})
 
 
-def _string_array_or_null() -> dict:
+def _string_array_or_null() -> dict[str, Any]:
     return _nullable({"type": "array", "items": {"type": "string"}})
 
 
-def get_tool_schemas() -> dict[str, dict]:
+def get_tool_schemas() -> dict[str, dict[str, Any]]:
     """Return JSON Schema for each tool's parameters, matching catalog.rs."""
     return {
         "read": {
@@ -64,14 +97,14 @@ def get_tool_schemas() -> dict[str, dict]:
                     "description": "The absolute path to the file to read",
                 },
                 "start_line": {
-                    **_int_or_null("uint32"),
+                    **_int_or_null("int32"),
                     "description": (
                         "The line number to start reading from starting from 1 not 0. "
                         "Only provide if the file is too large to read at once"
                     ),
                 },
                 "end_line": {
-                    **_int_or_null("uint32"),
+                    **_int_or_null("int32"),
                     "description": (
                         "The line number to stop reading at (inclusive). "
                         "Only provide if the file is too large to read at once"
@@ -86,8 +119,7 @@ def get_tool_schemas() -> dict[str, dict]:
                     ),
                 },
             },
-            "required": ["file_path", "start_line", "end_line", "show_line_numbers"],
-            "additionalProperties": False,
+            "required": ["file_path"],
         },
         "write": {
             "type": "object",
@@ -111,8 +143,7 @@ def get_tool_schemas() -> dict[str, dict]:
                     ),
                 },
             },
-            "required": ["file_path", "content", "overwrite"],
-            "additionalProperties": False,
+            "required": ["file_path", "content"],
         },
         "patch": {
             "type": "object",
@@ -136,8 +167,7 @@ def get_tool_schemas() -> dict[str, dict]:
                     "description": "Replace all occurrences of old_string (default false)",
                 },
             },
-            "required": ["file_path", "old_string", "new_string", "replace_all"],
-            "additionalProperties": False,
+            "required": ["file_path", "old_string", "new_string"],
         },
         "fs_search": {
             "type": "object",
@@ -159,12 +189,9 @@ def get_tool_schemas() -> dict[str, dict]:
                     "description": 'Glob pattern to filter files (e.g. "*.js", "*.{ts,tsx}") - maps to rg --glob',
                 },
                 "output_mode": {
-                    **_nullable(
-                        {
-                            "type": "string",
-                            "enum": ["content", "files_with_matches", "count"],
-                        }
-                    ),
+                    "type": ["string", "null"],
+                    "enum": ["content", "files_with_matches", "count", None],
+                    "nullable": True,
                     "description": (
                         'Output mode: "content" shows matching lines (supports -A/-B/-C context, '
                         '-n line numbers, head_limit), "files_with_matches" shows file paths '
@@ -174,6 +201,7 @@ def get_tool_schemas() -> dict[str, dict]:
                 },
                 "-B": {
                     **_int_or_null("uint32"),
+                    "minimum": 0,
                     "description": (
                         "Number of lines to show before each match (rg -B). "
                         'Requires output_mode: "content", ignored otherwise.'
@@ -181,6 +209,7 @@ def get_tool_schemas() -> dict[str, dict]:
                 },
                 "-A": {
                     **_int_or_null("uint32"),
+                    "minimum": 0,
                     "description": (
                         "Number of lines to show after each match (rg -A). "
                         'Requires output_mode: "content", ignored otherwise.'
@@ -188,6 +217,7 @@ def get_tool_schemas() -> dict[str, dict]:
                 },
                 "-C": {
                     **_int_or_null("uint32"),
+                    "minimum": 0,
                     "description": (
                         "Number of lines to show before and after each match (rg -C). "
                         'Requires output_mode: "content", ignored otherwise.'
@@ -213,6 +243,7 @@ def get_tool_schemas() -> dict[str, dict]:
                 },
                 "head_limit": {
                     **_int_or_null("uint32"),
+                    "minimum": 0,
                     "description": (
                         'Limit output to first N lines/entries, equivalent to "| head -N". '
                         "Works across all output modes: content (limits output lines), "
@@ -222,6 +253,7 @@ def get_tool_schemas() -> dict[str, dict]:
                 },
                 "offset": {
                     **_int_or_null("uint32"),
+                    "minimum": 0,
                     "description": "Skip first N lines/entries before applying head_limit",
                 },
                 "multiline": {
@@ -232,22 +264,7 @@ def get_tool_schemas() -> dict[str, dict]:
                     ),
                 },
             },
-            "required": [
-                "pattern",
-                "path",
-                "glob",
-                "output_mode",
-                "-B",
-                "-A",
-                "-C",
-                "-n",
-                "-i",
-                "type",
-                "head_limit",
-                "offset",
-                "multiline",
-            ],
-            "additionalProperties": False,
+            "required": ["pattern"],
         },
         "shell": {
             "type": "object",
@@ -266,7 +283,6 @@ def get_tool_schemas() -> dict[str, dict]:
                 },
                 "keep_ansi": {
                     "type": "boolean",
-                    "default": False,
                     "description": (
                         "Whether to preserve ANSI escape codes in the output. "
                         "If true, ANSI escape codes will be preserved in the output. "
@@ -285,16 +301,18 @@ def get_tool_schemas() -> dict[str, dict]:
                     "description": (
                         "Clear, concise description of what this command does. Recommended to be "
                         "5-10 words for simple commands. For complex commands with pipes or "
-                        "multiple operations, provide more context."
+                        'multiple operations, provide more context. Examples: "Lists files in '
+                        'current directory", "Installs package dependencies", "Compiles Rust '
+                        'project with release optimizations".'
                     ),
                 },
             },
-            "required": ["command", "cwd", "keep_ansi", "env", "description"],
-            "additionalProperties": False,
+            "required": ["command"],
         },
         "fetch": {
             "type": "object",
             "title": "NetFetch",
+            "description": "Input type for the net fetch tool",
             "properties": {
                 "url": {
                     "type": "string",
@@ -305,8 +323,7 @@ def get_tool_schemas() -> dict[str, dict]:
                     "description": "Get raw content without any markdown conversion (default: false)",
                 },
             },
-            "required": ["url", "raw"],
-            "additionalProperties": False,
+            "required": ["url"],
         },
         "remove": {
             "type": "object",
@@ -318,7 +335,6 @@ def get_tool_schemas() -> dict[str, dict]:
                 },
             },
             "required": ["path"],
-            "additionalProperties": False,
         },
         "undo": {
             "type": "object",
@@ -330,7 +346,6 @@ def get_tool_schemas() -> dict[str, dict]:
                 },
             },
             "required": ["path"],
-            "additionalProperties": False,
         },
         "followup": {
             "type": "object",
@@ -368,16 +383,7 @@ def get_tool_schemas() -> dict[str, dict]:
                     "description": "Fifth option to choose from",
                 },
             },
-            "required": [
-                "question",
-                "multiple",
-                "option1",
-                "option2",
-                "option3",
-                "option4",
-                "option5",
-            ],
-            "additionalProperties": False,
+            "required": ["question"],
         },
         "plan": {
             "type": "object",
@@ -400,7 +406,6 @@ def get_tool_schemas() -> dict[str, dict]:
                 },
             },
             "required": ["plan_name", "version", "content"],
-            "additionalProperties": False,
         },
         "todo_write": {
             "type": "object",
@@ -411,7 +416,7 @@ def get_tool_schemas() -> dict[str, dict]:
                     "description": "Array of todo items to create or update",
                     "items": {
                         "type": "object",
-                        "title": "Todo",
+                        "description": "A todo item",
                         "properties": {
                             "id": {
                                 "type": "string",
@@ -428,19 +433,16 @@ def get_tool_schemas() -> dict[str, dict]:
                             },
                         },
                         "required": ["id", "content", "status"],
-                        "additionalProperties": False,
                     },
                 },
             },
             "required": ["todos"],
-            "additionalProperties": False,
         },
         "todo_read": {
             "type": "object",
             "title": "TodoRead",
             "properties": {},
             "required": [],
-            "additionalProperties": False,
         },
     }
 
@@ -467,7 +469,7 @@ def _render_simple_handlebars(template: str, ctx: dict[str, Any]) -> str:
     """Minimal Handlebars-like variable substitution for tool descriptions."""
     import re
 
-    def replace_var(m: re.Match) -> str:
+    def replace_var(m: re.Match[str]) -> str:
         path = m.group(1).strip()
         parts = path.split(".")
         val: Any = ctx
@@ -493,7 +495,7 @@ def _render_simple_handlebars(template: str, ctx: dict[str, Any]) -> str:
 def build_tool_definitions(
     tool_names: list[str],
     description_context: dict[str, Any] | None = None,
-) -> list[dict]:
+) -> list[dict[str, Any]]:
     """Build OpenAI-format tool definitions for the given tool names."""
     schemas = get_tool_schemas()
     definitions = []

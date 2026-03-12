@@ -6,6 +6,7 @@ from typing import Any
 
 MAX_READ_SIZE = 2000
 MAX_LINE_LENGTH = 2000
+MAX_FILE_SIZE = 262144
 MAX_IMAGE_SIZE = 262144
 
 
@@ -34,6 +35,36 @@ def _coerce_bool(*, value: Any) -> bool:
 
 
 def _detect_mime(path: Path, content: bytes) -> str:
+    # Magic byte detection first, matching forge-repo behavior.
+    if content.startswith(b"%PDF"):
+        return "application/pdf"
+    if content.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if content.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if content.startswith((b"GIF87a", b"GIF89a")):
+        return "image/gif"
+    if content.startswith(b"RIFF") and b"WEBP" in content[:32]:
+        return "image/webp"
+
+    ext = path.suffix.lower()
+    if ext in {
+        ".txt",
+        ".md",
+        ".rs",
+        ".toml",
+        ".yaml",
+        ".yml",
+        ".json",
+        ".js",
+        ".ts",
+        ".py",
+        ".sh",
+    }:
+        return "text/plain"
+    if ext == ".ipynb":
+        return "application/json"
+
     guess, _ = mimetypes.guess_type(str(path))
     if guess:
         return guess
@@ -46,8 +77,26 @@ def _is_visual(mime: str) -> bool:
 
 def _truncate_line(line: str, max_len: int = MAX_LINE_LENGTH) -> str:
     if len(line) > max_len:
-        return line[:max_len] + f"... [truncated, line exceeds {max_len} chars]"
+        return "".join(ch for idx, ch in enumerate(line) if idx < max_len) + (
+            f"... [truncated, line exceeds {max_len} chars]"
+        )
     return line
+
+
+def _resolve_range(
+    *,
+    start_line: int | None,
+    end_line: int | None,
+    max_size: int,
+) -> tuple[int, int]:
+    if max_size <= 0:
+        return 1, 1
+    s0 = max(start_line or 1, 1)
+    e0 = end_line if end_line is not None else s0 + max_size - 1
+    start = max(min(s0, e0), 1)
+    end = max(s0, e0)
+    end = min(end, start + max_size - 1)
+    return start, end
 
 
 def execute(args: dict[str, Any], env: dict[str, Any]) -> str:
@@ -89,14 +138,32 @@ def execute(args: dict[str, Any], env: dict[str, Any]) -> str:
     except Exception as e:
         return f"Error: Failed to read file {path}: {e}"
 
+    max_file_size = _coerce_optional_int(
+        value=env.get("max_file_size"), name="max_file_size"
+    )[0]
+    if max_file_size is None or max_file_size <= 0:
+        max_file_size = MAX_FILE_SIZE
+    max_image_size = _coerce_optional_int(
+        value=env.get("max_image_size"), name="max_image_size"
+    )[0]
+    if max_image_size is None or max_image_size <= 0:
+        max_image_size = MAX_IMAGE_SIZE
+
+    initial_size_limit = max(max_file_size, max_image_size)
+    if len(raw) > initial_size_limit:
+        return (
+            f"Error: File size ({len(raw)} bytes) exceeds the maximum allowed size "
+            f"of {initial_size_limit} bytes"
+        )
+
     mime = _detect_mime(path, raw)
 
     if _is_visual(mime):
         size = len(raw)
-        if size > MAX_IMAGE_SIZE:
+        if size > max_image_size:
             return (
                 f"Error: File size ({size} bytes) exceeds the maximum allowed size "
-                f"of {MAX_IMAGE_SIZE} bytes"
+                f"of {max_image_size} bytes"
             )
         import base64
 
@@ -108,10 +175,7 @@ def execute(args: dict[str, Any], env: dict[str, Any]) -> str:
     except UnicodeDecodeError:
         return f"Error: Failed to read file as UTF-8 from {path}"
 
-    lines = text.split("\n")
-    if lines and lines[-1] == "":
-        lines = lines[:-1]
-
+    lines = text.splitlines()
     total_lines = len(lines)
 
     max_read = _coerce_optional_int(
@@ -120,23 +184,22 @@ def execute(args: dict[str, Any], env: dict[str, Any]) -> str:
     if max_read is None or max_read <= 0:
         max_read = MAX_READ_SIZE
 
-    if start_line is None and end_line is None:
-        sl = 1
-        el = min(total_lines, max_read)
-    else:
-        sl = max(1, start_line or 1)
-        el = min(total_lines, end_line or total_lines)
-
     if total_lines == 0:
-        return f"[File is empty: {path}]"
+        return ""
 
-    sl = max(1, min(sl, total_lines))
-    el = max(sl, min(el, total_lines))
+    resolved_start, resolved_end = _resolve_range(
+        start_line=start_line,
+        end_line=end_line,
+        max_size=max_read,
+    )
 
-    selected = lines[sl - 1 : el]
+    start_pos = min(max(resolved_start - 1, 0), total_lines - 1)
+    end_pos = min(max(resolved_end - 1, 0), total_lines - 1)
+
+    selected = lines[start_pos : end_pos + 1]
 
     output_lines = []
-    for i, line in enumerate(selected, start=sl):
+    for i, line in enumerate(selected, start=start_pos + 1):
         truncated = _truncate_line(line)
         if show_line_numbers:
             output_lines.append(f"{i}:{truncated}")
@@ -145,7 +208,9 @@ def execute(args: dict[str, Any], env: dict[str, Any]) -> str:
 
     result = "\n".join(output_lines)
 
-    if el < total_lines:
-        result += f"\n\n[Showing lines {sl}-{el} of {total_lines} total]"
+    if end_pos + 1 < total_lines:
+        result += (
+            f"\n\n[Showing lines {start_pos + 1}-{end_pos + 1} of {total_lines} total]"
+        )
 
     return result

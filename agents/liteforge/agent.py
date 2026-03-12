@@ -25,7 +25,6 @@ TOOL_NAME_MAP = {
     "plan": "plan",
     "todo_write": "todo_write",
     "todo_read": "todo_read",
-    "sem_search": "sem_search",
 }
 
 
@@ -46,14 +45,18 @@ def get_environment() -> dict[str, Any]:
         "home": str(Path.home()),
         "max_read_size": 2000,
         "max_line_length": 2000,
+        "max_file_size": 262144,
         "max_image_size": 262144,
         "maxReadSize": "2000",
         "maxLineLength": "2000",
+        "maxFileSize": "262144",
         "maxImageSize": "262144",
         "stdoutMaxPrefixLength": "200",
         "stdoutMaxSuffixLength": "200",
         "stdoutMaxLineLength": "2000",
         "fetch_truncation_limit": 40000,
+        "sem_search_limit": 200,
+        "sem_search_top_k": 20,
     }
 
 

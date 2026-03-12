@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import types
+from datetime import datetime
 
 import httpx
 import pytest
@@ -51,8 +52,8 @@ def test_write_read_patch_remove_undo_roundtrip(tool_env: dict[str, object]) -> 
     patched = fs_patch.execute(
         args={
             "file_path": "notes.txt",
-            "old_string": "hello world\n",
-            "new_string": "goodbye world\n",
+            "old_string": "hello world",
+            "new_string": "goodbye world",
         },
         env=tool_env,
         snapshots=snapshots,
@@ -172,6 +173,7 @@ def test_search_invalid_head_limit_returns_error_without_exception(
 
 
 def test_plan_tool_creates_plan_file(tool_env: dict[str, object]) -> None:
+    today = datetime.now().strftime("%Y-%m-%d")
     output = plan.execute(
         args={
             "plan_name": "sample plan",
@@ -182,7 +184,7 @@ def test_plan_tool_creates_plan_file(tool_env: dict[str, object]) -> None:
     )
     assert "Plan created:" in output
 
-    plan_path = Path(str(tool_env["cwd"])) / ".forge" / "plans" / "sample-plan-v1.md"
+    plan_path = Path(str(tool_env["cwd"])) / "plans" / f"{today}-sample plan-v1.md"
     assert plan_path.exists()
     assert "- step one" in plan_path.read_text()
 
@@ -226,6 +228,10 @@ def test_fetch_converts_html(
             return False
 
         def get(self, url: str) -> FakeResponse:
+            if url == "https://example.com/robots.txt":
+                r = FakeResponse()
+                r.text = ""
+                return r
             assert url == "https://example.com"
             return FakeResponse()
 
@@ -266,7 +272,7 @@ def test_followup_maps_numeric_choice(
         },
         env=tool_env,
     )
-    assert output == "beta"
+    assert output == "User selected: beta"
 
 
 def test_executor_enforces_read_before_patch(tool_env: dict[str, object]) -> None:
