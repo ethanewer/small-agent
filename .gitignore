@@ -37,3 +37,5 @@ agent_evolve/updates
 
 .env
 *.out
+*.err
+*.tar
