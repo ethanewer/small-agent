@@ -647,6 +647,51 @@ class TestPlanModeFlag(unittest.TestCase):
         self.assertEqual(cfg.agent_config.get("plan_mode"), True)
         self.assertEqual(cfg.agent_config.get("readonly"), True)
 
+    def test_main_rejects_plan_mode_for_non_liteforge_agent(self) -> None:
+        loaded = cli.LoadedConfig(
+            default_model="a",
+            models={
+                "a": cli.ConfigModelEntry(
+                    model="openai/gpt-4o-mini",
+                    api_base="https://api.openai.com/v1",
+                    api_key="literal-key",
+                    temperature=0.0,
+                )
+            },
+            default_agent="terminus-2",
+            agents={"terminus-2": {}},
+            verbosity=0,
+            max_turns=5,
+            max_wait_seconds=10.0,
+        )
+
+        with (
+            patch.object(cli, "load_config", return_value=loaded),
+            patch.object(
+                cli, "available_agents", return_value={"terminus-2": object()}
+            ),
+            patch.object(cli, "get_agent", return_value=object()),
+            patch.object(cli, "run_agent_task_with_fallback") as mocked_runner,
+            patch.object(
+                sys,
+                "argv",
+                [
+                    "cli.py",
+                    "--agent",
+                    "terminus-2",
+                    "--model",
+                    "a",
+                    "--plan",
+                    "draft a plan",
+                ],
+            ),
+        ):
+            with self.assertRaises(SystemExit) as ex:
+                cli.main()
+
+        self.assertEqual(ex.exception.code, 1)
+        mocked_runner.assert_not_called()
+
 
 class TestAgentSelection(unittest.TestCase):
     def _loaded_config(self) -> Any:

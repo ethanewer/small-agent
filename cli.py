@@ -469,6 +469,19 @@ def main() -> None:
         console.print(Panel(str(err), title="Config Error", border_style="red"))
         raise SystemExit(1) from err
 
+    if args.plan and active_agent_key != "liteforge":
+        console.print(
+            Panel(
+                (
+                    "Plan mode is not supported for this agent. "
+                    "Use --agent liteforge to enable --plan."
+                ),
+                title="Plan Mode Error",
+                border_style="red",
+            )
+        )
+        raise SystemExit(1)
+
     model_entry = loaded_config.models[active_model_key]
     api_key = resolve_api_key(config_api_key=model_entry.api_key)
     if not api_key:
