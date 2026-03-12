@@ -8,31 +8,33 @@ DATASET_REF="terminal-bench@2.0"
 N_CONCURRENT=5
 
 BENCHMARK_TASKS=(
-  # hard (1)
-  cancel-async-tasks
-  # medium (10)
+  sanitize-git-repo
   custom-memory-heap-crash
-  distribution-search
-  dna-insert
-  filter-js-from-html
+  torch-pipeline-parallelism
+  raman-fitting
+  tune-mjcf
+  largest-eigenval
   financial-document-processor
-  gcode-to-text
-  git-multibranch
-  headless-terminal
+  adaptive-rejection-sampler
+  build-cython-ext
+  chess-best-move
+  torch-tensor-parallelism
+  count-dataset-tokens
+  pytorch-model-recovery
+  qemu-startup
+  fix-code-vulnerability
+  extract-elf
+  caffe-cifar-10
+  build-pmars
   large-scale-text-editing
-  log-summary-date-ranges
-  # easy (4)
-  cobol-modernization
-  fix-git
-  overfull-hbox
-  prove-plus-comm
+  code-from-image
 )
 
 main() {
   if ! parse_common_args "$@"; then
     cat <<'EOF'
-Usage: ./harbor/run_small_benchmark.sh [--model <key>] [--agent <key>] [--dry-run]
-Runs 15 tasks (4 easy, 10 medium, 1 hard) disjoint from all run_debug splits.
+Usage: ./harbor/run_long_benchmark.sh [--model <key>] [--agent <key>] [--dry-run]
+Runs 20 long tasks from terminal-bench@2.0.
 EOF
     usage_common
     exit 0
