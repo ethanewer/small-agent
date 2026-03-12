@@ -54,7 +54,7 @@ class TestRegistryAndCore(unittest.TestCase):
     def test_get_agent_unknown_lists_available_agents(self) -> None:
         with self.assertRaisesRegex(
             ValueError,
-            "Available agents: qwen, terminus-2",
+            "Available agents: liteforge, qwen, terminus-2",
         ):
             get_agent("missing-agent")
 

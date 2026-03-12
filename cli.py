@@ -76,6 +76,12 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         default=False,
         help="Disable the final summary message (used by benchmarks).",
     )
+    parser.add_argument(
+        "--plan",
+        action="store_true",
+        default=False,
+        help="Enable planning mode (read-only workflow for liteforge agent).",
+    )
 
     return parser.parse_args(argv)
 
@@ -517,6 +523,9 @@ def main() -> None:
     runtime_cfg.agent_config["verbosity"] = args.verbosity
     if args.no_final_message:
         runtime_cfg.agent_config["final_message"] = False
+    if args.plan:
+        runtime_cfg.agent_config["plan_mode"] = True
+        runtime_cfg.agent_config["readonly"] = True
 
     cwd = os.getcwd()
 
@@ -537,6 +546,8 @@ def main() -> None:
             f"Max Turns: {runtime_cfg.agent_config['max_turns']}",
             f"Max Wait: {runtime_cfg.agent_config['max_wait_seconds']}s",
         ]
+        if args.plan:
+            panel_lines.append("Plan Mode: enabled")
 
     console.print(
         Panel(

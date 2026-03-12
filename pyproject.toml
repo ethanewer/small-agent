@@ -29,6 +29,9 @@ force-exclude = true
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 cache_dir = ".local/cache/pytest"
+markers = [
+    "requires_api_key: tests that require live API credentials",
+]
 
 [tool.mypy]
 cache_dir = ".local/cache/mypy"

@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 from agents.interface import Agent
+from agents.liteforge import LiteforgeAgent
 from agents.qwen import QwenHeadlessAgent
 from agents.terminus2.agent import Terminus2Agent
 
 
 def available_agents() -> dict[str, Agent]:
     return {
+        "liteforge": LiteforgeAgent(),
         "terminus-2": Terminus2Agent(),
         "qwen": QwenHeadlessAgent(),
     }

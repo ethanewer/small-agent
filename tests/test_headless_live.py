@@ -8,6 +8,8 @@ import sys
 import unittest
 from pathlib import Path
 
+import pytest
+
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 CLI_PATH = PROJECT_ROOT / "cli.py"
@@ -16,6 +18,8 @@ assert CLI_SPEC and CLI_SPEC.loader
 cli = importlib.util.module_from_spec(CLI_SPEC)
 sys.modules["cli_live"] = cli
 CLI_SPEC.loader.exec_module(cli)
+
+pytestmark = [pytest.mark.requires_api_key]
 
 
 def _local_or_path_binary(name: str) -> str | None:

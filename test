@@ -30,6 +30,6 @@ if [[ "${run_all}" -eq 1 ]]; then
 fi
 
 if [[ "${#pass_args[@]}" -gt 0 ]]; then
-  exec uv run --directory "${SCRIPT_DIR}" pytest --ignore=tests/test_headless_live.py "${pass_args[@]}"
+  exec uv run --directory "${SCRIPT_DIR}" pytest -m "not requires_api_key" "${pass_args[@]}"
 fi
-exec uv run --directory "${SCRIPT_DIR}" pytest --ignore=tests/test_headless_live.py
+exec uv run --directory "${SCRIPT_DIR}" pytest -m "not requires_api_key"
