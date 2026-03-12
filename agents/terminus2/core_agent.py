@@ -201,6 +201,7 @@ class AgentCallbacks:
     on_issue: Callable[[str, str], None] | None = None
     on_done: Callable[[str], None] | None = None
     on_stopped: Callable[[int], None] | None = None
+    on_compaction: Callable[[str], None] | None = None
 
 
 def limit_output_length(output: str, max_bytes: int = MAX_OUTPUT_BYTES) -> str:
@@ -621,6 +622,7 @@ def _query_model(
     api_key: str,
     original_instruction: str,
     terminal_state: str,
+    callbacks: AgentCallbacks | None = None,
 ) -> ModelResult:
     last_error: Exception | None = None
     current_prompt = prompt
@@ -680,6 +682,8 @@ def _query_model(
                     terminal_state=terminal_state,
                 )
                 current_prompt = f"{summarized}\n\n{current_prompt}"
+                if callbacks and callbacks.on_compaction:
+                    callbacks.on_compaction("reactive")
                 continue
 
             raise
@@ -932,6 +936,8 @@ def run_agent(
             )
             if summarized is not None:
                 prompt = summarized
+                if callbacks.on_compaction:
+                    callbacks.on_compaction("proactive")
 
             try:
                 model_result = _query_model(
@@ -941,6 +947,7 @@ def run_agent(
                     api_key=api_key,
                     original_instruction=instruction,
                     terminal_state=terminal_state,
+                    callbacks=callbacks,
                 )
             except Exception as err:
                 if callbacks.on_issue:

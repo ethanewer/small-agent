@@ -310,12 +310,25 @@ class Terminus2Agent:
                     )
                 )
 
+        compaction_counts: dict[str, int] = {"proactive": 0, "reactive": 0}
+
+        def on_compaction(kind: str) -> None:
+            compaction_counts[kind] = compaction_counts.get(kind, 0) + 1
+            if sink:
+                sink.emit(
+                    event=AgentEvent(
+                        event_type="compaction",
+                        payload={"kind": kind},
+                    )
+                )
+
         callbacks = AgentCallbacks(
             on_reasoning=on_reasoning,
             on_command_output=on_command_output,
             on_issue=on_issue,
             on_done=on_done,
             on_stopped=on_stopped,
+            on_compaction=on_compaction,
         )
         exit_code = run_agent(
             instruction=task.instruction,
@@ -323,6 +336,14 @@ class Terminus2Agent:
             api_key=cfg.model.api_key,
             callbacks=callbacks,
         )
+
+        total = compaction_counts["proactive"] + compaction_counts["reactive"]
+        console.print(
+            f"Compactions: {total} "
+            f"(proactive={compaction_counts['proactive']}, "
+            f"reactive={compaction_counts['reactive']})"
+        )
+
         result = RunResult(
             exit_code=exit_code,
             success=exit_code == 0,

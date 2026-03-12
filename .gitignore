@@ -36,3 +36,4 @@ config/
 agent_evolve/updates
 
 .env
+*.out

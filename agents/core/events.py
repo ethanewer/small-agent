@@ -12,6 +12,7 @@ EventType = Literal[
     "issue",
     "done",
     "stopped",
+    "compaction",
 ]
 
 
