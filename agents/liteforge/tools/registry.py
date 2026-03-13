@@ -15,8 +15,6 @@ TOOL_DESCRIPTION_FILES = {
     "remove": "fs_remove.md",
     "undo": "fs_undo.md",
     "fetch": "net_fetch.md",
-    "followup": "followup.md",
-    "plan": "plan_create.md",
     "todo_write": "todo_write.md",
     "todo_read": "todo_read.md",
 }
@@ -341,66 +339,6 @@ def get_tool_schemas() -> dict[str, dict[str, Any]]:
             },
             "required": ["path"],
         },
-        "followup": {
-            "type": "object",
-            "title": "Followup",
-            "properties": {
-                "question": {
-                    "type": "string",
-                    "description": "Question to ask the user",
-                },
-                "multiple": {
-                    **_bool_or_null(),
-                    "description": (
-                        "If true, allows selecting multiple options; if false (default), "
-                        "only one option can be selected"
-                    ),
-                },
-                "option1": {
-                    **_string_or_null(),
-                    "description": "First option to choose from",
-                },
-                "option2": {
-                    **_string_or_null(),
-                    "description": "Second option to choose from",
-                },
-                "option3": {
-                    **_string_or_null(),
-                    "description": "Third option to choose from",
-                },
-                "option4": {
-                    **_string_or_null(),
-                    "description": "Fourth option to choose from",
-                },
-                "option5": {
-                    **_string_or_null(),
-                    "description": "Fifth option to choose from",
-                },
-            },
-            "required": ["question"],
-        },
-        "plan": {
-            "type": "object",
-            "title": "PlanCreate",
-            "properties": {
-                "plan_name": {
-                    "type": "string",
-                    "description": "The name of the plan (will be used in the filename)",
-                },
-                "version": {
-                    "type": "string",
-                    "description": 'The version of the plan (e.g., "v1", "v2", "1.0")',
-                },
-                "content": {
-                    "type": "string",
-                    "description": (
-                        "The content to write to the plan file. This should be the complete "
-                        "plan content in markdown format."
-                    ),
-                },
-            },
-            "required": ["plan_name", "version", "content"],
-        },
         "todo_write": {
             "type": "object",
             "title": "TodoWrite",
@@ -524,8 +462,6 @@ ALL_TOOL_NAMES = [
     "fetch",
     "remove",
     "undo",
-    "followup",
-    "plan",
     "todo_write",
     "todo_read",
 ]
@@ -534,9 +470,8 @@ READONLY_TOOL_NAMES = [
     "read",
     "fs_search",
     "fetch",
-    "plan",
     "todo_write",
     "todo_read",
 ]
 
-YIELD_TOOLS = {"followup"}
+YIELD_TOOLS: set[str] = set()

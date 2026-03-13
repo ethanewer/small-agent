@@ -8,26 +8,26 @@ DATASET_REF="terminal-bench@2.0"
 N_CONCURRENT=8
 
 BENCHMARK_TASKS=(
-  cancel-async-tasks
-  constraints-scheduling
-  fix-git
-  git-leak-recovery
-  git-multibranch
-  headless-terminal
-  regex-log
-  kv-store-grpc
-  log-summary-date-ranges
-  modernize-scientific-stack
-  configure-git-webserver
-  multi-source-data-merger
-  nginx-request-logging
-  openssl-selfsigned-cert
   polyglot-c-py
   polyglot-rust-c
-  prove-plus-comm
-  pypi-server
-  sqlite-with-gcov
+  headless-terminal
+  regex-log
+  git-multibranch
+  configure-git-webserver
   vulnerable-secret
+  sqlite-with-gcov
+  cancel-async-tasks
+  pypi-server
+  multi-source-data-merger
+  git-leak-recovery
+  fix-git
+  log-summary-date-ranges
+  modernize-scientific-stack
+  openssl-selfsigned-cert
+  kv-store-grpc
+  constraints-scheduling
+  nginx-request-logging
+  prove-plus-comm
 )
 
 main() {

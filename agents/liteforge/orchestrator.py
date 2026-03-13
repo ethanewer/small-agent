@@ -58,7 +58,6 @@ class Orchestrator:
         self.max_requests_per_turn = max_requests_per_turn
         self.error_tracker = ToolErrorTracker(max_failures=max_tool_failure_per_turn)
         self.stream = stream
-        self._last_plan_content: str | None = None
         self._log_console = Console(stderr=True)
         self._stream_line_open = False
         self._pending_trailing_newlines = ""
@@ -104,11 +103,7 @@ class Orchestrator:
             "fetch": ("fetch", "green", tc.arguments.get("url", "")),
             "todo_write": ("todo_write", "cyan", ""),
             "todo_read": ("todo_read", "cyan", ""),
-            "plan": ("plan", "magenta", tc.arguments.get("plan_name", "")),
         }
-        if tc.name == "followup":
-            return
-
         display_name: str
         color: str
         detail: str
@@ -220,9 +215,6 @@ class Orchestrator:
                 else:
                     self.error_tracker.record_success(result.name)
 
-                if tc.name == "plan" and not result.is_error:
-                    self._last_plan_content = result.content
-
             self.context.append_turn(
                 response.content,
                 response.tool_calls if response.tool_calls else None,
@@ -282,10 +274,6 @@ class Orchestrator:
             records.append((tc, result))
 
         return records
-
-    @property
-    def last_plan_content(self) -> str | None:
-        return self._last_plan_content
 
     @property
     def streamed_text(self) -> str:

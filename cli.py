@@ -76,13 +76,6 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         default=False,
         help="Disable the final summary message (used by benchmarks).",
     )
-    parser.add_argument(
-        "--plan",
-        action="store_true",
-        default=False,
-        help="Enable planning mode (read-only workflow for liteforge agent).",
-    )
-
     return parser.parse_args(argv)
 
 
@@ -144,7 +137,7 @@ def select_verbosity_dialog(console: Console) -> int:
     console.print(
         Panel(
             "0. Minimal - shows one short line per tool call; does not show full I/O or reasoning\n"
-            "1. Full - shows full tool inputs/outputs and model reasoning (analysis/plan)",
+            "1. Full - shows full tool inputs/outputs and model reasoning",
             title="Verbosity Levels",
             border_style="cyan",
         )
@@ -469,19 +462,6 @@ def main() -> None:
         console.print(Panel(str(err), title="Config Error", border_style="red"))
         raise SystemExit(1) from err
 
-    if args.plan and active_agent_key != "liteforge":
-        console.print(
-            Panel(
-                (
-                    "Plan mode is not supported for this agent. "
-                    "Use --agent liteforge to enable --plan."
-                ),
-                title="Plan Mode Error",
-                border_style="red",
-            )
-        )
-        raise SystemExit(1)
-
     model_entry = loaded_config.models[active_model_key]
     api_key = resolve_api_key(config_api_key=model_entry.api_key)
     if not api_key:
@@ -536,10 +516,6 @@ def main() -> None:
     runtime_cfg.agent_config["verbosity"] = args.verbosity
     if args.no_final_message:
         runtime_cfg.agent_config["final_message"] = False
-    if args.plan:
-        runtime_cfg.agent_config["plan_mode"] = True
-        runtime_cfg.agent_config["readonly"] = True
-
     cwd = os.getcwd()
 
     if args.verbosity == 0:
@@ -559,9 +535,6 @@ def main() -> None:
             f"Max Turns: {runtime_cfg.agent_config['max_turns']}",
             f"Max Wait: {runtime_cfg.agent_config['max_wait_seconds']}s",
         ]
-        if args.plan:
-            panel_lines.append("Plan Mode: enabled")
-
     console.print(
         Panel(
             "\n".join(panel_lines),

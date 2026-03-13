@@ -21,8 +21,6 @@ TOOL_NAME_MAP = {
     "fetch": "fetch",
     "remove": "remove",
     "undo": "undo",
-    "followup": "followup",
-    "plan": "plan",
     "todo_write": "todo_write",
     "todo_read": "todo_read",
 }

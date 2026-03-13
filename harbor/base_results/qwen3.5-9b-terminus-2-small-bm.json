@@ -1,0 +1,59 @@
+{
+    "id": "3a78e24d-0e91-47c4-9d9a-3133840ddeb1",
+    "started_at": "2026-03-13T14:55:36.134202",
+    "finished_at": "2026-03-13T15:27:22.571995",
+    "n_total_trials": 20,
+    "stats": {
+        "n_trials": 20,
+        "n_errors": 6,
+        "evals": {
+            "small-agent-harbor-external__terminal-bench": {
+                "n_trials": 20,
+                "n_errors": 6,
+                "metrics": [
+                    {
+                        "mean": 0.45
+                    }
+                ],
+                "reward_stats": {
+                    "reward": {
+                        "1.0": [
+                            "log-summary-date-ranges__W2w94rp",
+                            "modernize-scientific-stack__jdsGq24",
+                            "prove-plus-comm__kfvw9Mg",
+                            "multi-source-data-merger__MeR6J68",
+                            "configure-git-webserver__REY4fez",
+                            "cancel-async-tasks__MLkv5VN",
+                            "git-leak-recovery__TDEGv7Z",
+                            "nginx-request-logging__wzFnHbg",
+                            "constraints-scheduling__hk4aJkf"
+                        ],
+                        "0.0": [
+                            "pypi-server__GFE5mDu",
+                            "polyglot-rust-c__uRMyQMZ",
+                            "headless-terminal__mh3au8w",
+                            "fix-git__mWCyULF",
+                            "git-multibranch__wH3nxAR",
+                            "kv-store-grpc__C2437fC",
+                            "regex-log__EzEQv8b",
+                            "polyglot-c-py__eVhn3et",
+                            "sqlite-with-gcov__rpUMDs3",
+                            "openssl-selfsigned-cert__syc9vTB",
+                            "vulnerable-secret__3VVUJ2f"
+                        ]
+                    }
+                },
+                "exception_stats": {
+                    "AgentTimeoutError": [
+                        "polyglot-rust-c__uRMyQMZ",
+                        "headless-terminal__mh3au8w",
+                        "git-multibranch__wH3nxAR",
+                        "regex-log__EzEQv8b",
+                        "polyglot-c-py__eVhn3et",
+                        "vulnerable-secret__3VVUJ2f"
+                    ]
+                }
+            }
+        }
+    }
+}

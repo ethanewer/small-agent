@@ -21,9 +21,6 @@ from agents.liteforge.agent import (
 from agents.liteforge.context import Context
 from agents.liteforge.logging_utils import (
     last_assistant_text,
-    print_plain_text_block,
-    print_status,
-    resolve_plan_display,
 )
 from agents.liteforge.orchestrator import Orchestrator
 from agents.liteforge.tools.executor import ToolExecutor
@@ -32,20 +29,6 @@ from agents.liteforge.tools.registry import (
     READONLY_TOOL_NAMES,
     build_tool_definitions,
 )
-
-PLAN_MODE_ADDENDUM = """
-<plan_mode>
-You are in PLANNING MODE. Your task is to analyze the request and create a detailed implementation plan.
-
-CRITICAL RULES FOR PLANNING MODE:
-- Do NOT make any changes to files (no write, patch, remove, or shell commands that modify state)
-- You MAY use read-only tools (read, fs_search, fetch) to investigate the codebase
-- Create your plan using the `plan` tool with a clear, structured breakdown
-- Use `todo_write` to create a task list for the implementation
-- Present your plan clearly with specific files, changes, and steps
-- After creating the plan, stop and wait for user confirmation
-</plan_mode>
-"""
 
 
 def _coerce_int(*, value: Any, default: int) -> int:
@@ -140,7 +123,6 @@ def _build_context(
     cfg: AgentRuntimeConfig,
     env: dict[str, Any],
     tool_names: list[str],
-    plan_mode: bool,
 ) -> tuple[Context, list[dict[str, Any]]]:
     desc_context = {
         "env": env,
@@ -158,8 +140,6 @@ def _build_context(
         tool_names=tool_names,
         custom_rules=str(options.get("custom_rules", "")),
     )
-    if plan_mode:
-        system_parts.append(PLAN_MODE_ADDENDUM)
 
     context = Context()
     context.set_system_messages(system_parts)
@@ -232,155 +212,6 @@ def _run_agent_pass(
     return orch, completed
 
 
-def _run_plan_mode(
-    *,
-    task: Task,
-    options: dict[str, Any],
-    cfg: AgentRuntimeConfig,
-    env: dict[str, Any],
-    model: str,
-    stream: bool,
-    console: Console | None = None,
-) -> tuple[Context, bool]:
-    log_console = console or Console(stderr=True)
-    base_dir = Path(str(env["cwd"])) if env.get("cwd") else None
-
-    def _render_plan_phase_status(
-        *,
-        orch: Orchestrator,
-        success_message: str,
-    ) -> None:
-        decision = resolve_plan_display(
-            orch=orch,
-            stream=stream,
-            base_dir=base_dir,
-        )
-        if decision.should_print and decision.plan_text is not None:
-            print_plain_text_block(console=log_console, text=decision.plan_text)
-
-        if decision.was_visible:
-            print_status(
-                console=log_console,
-                message=success_message,
-            )
-            return
-
-        print_status(
-            console=log_console,
-            message="Plan created, but no visible plan content was captured.",
-            style="bold yellow",
-        )
-
-    context, _ = _build_context(
-        task=task,
-        options=options,
-        cfg=cfg,
-        env=env,
-        tool_names=list(READONLY_TOOL_NAMES),
-        plan_mode=True,
-    )
-    executor = ToolExecutor(env=env)
-
-    print_status(
-        console=log_console,
-        message="Creating plan",
-    )
-
-    orch, completed = _run_agent_pass(
-        context=context,
-        env=env,
-        model=model,
-        tool_names=list(READONLY_TOOL_NAMES),
-        options=options,
-        stream=stream,
-        console=log_console,
-        separator_before_stream=True,
-        executor=executor,
-    )
-    if not completed:
-        return orch.context, False
-
-    _render_plan_phase_status(
-        orch=orch,
-        success_message="Plan created. Review it below.",
-    )
-
-    while True:
-        try:
-            response = input("Execute this plan? [y]es / [n]o / [feedback]: ").strip()
-        except (EOFError, KeyboardInterrupt):
-            print_status(console=log_console, message="Aborted.", style="bold yellow")
-            return orch.context, True
-
-        lowered = response.lower()
-        if lowered in ("y", "yes"):
-            break
-        if lowered in ("n", "no"):
-            print_status(
-                console=log_console,
-                message="Plan rejected. Exiting.",
-                style="bold yellow",
-            )
-            return orch.context, True
-        if not response:
-            continue
-
-        print_status(
-            console=log_console,
-            message="Creating plan",
-        )
-
-        context = orch.context
-        context.add_user_message(
-            f"<feedback>{response}</feedback>\n"
-            "Please revise your plan based on this feedback."
-        )
-
-        orch, completed = _run_agent_pass(
-            context=context,
-            env=env,
-            model=model,
-            tool_names=list(READONLY_TOOL_NAMES),
-            options=options,
-            stream=stream,
-            console=log_console,
-            separator_before_stream=True,
-            executor=executor,
-        )
-        if not completed:
-            return orch.context, False
-
-        _render_plan_phase_status(
-            orch=orch,
-            success_message="Plan updated. Review it below.",
-        )
-
-    print_status(
-        console=log_console,
-        message="Executing plan",
-    )
-
-    context = orch.context
-    context.add_user_message(
-        "The user has approved the plan. Now execute it completely. "
-        "You have access to all tools including write, patch, shell, and remove. "
-        "Implement every step of the plan."
-    )
-
-    orch, completed = _run_agent_pass(
-        context=context,
-        env=env,
-        model=model,
-        tool_names=list(ALL_TOOL_NAMES),
-        options=options,
-        stream=stream,
-        console=log_console,
-        separator_before_stream=True,
-        executor=executor,
-    )
-    return orch.context, completed
-
-
 class LiteforgeAgent:
     def run(self, instruction: str, cfg: AgentRuntimeConfig, console: Console) -> int:
         result = self.run_task(
@@ -421,37 +252,23 @@ class LiteforgeAgent:
 
         try:
             with _temporary_environ(overrides=env_overrides):
-                context: Context
-                completed: bool
-                if bool(options.get("plan_mode")):
-                    context, completed = _run_plan_mode(
-                        task=task,
-                        options=options,
-                        cfg=cfg,
-                        env=env,
-                        model=model,
-                        stream=stream,
-                        console=console,
-                    )
-                else:
-                    tool_names = _resolve_tool_names(options=options)
-                    context, _ = _build_context(
-                        task=task,
-                        options=options,
-                        cfg=cfg,
-                        env=env,
-                        tool_names=tool_names,
-                        plan_mode=False,
-                    )
-                    _, completed = _run_agent_pass(
-                        context=context,
-                        env=env,
-                        model=model,
-                        tool_names=tool_names,
-                        options=options,
-                        stream=stream,
-                        console=console,
-                    )
+                tool_names = _resolve_tool_names(options=options)
+                context, _ = _build_context(
+                    task=task,
+                    options=options,
+                    cfg=cfg,
+                    env=env,
+                    tool_names=tool_names,
+                )
+                _, completed = _run_agent_pass(
+                    context=context,
+                    env=env,
+                    model=model,
+                    tool_names=tool_names,
+                    options=options,
+                    stream=stream,
+                    console=console,
+                )
         except Exception as err:
             result = RunResult(
                 exit_code=1,

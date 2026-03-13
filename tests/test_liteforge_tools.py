@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from pathlib import Path
 import types
-from datetime import datetime
 
 import httpx
 import pytest
@@ -13,7 +12,7 @@ from agents.liteforge.provider import (
     _resolve_openai_model,
     detect_provider,
 )
-from agents.liteforge.tools import fetch, followup, shell
+from agents.liteforge.tools import fetch, shell
 from agents.liteforge.tools import (
     fs_patch,
     fs_read,
@@ -21,7 +20,6 @@ from agents.liteforge.tools import (
     fs_search,
     fs_undo,
     fs_write,
-    plan,
 )
 from agents.liteforge.tools.executor import ToolExecutor
 from agents.liteforge.tools.todo import TodoManager, execute_read, execute_write
@@ -172,23 +170,6 @@ def test_search_invalid_head_limit_returns_error_without_exception(
     assert "head_limit must be an integer" in output
 
 
-def test_plan_tool_creates_plan_file(tool_env: dict[str, object]) -> None:
-    today = datetime.now().strftime("%Y-%m-%d")
-    output = plan.execute(
-        args={
-            "plan_name": "sample plan",
-            "version": "v1",
-            "content": "# Plan\n\n- step one",
-        },
-        env=tool_env,
-    )
-    assert "Plan created:" in output
-
-    plan_path = Path(str(tool_env["cwd"])) / "plans" / f"{today}-sample plan-v1.md"
-    assert plan_path.exists()
-    assert "- step one" in plan_path.read_text()
-
-
 def test_todo_write_and_read_roundtrip() -> None:
     manager = TodoManager()
     write_out = execute_write(
@@ -259,22 +240,6 @@ def test_shell_execute_uses_subprocess_and_formats_output(
     assert "Exit code: 0" in output
 
 
-def test_followup_maps_numeric_choice(
-    monkeypatch: pytest.MonkeyPatch,
-    tool_env: dict[str, object],
-) -> None:
-    monkeypatch.setattr("builtins.input", lambda _: "2")
-    output = followup.execute(
-        args={
-            "question": "Pick one",
-            "option1": "alpha",
-            "option2": "beta",
-        },
-        env=tool_env,
-    )
-    assert output == "User selected: beta"
-
-
 def test_executor_enforces_read_before_patch(tool_env: dict[str, object]) -> None:
     target = Path(str(tool_env["cwd"])) / "file.txt"
     target.write_text("old value\n")
@@ -341,7 +306,9 @@ def test_context_message_conversion_shapes() -> None:
 
     api_messages = context.to_api_messages()
     assert api_messages[0]["role"] == "system"
-    assert api_messages[1]["role"] == "system"
+    assert "sysA" in api_messages[0]["content"]
+    assert "sysB" in api_messages[0]["content"]
+    assert api_messages[1]["role"] == "user"
     assert api_messages[-1]["role"] == "tool"
 
     system_text, anthropic_messages = context.to_anthropic_messages()

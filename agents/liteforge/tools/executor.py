@@ -5,14 +5,12 @@ from typing import Any
 
 from agents.liteforge.tools import (
     fetch,
-    followup,
     fs_patch,
     fs_read,
     fs_remove,
     fs_search,
     fs_undo,
     fs_write,
-    plan,
     shell,
 )
 from agents.liteforge.tools.todo import TodoManager
@@ -84,12 +82,6 @@ class ToolExecutor:
 
         if tool_name == "undo":
             return fs_undo.execute(args, self.env, self.snapshots)
-
-        if tool_name == "followup":
-            return followup.execute(args, self.env)
-
-        if tool_name == "plan":
-            return plan.execute(args, self.env)
 
         if tool_name == "todo_write":
             from agents.liteforge.tools.todo import execute_write

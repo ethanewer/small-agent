@@ -30,7 +30,7 @@ def test_liteforge_live_if_api_key_available() -> None:
             "--agent",
             "liteforge",
             "--model",
-            "qwen3-coder-next",
+            "qwen3.5-flash",
             "Reply with exactly: OK",
         ],
         cwd=str(PROJECT_ROOT),

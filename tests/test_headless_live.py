@@ -55,7 +55,7 @@ class TestHeadlessLive(unittest.TestCase):
                 "--agent",
                 "qwen",
                 "--model",
-                "qwen3-coder-next",
+                "qwen3.5-flash",
                 "Reply with exactly: OK",
             ],
             cwd=str(PROJECT_ROOT),
