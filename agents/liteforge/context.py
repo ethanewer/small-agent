@@ -35,9 +35,7 @@ class Context:
     messages: list[Message] = field(default_factory=list)
     tools: list[dict] = field(default_factory=list)
     max_tokens: int | None = None
-    temperature: float | None = None
-    top_p: float | None = None
-    top_k: int | None = None
+    extra_params: dict[str, Any] | None = None
     token_count: int = 0
 
     def set_system_messages(self, texts: list[str]) -> None:
@@ -74,12 +72,26 @@ class Context:
         return copy.deepcopy(self)
 
     def to_api_messages(self) -> list[dict]:
-        """Convert to the format expected by the Anthropic/OpenAI APIs."""
+        """Convert to the format expected by the OpenAI-compatible APIs.
+
+        Consecutive system messages are merged into a single message so
+        that providers which only accept one system message (e.g. Together)
+        do not reject the request.
+        """
+        system_parts: list[str] = []
         api_msgs: list[dict] = []
         for msg in self.messages:
             if msg.role == "system":
-                api_msgs.append({"role": "system", "content": msg.content or ""})
-            elif msg.role == "user":
+                system_parts.append(msg.content or "")
+                continue
+
+            if system_parts:
+                api_msgs.append(
+                    {"role": "system", "content": "\n\n".join(system_parts)}
+                )
+                system_parts = []
+
+            if msg.role == "user":
                 api_msgs.append({"role": "user", "content": msg.content or ""})
             elif msg.role == "assistant":
                 entry: dict[str, Any] = {"role": "assistant"}
@@ -107,6 +119,10 @@ class Context:
                         "content": msg.tool_result.content,
                     }
                 )
+
+        if system_parts:
+            api_msgs.insert(0, {"role": "system", "content": "\n\n".join(system_parts)})
+
         return api_msgs
 
     def to_anthropic_messages(self) -> tuple[str, list[dict]]:

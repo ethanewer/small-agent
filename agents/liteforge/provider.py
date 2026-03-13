@@ -107,13 +107,6 @@ def _chat_anthropic(
         kwargs["system"] = system_text
     if anthropic_tools:
         kwargs["tools"] = anthropic_tools
-    if context.temperature is not None:
-        kwargs["temperature"] = context.temperature
-    if context.top_p is not None:
-        kwargs["top_p"] = context.top_p
-    if context.top_k is not None:
-        kwargs["top_k"] = context.top_k
-
     if stream_callback:
         return _stream_anthropic(client, kwargs, stream_callback)
 
@@ -261,10 +254,8 @@ def _chat_openai(
         kwargs["max_tokens"] = context.max_tokens
     if tools:
         kwargs["tools"] = tools
-    if context.temperature is not None:
-        kwargs["temperature"] = context.temperature
-    if context.top_p is not None:
-        kwargs["top_p"] = context.top_p
+    if context.extra_params:
+        kwargs["extra_body"] = context.extra_params
 
     if stream_callback:
         return _stream_openai(client, kwargs, stream_callback)

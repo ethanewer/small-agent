@@ -58,16 +58,6 @@ def _coerce_int(*, value: Any, default: int) -> int:
         return default
 
 
-def _coerce_float(*, value: Any, default: float) -> float:
-    if value is None:
-        return default
-
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return default
-
-
 def _coerce_final_message_enabled(*, value: Any) -> bool:
     if value is None:
         return True
@@ -183,9 +173,7 @@ def _build_context(
         options=options,
         model_context_length=cfg.model.context_length,
     )
-    context.temperature = cfg.model.temperature
-    context.top_p = _coerce_float(value=options.get("top_p"), default=0.8)
-    context.top_k = _coerce_int(value=options.get("top_k"), default=30)
+    context.extra_params = cfg.model.extra_params
     context.tools = tool_defs
 
     return context, tool_defs

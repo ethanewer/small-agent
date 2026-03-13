@@ -64,25 +64,20 @@ def _resolve_descriptions_dir() -> Path:
 TOOL_DESCRIPTIONS_DIR = _resolve_descriptions_dir()
 
 
-def _nullable(schema: dict[str, Any]) -> dict[str, Any]:
-    """Wrap a schema in anyOf with null, matching Rust schemars AddNullable."""
-    return {"anyOf": [schema, {"type": "null"}]}
-
-
 def _int_or_null(fmt: str = "int32") -> dict[str, Any]:
-    return _nullable({"type": "integer", "format": fmt})
+    return {"type": "integer", "format": fmt}
 
 
 def _bool_or_null() -> dict[str, Any]:
-    return _nullable({"type": "boolean"})
+    return {"type": "boolean"}
 
 
 def _string_or_null() -> dict[str, Any]:
-    return _nullable({"type": "string"})
+    return {"type": "string"}
 
 
 def _string_array_or_null() -> dict[str, Any]:
-    return _nullable({"type": "array", "items": {"type": "string"}})
+    return {"type": "array", "items": {"type": "string"}}
 
 
 def get_tool_schemas() -> dict[str, dict[str, Any]]:
@@ -189,9 +184,8 @@ def get_tool_schemas() -> dict[str, dict[str, Any]]:
                     "description": 'Glob pattern to filter files (e.g. "*.js", "*.{ts,tsx}") - maps to rg --glob',
                 },
                 "output_mode": {
-                    "type": ["string", "null"],
-                    "enum": ["content", "files_with_matches", "count", None],
-                    "nullable": True,
+                    "type": "string",
+                    "enum": ["content", "files_with_matches", "count"],
                     "description": (
                         'Output mode: "content" shows matching lines (supports -A/-B/-C context, '
                         '-n line numbers, head_limit), "files_with_matches" shows file paths '
