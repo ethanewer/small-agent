@@ -7,7 +7,10 @@ import json
 import re
 from pathlib import Path
 
-LOG_DIR = Path(__file__).parent / "jobs/long_context_experiment_2026-03-12__05-46-04/slurm_logs"
+LOG_DIR = (
+    Path(__file__).parent
+    / "jobs/long_context_experiment_2026-03-12__05-46-04/slurm_logs"
+)
 JOBS_ROOT = Path(__file__).parent / "jobs"
 
 
@@ -34,7 +37,9 @@ def parse_log_file(path: Path) -> dict | None:
 
     # Exception Distribution - RuntimeError | 3, AgentTimeoutError | 10
     exc_dist: dict[str, int] = {}
-    for exc_match in re.finditer(r"│\s+(RuntimeError|AgentTimeoutError)\s+│\s+(\d+)", content):
+    for exc_match in re.finditer(
+        r"│\s+(RuntimeError|AgentTimeoutError)\s+│\s+(\d+)", content
+    ):
         exc_dist[exc_match.group(1)] = int(exc_match.group(2))
 
     # reward = 1.0 count for Passes
@@ -84,7 +89,9 @@ def get_errored_tasks(jobs_dir: str) -> list[tuple[str, str, str | None]]:
         exc_stats = eval_data.get("exception_stats", {})
         for exc_type, trial_ids in exc_stats.items():
             for trial_id in trial_ids:
-                task_name = trial_id.rsplit("__", 1)[0] if "__" in trial_id else trial_id
+                task_name = (
+                    trial_id.rsplit("__", 1)[0] if "__" in trial_id else trial_id
+                )
                 result.append((task_name, exc_type, None))
 
     # Get exception_message from per-trial result.json

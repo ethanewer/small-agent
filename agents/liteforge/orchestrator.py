@@ -3,7 +3,11 @@ from __future__ import annotations
 import sys
 from dataclasses import dataclass, field
 
+from rich.console import Console
+from rich.text import Text
+
 from agents.liteforge.context import Context, ToolCall, ToolResult
+from agents.liteforge.logging_utils import print_rule
 from agents.liteforge.provider import chat
 from agents.liteforge.tools.executor import ToolExecutor
 from agents.liteforge.tools.registry import YIELD_TOOLS
@@ -42,7 +46,7 @@ class Orchestrator:
         context: Context,
         executor: ToolExecutor,
         model: str,
-        tools: list[dict],
+        tools: list[dict[str, object]],
         max_requests_per_turn: int = 100,
         max_tool_failure_per_turn: int = 3,
         stream: bool = True,
@@ -55,10 +59,117 @@ class Orchestrator:
         self.error_tracker = ToolErrorTracker(max_failures=max_tool_failure_per_turn)
         self.stream = stream
         self._last_plan_content: str | None = None
+        self._log_console = Console(stderr=True)
+        self._stream_line_open = False
+        self._pending_trailing_newlines = ""
+        self._pending_stream_separator = False
+        self._streamed_text = ""
+        self._visible_text = ""
+
+    def set_log_console(self, *, console: Console | None) -> None:
+        if console is None:
+            return
+
+        self._log_console = console
+
+    def queue_stream_separator(self) -> None:
+        self._pending_stream_separator = True
+
+    def _print_rule(self) -> None:
+        print_rule(console=self._log_console)
+
+    def _ensure_stream_line_break(self) -> None:
+        if self._pending_trailing_newlines:
+            sys.stdout.write("\n")
+            sys.stdout.flush()
+            self._pending_trailing_newlines = ""
+            self._stream_line_open = False
+            return
+
+        if not self._stream_line_open:
+            return
+
+        sys.stdout.write("\n")
+        sys.stdout.flush()
+        self._stream_line_open = False
+
+    def _render_tool_log(self, *, tc: ToolCall) -> None:
+        mapping: dict[str, tuple[str, str, str]] = {
+            "shell": ("shell", "cyan", tc.arguments.get("description", "")),
+            "read": ("read", "blue", tc.arguments.get("file_path", "")),
+            "write": ("write", "yellow", tc.arguments.get("file_path", "")),
+            "patch": ("patch", "yellow", tc.arguments.get("file_path", "")),
+            "fs_search": ("search", "magenta", tc.arguments.get("pattern", "")),
+            "remove": ("remove", "red", tc.arguments.get("path", "")),
+            "fetch": ("fetch", "green", tc.arguments.get("url", "")),
+            "todo_write": ("todo_write", "cyan", ""),
+            "todo_read": ("todo_read", "cyan", ""),
+            "plan": ("plan", "magenta", tc.arguments.get("plan_name", "")),
+        }
+        if tc.name == "followup":
+            return
+
+        display_name: str
+        color: str
+        detail: str
+        if tc.name in mapping:
+            display_name, color, detail = mapping[tc.name]
+            if tc.name == "shell" and not detail:
+                detail = str(tc.arguments.get("command", ""))
+        else:
+            display_name = tc.name
+            color = "cyan"
+            detail = ""
+
+        self._ensure_stream_line_break()
+        self._print_rule()
+        line = Text("[", style="dim")
+        line.append(display_name, style=f"bold {color}")
+        line.append("]", style="dim")
+        if detail.strip():
+            line.append(" ")
+            line.append(detail, style="white")
+        self._log_console.print(line)
+        self._pending_stream_separator = True
+
+    def _render_status(self, *, label: str, message: str, color: str) -> None:
+        self._ensure_stream_line_break()
+        self._print_rule()
+        line = Text(f"{label}: ", style=f"bold {color}")
+        line.append(message, style="white")
+        self._log_console.print(line)
+
+    def _render_todo_state(self, *, state_text: str, is_error: bool) -> None:
+        style = "red" if is_error else "white"
+        if not state_text.strip():
+            self._log_console.print("[empty]", style="dim")
+            return
+
+        self._visible_text += f"{state_text}\n"
+        self._log_console.print(state_text, style=style, markup=False)
 
     def _stream_callback(self, text: str) -> None:
-        sys.stdout.write(text)
-        sys.stdout.flush()
+        if not text:
+            return
+
+        self._streamed_text += text
+        self._visible_text += text
+        full_text = self._pending_trailing_newlines + text
+        self._pending_trailing_newlines = ""
+        if self._pending_stream_separator and full_text.strip():
+            self._print_rule()
+            self._pending_stream_separator = False
+
+        trimmed = full_text.rstrip("\n")
+        trailing = full_text[len(trimmed) :]
+        if trimmed:
+            sys.stdout.write(trimmed)
+            sys.stdout.flush()
+            self._stream_line_open = True
+
+        if trailing:
+            self._pending_trailing_newlines = trailing
+            self._stream_line_open = False
 
     def run(self) -> bool:
         """Execute the main agent loop."""
@@ -78,7 +189,9 @@ class Orchestrator:
                     stream_callback=callback,
                 )
             except Exception as e:
-                print(f"\nError calling LLM: {e}", file=sys.stderr)
+                self._render_status(
+                    label="error", message=f"Error calling LLM: {e}", color="red"
+                )
                 failed = True
                 break
 
@@ -117,25 +230,33 @@ class Orchestrator:
             )
 
             if self.error_tracker.limit_reached():
-                print(
-                    f"\nMax tool failure limit reached ({self.error_tracker.max_failures}). "
-                    f"Errors: {self.error_tracker.errors()}",
-                    file=sys.stderr,
+                self._render_status(
+                    label="error",
+                    message=(
+                        "Max tool failure limit reached "
+                        f"({self.error_tracker.max_failures}). Errors: "
+                        f"{self.error_tracker.errors()}"
+                    ),
+                    color="red",
                 )
                 should_yield = True
                 failed = True
 
             request_count += 1
             if not should_yield and request_count >= self.max_requests_per_turn:
-                print(
-                    f"\nMax requests per turn limit reached ({self.max_requests_per_turn}).",
-                    file=sys.stderr,
+                self._render_status(
+                    label="error",
+                    message=(
+                        "Max requests per turn limit reached "
+                        f"({self.max_requests_per_turn})."
+                    ),
+                    color="red",
                 )
                 should_yield = True
                 failed = True
 
         if is_complete and self.stream:
-            print()
+            self._ensure_stream_line_break()
 
         return not failed
 
@@ -146,39 +267,11 @@ class Orchestrator:
         records = []
         for tc in tool_calls:
             if self.stream:
-                desc = tc.arguments.get("description", "")
-                if tc.name == "shell":
-                    cmd = tc.arguments.get("command", "")
-                    print(f"\n[shell] {desc or cmd}", file=sys.stderr)
-                elif tc.name == "read":
-                    path = tc.arguments.get("file_path", "")
-                    print(f"\n[read] {path}", file=sys.stderr)
-                elif tc.name == "write":
-                    path = tc.arguments.get("file_path", "")
-                    print(f"\n[write] {path}", file=sys.stderr)
-                elif tc.name == "patch":
-                    path = tc.arguments.get("file_path", "")
-                    print(f"\n[patch] {path}", file=sys.stderr)
-                elif tc.name == "fs_search":
-                    pattern = tc.arguments.get("pattern", "")
-                    print(f"\n[search] {pattern}", file=sys.stderr)
-                elif tc.name == "remove":
-                    path = tc.arguments.get("path", "")
-                    print(f"\n[remove] {path}", file=sys.stderr)
-                elif tc.name == "fetch":
-                    url = tc.arguments.get("url", "")
-                    print(f"\n[fetch] {url}", file=sys.stderr)
-                elif tc.name in ("todo_write", "todo_read"):
-                    print(f"\n[{tc.name}]", file=sys.stderr)
-                elif tc.name == "plan":
-                    name = tc.arguments.get("plan_name", "")
-                    print(f"\n[plan] {name}", file=sys.stderr)
-                elif tc.name == "followup":
-                    pass
-                else:
-                    print(f"\n[{tc.name}]", file=sys.stderr)
+                self._render_tool_log(tc=tc)
 
             output, is_error = self.executor.execute(tc.name, tc.arguments)
+            if self.stream and tc.name in {"todo_write", "todo_read"}:
+                self._render_todo_state(state_text=output, is_error=is_error)
 
             result = ToolResult(
                 tool_call_id=tc.id,
@@ -193,3 +286,11 @@ class Orchestrator:
     @property
     def last_plan_content(self) -> str | None:
         return self._last_plan_content
+
+    @property
+    def streamed_text(self) -> str:
+        return self._streamed_text
+
+    @property
+    def visible_text(self) -> str:
+        return self._visible_text

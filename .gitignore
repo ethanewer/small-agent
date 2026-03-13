@@ -27,6 +27,7 @@ sft/logs*
 .local/
 harbor/jobs/
 log*
+!agents/liteforge/logging_utils.py
 *.log
 
 # Generated harness reports

@@ -2,11 +2,11 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 import os
-import sys
 from pathlib import Path
 from typing import Any
 
 from rich.console import Console
+from rich.panel import Panel
 
 from agents.core.result import RunResult
 from agents.core.sink import EventSink
@@ -19,6 +19,12 @@ from agents.liteforge.agent import (
     list_cwd_files,
 )
 from agents.liteforge.context import Context
+from agents.liteforge.logging_utils import (
+    last_assistant_text,
+    print_plain_text_block,
+    print_status,
+    resolve_plan_display,
+)
 from agents.liteforge.orchestrator import Orchestrator
 from agents.liteforge.tools.executor import ToolExecutor
 from agents.liteforge.tools.registry import (
@@ -60,6 +66,19 @@ def _coerce_float(*, value: Any, default: float) -> float:
         return float(value)
     except (TypeError, ValueError):
         return default
+
+
+def _coerce_final_message_enabled(*, value: Any) -> bool:
+    if value is None:
+        return True
+
+    if isinstance(value, bool):
+        return value
+
+    if isinstance(value, str):
+        return value.strip().lower() not in {"0", "false", "no", "off"}
+
+    return bool(value)
 
 
 @contextmanager
@@ -109,15 +128,6 @@ def _resolve_max_tokens(
         return max(1, min(requested_max_tokens, model_context_length))
 
     return max(1, requested_max_tokens)
-
-
-def _last_assistant_text(*, context: Context) -> str | None:
-    for message in reversed(context.messages):
-        if message.role == "assistant" and message.content:
-            content = message.content.strip()
-            if content:
-                return content
-    return None
 
 
 def _resolve_env(*, options: dict[str, Any]) -> dict[str, Any]:
@@ -189,6 +199,8 @@ def _run_agent_pass(
     tool_names: list[str],
     options: dict[str, Any],
     stream: bool,
+    console: Console | None = None,
+    separator_before_stream: bool = False,
     executor: ToolExecutor | None = None,
 ) -> tuple[Orchestrator, bool]:
     desc_context = {
@@ -223,6 +235,11 @@ def _run_agent_pass(
         max_tool_failure_per_turn=max_tool_failure_per_turn,
         stream=stream,
     )
+    if hasattr(orch, "set_log_console"):
+        orch.set_log_console(console=console)
+    if separator_before_stream and hasattr(orch, "queue_stream_separator"):
+        orch.queue_stream_separator()
+
     completed = orch.run()
     return orch, completed
 
@@ -235,7 +252,37 @@ def _run_plan_mode(
     env: dict[str, Any],
     model: str,
     stream: bool,
+    console: Console | None = None,
 ) -> tuple[Context, bool]:
+    log_console = console or Console(stderr=True)
+    base_dir = Path(str(env["cwd"])) if env.get("cwd") else None
+
+    def _render_plan_phase_status(
+        *,
+        orch: Orchestrator,
+        success_message: str,
+    ) -> None:
+        decision = resolve_plan_display(
+            orch=orch,
+            stream=stream,
+            base_dir=base_dir,
+        )
+        if decision.should_print and decision.plan_text is not None:
+            print_plain_text_block(console=log_console, text=decision.plan_text)
+
+        if decision.was_visible:
+            print_status(
+                console=log_console,
+                message=success_message,
+            )
+            return
+
+        print_status(
+            console=log_console,
+            message="Plan created, but no visible plan content was captured.",
+            style="bold yellow",
+        )
+
     context, _ = _build_context(
         task=task,
         options=options,
@@ -246,9 +293,10 @@ def _run_plan_mode(
     )
     executor = ToolExecutor(env=env)
 
-    print("=" * 60, file=sys.stderr)
-    print("PLAN MODE: Phase 1 - Creating plan...", file=sys.stderr)
-    print("=" * 60, file=sys.stderr)
+    print_status(
+        console=log_console,
+        message="Creating plan",
+    )
 
     orch, completed = _run_agent_pass(
         context=context,
@@ -257,34 +305,42 @@ def _run_plan_mode(
         tool_names=list(READONLY_TOOL_NAMES),
         options=options,
         stream=stream,
+        console=log_console,
+        separator_before_stream=True,
         executor=executor,
     )
     if not completed:
         return orch.context, False
 
-    print("\n" + "=" * 60, file=sys.stderr)
-    print("Plan created. Review the plan above.", file=sys.stderr)
-    print("=" * 60, file=sys.stderr)
+    _render_plan_phase_status(
+        orch=orch,
+        success_message="Plan created. Review it below.",
+    )
 
     while True:
         try:
-            response = input("\nExecute this plan? [y]es / [n]o / [feedback]: ").strip()
+            response = input("Execute this plan? [y]es / [n]o / [feedback]: ").strip()
         except (EOFError, KeyboardInterrupt):
-            print("\nAborted.", file=sys.stderr)
+            print_status(console=log_console, message="Aborted.", style="bold yellow")
             return orch.context, True
 
         lowered = response.lower()
         if lowered in ("y", "yes"):
             break
         if lowered in ("n", "no"):
-            print("Plan rejected. Exiting.", file=sys.stderr)
+            print_status(
+                console=log_console,
+                message="Plan rejected. Exiting.",
+                style="bold yellow",
+            )
             return orch.context, True
         if not response:
             continue
 
-        print("\n" + "=" * 60, file=sys.stderr)
-        print("PLAN MODE: Replanning with feedback...", file=sys.stderr)
-        print("=" * 60, file=sys.stderr)
+        print_status(
+            console=log_console,
+            message="Creating plan",
+        )
 
         context = orch.context
         context.add_user_message(
@@ -299,18 +355,22 @@ def _run_plan_mode(
             tool_names=list(READONLY_TOOL_NAMES),
             options=options,
             stream=stream,
+            console=log_console,
+            separator_before_stream=True,
             executor=executor,
         )
         if not completed:
             return orch.context, False
 
-        print("\n" + "=" * 60, file=sys.stderr)
-        print("Revised plan created. Review the plan above.", file=sys.stderr)
-        print("=" * 60, file=sys.stderr)
+        _render_plan_phase_status(
+            orch=orch,
+            success_message="Plan updated. Review it below.",
+        )
 
-    print("\n" + "=" * 60, file=sys.stderr)
-    print("PLAN MODE: Phase 2 - Executing plan...", file=sys.stderr)
-    print("=" * 60, file=sys.stderr)
+    print_status(
+        console=log_console,
+        message="Executing plan",
+    )
 
     context = orch.context
     context.add_user_message(
@@ -326,6 +386,8 @@ def _run_plan_mode(
         tool_names=list(ALL_TOOL_NAMES),
         options=options,
         stream=stream,
+        console=log_console,
+        separator_before_stream=True,
         executor=executor,
     )
     return orch.context, completed
@@ -349,12 +411,16 @@ class LiteforgeAgent:
         console: Console | None = None,
         sink: EventSink | None = None,
     ) -> RunResult:
-        del console
+        if console is None:
+            console = Console()
 
         options = cfg.agent_config
         env = _resolve_env(options=options)
         model = str(options.get("model") or cfg.model.model).strip()
         stream = bool(options.get("stream", True))
+        final_message_enabled = _coerce_final_message_enabled(
+            value=options.get("final_message")
+        )
 
         env_overrides = {
             "OPENAI_MODEL": cfg.model.model,
@@ -377,6 +443,7 @@ class LiteforgeAgent:
                         env=env,
                         model=model,
                         stream=stream,
+                        console=console,
                     )
                 else:
                     tool_names = _resolve_tool_names(options=options)
@@ -395,6 +462,7 @@ class LiteforgeAgent:
                         tool_names=tool_names,
                         options=options,
                         stream=stream,
+                        console=console,
                     )
         except Exception as err:
             result = RunResult(
@@ -407,7 +475,16 @@ class LiteforgeAgent:
                 sink.finalize(result=result)
             return result
 
-        final_message = _last_assistant_text(context=context)
+        final_message = last_assistant_text(context=context)
+        if (
+            final_message_enabled
+            and not stream
+            and final_message
+            and final_message.strip()
+        ):
+            console.print(
+                Panel(final_message, title="Final Output", border_style="green")
+            )
         exit_code = 0 if completed else 1
         result = RunResult(
             exit_code=exit_code,
