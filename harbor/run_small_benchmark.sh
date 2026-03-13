@@ -5,7 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/common.sh"
 
 DATASET_REF="terminal-bench@2.0"
-N_CONCURRENT=5
+N_CONCURRENT=8
 
 BENCHMARK_TASKS=(
   cancel-async-tasks
@@ -14,11 +14,11 @@ BENCHMARK_TASKS=(
   git-leak-recovery
   git-multibranch
   headless-terminal
-  hf-model-inference
+  regex-log
   kv-store-grpc
   log-summary-date-ranges
   modernize-scientific-stack
-  mteb-retrieve
+  configure-git-webserver
   multi-source-data-merger
   nginx-request-logging
   openssl-selfsigned-cert
