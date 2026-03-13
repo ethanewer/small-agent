@@ -1,6 +1,6 @@
 {
   "default_agent": "terminus-2",
-  "default_model": "qwen3.5-flash",
+  "default_model": "qwen3.5-9b",
   "default_cursor_model": "opus-4.6-thinking",
   "agents": {
     "terminus-2": {},
@@ -8,28 +8,6 @@
     "liteforge": {}
   },
   "models": {
-    "qwen3.5-flash": {
-      "model": "qwen/qwen3.5-flash-02-23",
-      "api_base": "https://openrouter.ai/api/v1",
-      "api_key": "OPENROUTER_API_KEY",
-      "context_length": 1000000,
-      "extra_params": {
-        "reasoning": {
-          "enabled": false
-        }
-      }
-    },
-    "qwen3.5-flash-thinking": {
-      "model": "qwen/qwen3.5-flash-02-23",
-      "api_base": "https://openrouter.ai/api/v1",
-      "api_key": "OPENROUTER_API_KEY",
-      "context_length": 1000000,
-      "extra_params": {
-        "reasoning": {
-          "enabled": true
-        }
-      }
-    },
     "qwen3.5-9b": {
       "model": "qwen/qwen3.5-9b",
       "api_base": "https://openrouter.ai/api/v1",
@@ -52,11 +30,49 @@
         }
       }
     },
-    "qwen3-coder-next": {
-      "model": "qwen/qwen3-coder-next",
+    "qwen3.5-flash": {
+      "model": "qwen/qwen3.5-flash-02-23",
       "api_base": "https://openrouter.ai/api/v1",
       "api_key": "OPENROUTER_API_KEY",
-      "context_length": 262144
+      "context_length": 1000000,
+      "extra_params": {
+        "reasoning": {
+          "enabled": false
+        }
+      }
+    },
+    "qwen3.5-flash-thinking": {
+      "model": "qwen/qwen3.5-flash-02-23",
+      "api_base": "https://openrouter.ai/api/v1",
+      "api_key": "OPENROUTER_API_KEY",
+      "context_length": 1000000,
+      "extra_params": {
+        "reasoning": {
+          "enabled": true
+        }
+      }
+    },
+    "qwen3.5-plus": {
+      "model": "qwen/qwen3.5-plus-02-15",
+      "api_base": "https://openrouter.ai/api/v1",
+      "api_key": "OPENROUTER_API_KEY",
+      "context_length": 1000000,
+      "extra_params": {
+        "reasoning": {
+          "enabled": false
+        }
+      }
+    },
+    "qwen3.5-plus-thinking": {
+      "model": "qwen/qwen3.5-plus-02-15",
+      "api_base": "https://openrouter.ai/api/v1",
+      "api_key": "OPENROUTER_API_KEY",
+      "context_length": 1000000,
+      "extra_params": {
+        "reasoning": {
+          "enabled": true
+        }
+      }
     },
     "minimax-m2.5": {
       "model": "minimax/minimax-m2.5",
@@ -75,183 +91,6 @@
       "api_base": "https://openrouter.ai/api/v1",
       "api_key": "OPENROUTER_API_KEY",
       "context_length": 262144
-    },
-    "qwen3.5-9b-16k": {
-      "model": "qwen/qwen3.5-9b",
-      "api_base": "https://openrouter.ai/api/v1",
-      "api_key": "OPENROUTER_API_KEY",
-      "context_length": 16384,
-      "extra_params": {
-        "reasoning": {
-          "enabled": false
-        }
-      }
-    },
-    "qwen3.5-9b-32k": {
-      "model": "qwen/qwen3.5-9b",
-      "api_base": "https://openrouter.ai/api/v1",
-      "api_key": "OPENROUTER_API_KEY",
-      "context_length": 32768,
-      "extra_params": {
-        "reasoning": {
-          "enabled": false
-        }
-      }
-    },
-    "qwen3.5-9b-65k": {
-      "model": "qwen/qwen3.5-9b",
-      "api_base": "https://openrouter.ai/api/v1",
-      "api_key": "OPENROUTER_API_KEY",
-      "context_length": 65536,
-      "extra_params": {
-        "reasoning": {
-          "enabled": false
-        }
-      }
-    },
-    "qwen3.5-9b-131k": {
-      "model": "qwen/qwen3.5-9b",
-      "api_base": "https://openrouter.ai/api/v1",
-      "api_key": "OPENROUTER_API_KEY",
-      "context_length": 131072,
-      "extra_params": {
-        "reasoning": {
-          "enabled": false
-        }
-      }
-    },
-    "qwen3.5-9b-262k": {
-      "model": "qwen/qwen3.5-9b",
-      "api_base": "https://openrouter.ai/api/v1",
-      "api_key": "OPENROUTER_API_KEY",
-      "context_length": 262144,
-      "extra_params": {
-        "reasoning": {
-          "enabled": false
-        }
-      }
-    },
-    "qwen3.5-flash-16k": {
-      "model": "qwen/qwen3.5-flash-02-23",
-      "api_base": "https://openrouter.ai/api/v1",
-      "api_key": "OPENROUTER_API_KEY",
-      "context_length": 16384,
-      "extra_params": {
-        "reasoning": {
-          "enabled": false
-        }
-      }
-    },
-    "qwen3.5-flash-32k": {
-      "model": "qwen/qwen3.5-flash-02-23",
-      "api_base": "https://openrouter.ai/api/v1",
-      "api_key": "OPENROUTER_API_KEY",
-      "context_length": 32768,
-      "extra_params": {
-        "reasoning": {
-          "enabled": false
-        }
-      }
-    },
-    "qwen3.5-flash-65k": {
-      "model": "qwen/qwen3.5-flash-02-23",
-      "api_base": "https://openrouter.ai/api/v1",
-      "api_key": "OPENROUTER_API_KEY",
-      "context_length": 65536,
-      "extra_params": {
-        "reasoning": {
-          "enabled": false
-        }
-      }
-    },
-    "qwen3.5-flash-131k": {
-      "model": "qwen/qwen3.5-flash-02-23",
-      "api_base": "https://openrouter.ai/api/v1",
-      "api_key": "OPENROUTER_API_KEY",
-      "context_length": 131072,
-      "extra_params": {
-        "reasoning": {
-          "enabled": false
-        }
-      }
-    },
-    "qwen3.5-flash-262k": {
-      "model": "qwen/qwen3.5-flash-02-23",
-      "api_base": "https://openrouter.ai/api/v1",
-      "api_key": "OPENROUTER_API_KEY",
-      "context_length": 262144,
-      "extra_params": {
-        "reasoning": {
-          "enabled": false
-        }
-      }
-    },
-    "qwen3.5-plus-16k": {
-      "model": "qwen/qwen3.5-plus-02-15",
-      "api_base": "https://openrouter.ai/api/v1",
-      "api_key": "OPENROUTER_API_KEY",
-      "context_length": 16384,
-      "extra_params": {
-        "reasoning": {
-          "enabled": false
-        }
-      }
-    },
-    "qwen3.5-plus-32k": {
-      "model": "qwen/qwen3.5-plus-02-15",
-      "api_base": "https://openrouter.ai/api/v1",
-      "api_key": "OPENROUTER_API_KEY",
-      "context_length": 32768,
-      "extra_params": {
-        "reasoning": {
-          "enabled": false
-        }
-      }
-    },
-    "qwen3.5-plus-65k": {
-      "model": "qwen/qwen3.5-plus-02-15",
-      "api_base": "https://openrouter.ai/api/v1",
-      "api_key": "OPENROUTER_API_KEY",
-      "context_length": 65536,
-      "extra_params": {
-        "reasoning": {
-          "enabled": false
-        }
-      }
-    },
-    "qwen3.5-plus-131k": {
-      "model": "qwen/qwen3.5-plus-02-15",
-      "api_base": "https://openrouter.ai/api/v1",
-      "api_key": "OPENROUTER_API_KEY",
-      "context_length": 131072,
-      "extra_params": {
-        "reasoning": {
-          "enabled": false
-        }
-      }
-    },
-    "qwen3.5-plus-262k": {
-      "model": "qwen/qwen3.5-plus-02-15",
-      "api_base": "https://openrouter.ai/api/v1",
-      "api_key": "OPENROUTER_API_KEY",
-      "context_length": 262144,
-      "extra_params": {
-        "reasoning": {
-          "enabled": false
-        }
-      }
-    },
-    "nanbeige4.1-3b": {
-      "model": "openai/nanbeige4.1-3b",
-      "api_base": "http://127.0.0.1:1234/v1",
-      "api_key": "OPENAI_API_KEY",
-      "context_length": 65536
-    },
-    "small-agent-20260303": {
-      "model": "openai/small-agent-20260303-mlx",
-      "api_base": "http://127.0.0.1:1234/v1",
-      "api_key": "OPENAI_API_KEY",
-      "context_length": 65536
     }
   },
   "verbosity": 0,
