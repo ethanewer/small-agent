@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import copy
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -36,7 +35,6 @@ class Context:
     tools: list[dict] = field(default_factory=list)
     max_tokens: int | None = None
     extra_params: dict[str, Any] | None = None
-    token_count: int = 0
 
     def set_system_messages(self, texts: list[str]) -> None:
         self.messages = [m for m in self.messages if m.role != "system"]
@@ -67,9 +65,6 @@ class Context:
         self.add_assistant_message(assistant_content, tool_calls)
         for _call, result in tool_results:
             self.add_tool_result(result)
-
-    def clone(self) -> Context:
-        return copy.deepcopy(self)
 
     def to_api_messages(self) -> list[dict]:
         """Convert to the format expected by the OpenAI-compatible APIs.

@@ -7,9 +7,6 @@ class TodoManager:
     def __init__(self) -> None:
         self._todos: list[dict[str, str]] = []
 
-    def get_todos(self) -> list[dict[str, str]]:
-        return list(self._todos)
-
     def update_todos(self, todos: list[dict[str, Any]]) -> None:
         for todo in todos:
             todo_id = todo.get("id", "")

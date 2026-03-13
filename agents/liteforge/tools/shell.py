@@ -55,7 +55,6 @@ def execute(args: dict[str, Any], env: dict[str, Any]) -> str:
     cwd = args.get("cwd")
     keep_ansi = args.get("keep_ansi", False)
     env_vars = args.get("env")
-    _description = args.get("description")
 
     if not command or not command.strip():
         return "Error: Command string is empty or contains only whitespace"

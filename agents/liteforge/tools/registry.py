@@ -473,5 +473,3 @@ READONLY_TOOL_NAMES = [
     "todo_write",
     "todo_read",
 ]
-
-YIELD_TOOLS: set[str] = set()

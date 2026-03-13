@@ -342,6 +342,48 @@ def test_orchestrator_tool_logs_use_compact_styled_lines() -> None:
     assert "\n\n\n" not in rendered
 
 
+def test_orchestrator_trims_tool_log_detail_newlines() -> None:
+    class FakeExecutor(ToolExecutor):
+        def __init__(self) -> None:
+            super().__init__(env={"cwd": "."})
+
+        def execute(
+            self, tool_name: str, arguments: dict[str, object]
+        ) -> tuple[str, bool]:
+            del tool_name, arguments
+            return "ok", False
+
+    orch = Orchestrator(
+        context=Context(),
+        executor=FakeExecutor(),
+        model="model-x",
+        tools=[],
+        stream=True,
+    )
+    console = Console(record=True, width=80, stderr=True)
+    orch.set_log_console(console=console)
+    _ = orch._execute_tool_calls(
+        [
+            ToolCall(
+                id="tool-1",
+                name="shell",
+                arguments={"description": "List files\n", "command": "ls"},
+            ),
+            ToolCall(
+                id="tool-2",
+                name="read",
+                arguments={"file_path": "/tmp/demo.py\n"},
+            ),
+        ]
+    )
+
+    rendered = console.export_text()
+    assert "[shell] List files\n\n" not in rendered
+    assert "[read] /tmp/demo.py\n\n" not in rendered
+    assert "[shell] List files" in rendered
+    assert "[read] /tmp/demo.py" in rendered
+
+
 def test_orchestrator_collapses_trailing_stream_newlines_before_tool_logs() -> None:
     class FakeExecutor(ToolExecutor):
         def __init__(self) -> None:
@@ -378,6 +420,54 @@ def test_orchestrator_collapses_trailing_stream_newlines_before_tool_logs() -> N
     assert stream_output.getvalue() == "I'll explore this codebase.\n"
     rendered = console.export_text()
     assert "[shell] List files" in rendered
+
+
+def test_orchestrator_ignores_whitespace_only_stream_before_tool_logs() -> None:
+    class FakeExecutor(ToolExecutor):
+        def __init__(self) -> None:
+            super().__init__(env={"cwd": "."})
+
+        def execute(
+            self, tool_name: str, arguments: dict[str, object]
+        ) -> tuple[str, bool]:
+            del tool_name, arguments
+            return "ok", False
+
+    orch = Orchestrator(
+        context=Context(),
+        executor=FakeExecutor(),
+        model="model-x",
+        tools=[],
+        stream=True,
+    )
+    console = Console(record=True, width=70, stderr=True)
+    orch.set_log_console(console=console)
+    stream_output = io.StringIO()
+    with redirect_stdout(stream_output):
+        _ = orch._execute_tool_calls(
+            [
+                ToolCall(
+                    id="tool-1",
+                    name="shell",
+                    arguments={"description": "List files", "command": "ls"},
+                )
+            ]
+        )
+        orch._stream_callback("\n\n")
+        _ = orch._execute_tool_calls(
+            [
+                ToolCall(
+                    id="tool-2",
+                    name="read",
+                    arguments={"file_path": "/tmp/demo.py"},
+                )
+            ]
+        )
+
+    assert stream_output.getvalue() == ""
+    rendered = console.export_text()
+    assert "[shell] List files\n\n\n─" not in rendered
+    assert "[read] /tmp/demo.py" in rendered
 
 
 def test_orchestrator_prints_separator_before_resumed_stream_text() -> None:

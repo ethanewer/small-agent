@@ -10,7 +10,6 @@ from agents.liteforge.context import Context, ToolCall, ToolResult
 from agents.liteforge.logging_utils import print_rule
 from agents.liteforge.provider import chat
 from agents.liteforge.tools.executor import ToolExecutor
-from agents.liteforge.tools.registry import YIELD_TOOLS
 
 
 @dataclass
@@ -60,6 +59,7 @@ class Orchestrator:
         self.stream = stream
         self._log_console = Console(stderr=True)
         self._stream_line_open = False
+        self._stream_had_visible_text_since_break = False
         self._pending_trailing_newlines = ""
         self._pending_stream_separator = False
         self._streamed_text = ""
@@ -79,10 +79,14 @@ class Orchestrator:
 
     def _ensure_stream_line_break(self) -> None:
         if self._pending_trailing_newlines:
-            sys.stdout.write("\n")
-            sys.stdout.flush()
+            # Only emit a separator newline when streamed content actually printed
+            # visible characters before trailing newline chunks.
+            if self._stream_had_visible_text_since_break:
+                sys.stdout.write("\n")
+                sys.stdout.flush()
             self._pending_trailing_newlines = ""
             self._stream_line_open = False
+            self._stream_had_visible_text_since_break = False
             return
 
         if not self._stream_line_open:
@@ -91,6 +95,7 @@ class Orchestrator:
         sys.stdout.write("\n")
         sys.stdout.flush()
         self._stream_line_open = False
+        self._stream_had_visible_text_since_break = False
 
     def _render_tool_log(self, *, tc: ToolCall) -> None:
         mapping: dict[str, tuple[str, str, str]] = {
@@ -115,13 +120,14 @@ class Orchestrator:
             display_name = tc.name
             color = "cyan"
             detail = ""
+        detail = detail.strip()
 
         self._ensure_stream_line_break()
         self._print_rule()
         line = Text("[", style="dim")
         line.append(display_name, style=f"bold {color}")
         line.append("]", style="dim")
-        if detail.strip():
+        if detail:
             line.append(" ")
             line.append(detail, style="white")
         self._log_console.print(line)
@@ -161,6 +167,7 @@ class Orchestrator:
             sys.stdout.write(trimmed)
             sys.stdout.flush()
             self._stream_line_open = True
+            self._stream_had_visible_text_since_break = True
 
         if trailing:
             self._pending_trailing_newlines = trailing
@@ -195,9 +202,7 @@ class Orchestrator:
 
             is_complete = response.finish_reason == "stop" and not response.tool_calls
 
-            should_yield = is_complete or any(
-                tc.name in YIELD_TOOLS for tc in response.tool_calls
-            )
+            should_yield = is_complete
 
             tool_call_records = self._execute_tool_calls(response.tool_calls)
 
