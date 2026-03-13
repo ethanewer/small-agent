@@ -1,0 +1,55 @@
+{
+    "id": "532cf427-7a32-4456-ad6f-680621f9d006",
+    "started_at": "2026-03-13T15:54:08.312928",
+    "finished_at": "2026-03-13T16:10:50.935489",
+    "n_total_trials": 20,
+    "stats": {
+        "n_trials": 20,
+        "n_errors": 2,
+        "evals": {
+            "small-agent-harbor-external__terminal-bench": {
+                "n_trials": 20,
+                "n_errors": 2,
+                "metrics": [
+                    {
+                        "mean": 0.45
+                    }
+                ],
+                "reward_stats": {
+                    "reward": {
+                        "0.0": [
+                            "log-summary-date-ranges__j7BwCLa",
+                            "configure-git-webserver__kYxAYz7",
+                            "polyglot-rust-c__nKDxToi",
+                            "headless-terminal__q9u3tSm",
+                            "fix-git__sjAwdBC",
+                            "git-multibranch__XmfvbkY",
+                            "regex-log__Dcv2xb7",
+                            "polyglot-c-py__hV2BVKf",
+                            "cancel-async-tasks__rt4k9iS",
+                            "sqlite-with-gcov__KcmZJs3",
+                            "vulnerable-secret__yYNijS7"
+                        ],
+                        "1.0": [
+                            "modernize-scientific-stack__5iiaVTS",
+                            "prove-plus-comm__UCtLmQg",
+                            "pypi-server__NDWUi59",
+                            "multi-source-data-merger__wDHK3uX",
+                            "kv-store-grpc__iYpaNr3",
+                            "git-leak-recovery__ifL6Gc4",
+                            "nginx-request-logging__cU4TRCA",
+                            "openssl-selfsigned-cert__e3SDbeW",
+                            "constraints-scheduling__JoTpj83"
+                        ]
+                    }
+                },
+                "exception_stats": {
+                    "AgentTimeoutError": [
+                        "headless-terminal__q9u3tSm",
+                        "kv-store-grpc__iYpaNr3"
+                    ]
+                }
+            }
+        }
+    }
+}
