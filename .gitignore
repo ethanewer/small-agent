@@ -40,3 +40,4 @@ agent_evolve/updates
 *.out
 *.err
 *.tar
+plans*
