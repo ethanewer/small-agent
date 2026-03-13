@@ -10,7 +10,6 @@ from pathlib import Path
 from typing import Any
 
 TEMPLATES_DIR = Path(__file__).parent / "templates"
-PROMPTS_DIR = Path(__file__).parent / "prompts"
 
 TOOL_NAME_MAP = {
     "read": "read",
@@ -262,7 +261,7 @@ def build_system_prompt(
         "model": {"input_modalities": []},
     }
 
-    agent_md = (PROMPTS_DIR / "forge.md").read_text()
+    agent_md = (TEMPLATES_DIR / "forge.md").read_text()
     parts = agent_md.split("---", 2)
     if len(parts) >= 3:
         agent_body = parts[2].strip()
