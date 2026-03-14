@@ -35,6 +35,7 @@ agents/toolmind_harness/alignment_report*.md
 agents/toolmind_harness/reverse_engineering_notes.md
 config/
 agent_evolve/updates
+agent_evolve_v2/outputs*
 
 .env
 *.out
