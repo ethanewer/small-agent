@@ -1,7 +1,9 @@
-# pyright: reportAny=false, reportUnknownVariableType=false, reportUnusedCallResult=false, reportUnannotatedClassAttribute=false
+# pyright: reportAny=false, reportUnknownVariableType=false, reportUnusedCallResult=false, reportUnannotatedClassAttribute=false, reportPrivateUsage=false, reportUnknownLambdaType=false, reportUnknownArgumentType=false
 
 from __future__ import annotations
 
+import asyncio
+import base64
 import json
 import os
 from pathlib import Path
@@ -11,6 +13,12 @@ import pytest
 from agent_evolve_v2.benchmark import resolve_benchmark_cache_root
 from agent_evolve_v2.config import RunSpec, load_runs_config
 from agent_evolve_v2.critic import summarize_job
+from agent_evolve_v2.service_remote_runner import _load_extra_params
+from agent_evolve_v2.service_runtime import (
+    ResolvedAgentConfig,
+    ResolvedModelConfig,
+    build_runtime_env_payload,
+)
 from agent_evolve_v2.state import AgentState, BenchmarkSummary, OfficialBenchmarkRun
 from agent_evolve_v2.state_manager import StateManager
 from agent_evolve_v2.workspace_support.benchmark_cache import (
@@ -21,6 +29,7 @@ from agent_evolve_v2.workspace_support.benchmark_cache import (
 )
 from agent_evolve_v2.workspace_support.workspace_harbor_agent import (
     WorkspaceHarborAgent,
+    _extract_exec_fields,
 )
 
 
@@ -286,6 +295,118 @@ def test_workspace_harbor_agent_applies_extra_env(
     assert os.environ["OPENROUTER_API_KEY"] == "test-key"
 
 
+def test_workspace_harbor_agent_runs_from_task_default_cwd(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    agent = WorkspaceHarborAgent()
+    monkeypatch.setenv("AGENT_EVOLVE_V2_REPO_ROOT", str(tmp_path))
+    monkeypatch.setenv("WORKSPACE_MODEL_KEY", "qwen3.5-9b")
+    monkeypatch.setattr(
+        "agent_evolve_v2.workspace_support.workspace_harbor_agent.build_runtime_env_payload",
+        lambda **_kwargs: {},
+    )
+
+    recorded: dict[str, object | None] = {"cwd": "unset"}
+
+    async def fake_environment_exec(**kwargs: object) -> dict[str, object]:
+        recorded["cwd"] = kwargs.get("cwd")
+        return {"exit_code": 0, "stdout": "", "stderr": ""}
+
+    async def fake_ensure_workspace_available(*, environment: object) -> None:
+        del environment
+
+    monkeypatch.setattr(
+        "agent_evolve_v2.workspace_support.workspace_harbor_agent._environment_exec",
+        fake_environment_exec,
+    )
+    monkeypatch.setattr(
+        agent, "_ensure_workspace_available", fake_ensure_workspace_available
+    )
+
+    class Context:
+        metadata: dict[str, object] = {}
+
+    asyncio.run(
+        agent.run(
+            instruction="echo hello",
+            environment=object(),
+            context=Context(),
+        )
+    )
+
+    assert recorded["cwd"] is None
+
+
+def test_build_runtime_env_payload_encodes_extra_params(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "agent_evolve_v2.service_runtime.resolve_model_config",
+        lambda **_kwargs: ResolvedModelConfig(
+            key="qwen3.5-9b",
+            model="qwen/qwen3.5-9b",
+            api_base="https://openrouter.ai/api/v1",
+            api_key="test-key",
+            temperature=None,
+            context_length=262144,
+            extra_params={"reasoning": {"enabled": False}},
+        ),
+    )
+    monkeypatch.setattr(
+        "agent_evolve_v2.service_runtime.resolve_agent_config",
+        lambda **_kwargs: ResolvedAgentConfig(
+            verbosity=0,
+            max_turns=250,
+            max_wait_seconds=120.0,
+            final_message=False,
+        ),
+    )
+
+    payload = build_runtime_env_payload(
+        repo_root=Path("/tmp/repo"),
+        model_key="qwen3.5-9b",
+        final_message_enabled=False,
+    )
+
+    assert "WORKSPACE_CFG_EXTRA_PARAMS_B64" in payload
+    decoded = base64.b64decode(payload["WORKSPACE_CFG_EXTRA_PARAMS_B64"]).decode(
+        "utf-8"
+    )
+    assert json.loads(decoded) == {"reasoning": {"enabled": False}}
+
+
+def test_remote_runner_load_extra_params_supports_blank_and_base64(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("WORKSPACE_CFG_EXTRA_PARAMS_B64", raising=False)
+    monkeypatch.setenv("WORKSPACE_CFG_EXTRA_PARAMS_JSON", "")
+    assert _load_extra_params() is None
+
+    monkeypatch.setenv(
+        "WORKSPACE_CFG_EXTRA_PARAMS_B64",
+        base64.b64encode(
+            json.dumps({"reasoning": {"enabled": False}}, ensure_ascii=True).encode(
+                "utf-8"
+            )
+        ).decode("ascii"),
+    )
+    assert _load_extra_params() == {"reasoning": {"enabled": False}}
+
+
+def test_workspace_harbor_agent_extract_exec_fields_supports_return_code() -> None:
+    class ExecResult:
+        return_code = 7
+        stdout = "stdout"
+        stderr = "stderr"
+
+    assert _extract_exec_fields({"return_code": 5, "stdout": "a", "stderr": "b"}) == (
+        5,
+        "a",
+        "b",
+    )
+    assert _extract_exec_fields(ExecResult()) == (7, "stdout", "stderr")
+
+
 def test_benchmark_fingerprint_ignores_notes_and_readme_edits(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     _write_minimal_agent_tree(workspace=workspace)
@@ -348,6 +469,13 @@ def test_resolve_benchmark_cache_root_defaults_outside_workspace(
         repo_root / "agent_evolve_v2" / "outputs" / "manual_benchmark_cache"
     )
     assert not str(cache_root).startswith(str(workspace))
+
+
+def test_state_manager_does_not_create_run_local_benchmark_cache(
+    tmp_path: Path,
+) -> None:
+    manager, _root = _bootstrap_manager(tmp_path=tmp_path)
+    assert not manager.benchmark_cache_dir.exists()
 
 
 def test_child_workspace_starts_with_single_visible_official_run(

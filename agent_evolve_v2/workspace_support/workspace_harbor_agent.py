@@ -69,23 +69,45 @@ async def _environment_exec(
 
 
 def _extract_exec_fields(exec_result: Any) -> tuple[int, str, str]:
+    def _as_text(value: Any) -> str:
+        if value is None:
+            return ""
+        return str(value)
+
     if exec_result is None:
         return 0, "", ""
     if isinstance(exec_result, tuple):
         if len(exec_result) == 3:
-            return int(exec_result[0]), str(exec_result[1]), str(exec_result[2])
+            first, second, third = exec_result
+            return int(first), _as_text(second), _as_text(third)
         if len(exec_result) == 2:
-            return int(exec_result[0]), str(exec_result[1]), ""
+            first, second = exec_result
+            return int(first), _as_text(second), ""
+    if isinstance(exec_result, str):
+        return 0, exec_result, ""
     if isinstance(exec_result, dict):
         return (
-            int(exec_result.get("exit_code", exec_result.get("returncode", 0))),
-            str(exec_result.get("stdout", "")),
-            str(exec_result.get("stderr", "")),
+            int(
+                exec_result.get(
+                    "exit_code",
+                    exec_result.get("returncode", exec_result.get("return_code", 0)),
+                )
+            ),
+            _as_text(exec_result.get("stdout", "")),
+            _as_text(exec_result.get("stderr", "")),
         )
     return (
-        int(getattr(exec_result, "exit_code", getattr(exec_result, "returncode", 0))),
-        str(getattr(exec_result, "stdout", "")),
-        str(getattr(exec_result, "stderr", "")),
+        int(
+            getattr(
+                exec_result,
+                "exit_code",
+                getattr(
+                    exec_result, "returncode", getattr(exec_result, "return_code", 0)
+                ),
+            )
+        ),
+        _as_text(getattr(exec_result, "stdout", "")),
+        _as_text(getattr(exec_result, "stderr", "")),
     )
 
 
@@ -220,7 +242,7 @@ class WorkspaceHarborAgent(HarborBaseAgent):
         exec_result = await _environment_exec(
             environment=environment,
             command=command,
-            cwd=REMOTE_WORKSPACE_ROOT,
+            cwd=None,
             env=env_overrides,
             timeout_sec=60 * 60,
         )
@@ -258,6 +280,10 @@ class WorkspaceHarborAgent(HarborBaseAgent):
             "apt-get update && apt-get install -y --no-install-recommends "
             "python3 python3-pip ca-certificates; "
             "fi; "
+            "if ! python3 -m pip --version >/dev/null 2>&1; then "
+            "apt-get update && apt-get install -y --no-install-recommends "
+            "python3-pip ca-certificates; "
+            "fi; "
             "if ! command -v tmux >/dev/null 2>&1; then "
             "apt-get update && apt-get install -y --no-install-recommends tmux; "
             "fi; "
@@ -270,7 +296,11 @@ class WorkspaceHarborAgent(HarborBaseAgent):
             "fi; "
             'if ! python3 -c "import anthropic, rich, openai, httpx, truststore" >/dev/null 2>&1; then '
             "python3 -m pip install --disable-pip-version-check --no-input "
-            "$PIP_BREAK_FLAG anthropic rich openai httpx truststore; "
+            "$PIP_BREAK_FLAG anthropic rich openai httpx truststore || "
+            "python3 -m pip install --disable-pip-version-check --no-input "
+            "$PIP_BREAK_FLAG "
+            "--trusted-host pypi.org --trusted-host files.pythonhosted.org "
+            "anthropic rich openai httpx truststore; "
             "fi"
         )
         bootstrap_result = await _environment_exec(

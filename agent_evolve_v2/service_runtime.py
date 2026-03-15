@@ -6,6 +6,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
+import base64
 import importlib.util
 import json
 import os
@@ -201,15 +202,16 @@ def build_runtime_env_payload(
         "WORKSPACE_CFG_MODEL": model_cfg.model,
         "WORKSPACE_CFG_API_BASE": model_cfg.api_base,
         "WORKSPACE_CFG_API_KEY": model_cfg.api_key,
-        "WORKSPACE_CFG_EXTRA_PARAMS_JSON": json.dumps(
-            model_cfg.extra_params,
-            ensure_ascii=True,
-        ),
         "WORKSPACE_CFG_VERBOSITY": str(agent_cfg.verbosity),
         "WORKSPACE_CFG_MAX_TURNS": str(agent_cfg.max_turns),
         "WORKSPACE_CFG_MAX_WAIT_SECONDS": str(agent_cfg.max_wait_seconds),
         "WORKSPACE_CFG_FINAL_MESSAGE": "1" if agent_cfg.final_message else "0",
     }
+    if model_cfg.extra_params is not None:
+        extra_params_json = json.dumps(model_cfg.extra_params, ensure_ascii=True)
+        env["WORKSPACE_CFG_EXTRA_PARAMS_B64"] = base64.b64encode(
+            extra_params_json.encode("utf-8")
+        ).decode("ascii")
     if model_cfg.temperature is not None:
         env["WORKSPACE_CFG_TEMPERATURE"] = str(model_cfg.temperature)
     if model_cfg.context_length is not None:

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import importlib.util
 import os
@@ -51,9 +52,7 @@ def _build_runtime_config(*, workspace_root: Path) -> object:
         module = importlib.util.module_from_spec(spec)
         sys.modules["runtime_types"] = module
         spec.loader.exec_module(module)
-        extra_params = json.loads(
-            os.environ.get("WORKSPACE_CFG_EXTRA_PARAMS_JSON", "null")
-        )
+        extra_params = _load_extra_params()
         temperature = _maybe_float(value=os.environ.get("WORKSPACE_CFG_TEMPERATURE"))
         context_length = _maybe_int(
             value=os.environ.get("WORKSPACE_CFG_CONTEXT_LENGTH")
@@ -78,6 +77,36 @@ def _build_runtime_config(*, workspace_root: Path) -> object:
                 ),
             },
         )
+
+
+def _load_extra_params() -> dict[str, object] | None:
+    encoded = os.environ.get("WORKSPACE_CFG_EXTRA_PARAMS_B64", "").strip()
+    if encoded:
+        try:
+            raw = base64.b64decode(encoded).decode("utf-8")
+        except Exception as exc:
+            raise RuntimeError(
+                "Invalid WORKSPACE_CFG_EXTRA_PARAMS_B64 payload."
+            ) from exc
+        return _parse_extra_params(raw=raw)
+
+    return _parse_extra_params(
+        raw=os.environ.get("WORKSPACE_CFG_EXTRA_PARAMS_JSON", "null")
+    )
+
+
+def _parse_extra_params(*, raw: str | None) -> dict[str, object] | None:
+    if raw is None:
+        return None
+    normalized = raw.strip()
+    if not normalized:
+        return None
+    parsed = json.loads(normalized)
+    if parsed is None:
+        return None
+    if not isinstance(parsed, dict):
+        raise RuntimeError("Workspace extra params must be a JSON object.")
+    return parsed
 
 
 def _load_workspace_agent(*, workspace_root: Path) -> object:

@@ -62,7 +62,6 @@ class StateManager:
         self.states_dir.mkdir(parents=True, exist_ok=True)
         self.workspaces_dir.mkdir(parents=True, exist_ok=True)
         self.critic_workspaces_dir.mkdir(parents=True, exist_ok=True)
-        self.benchmark_cache_dir.mkdir(parents=True, exist_ok=True)
 
     @property
     def states(self) -> list[AgentState]:
@@ -261,11 +260,12 @@ class StateManager:
     ) -> CanonicalRunRecord | None:
         if state.official_benchmark is None:
             return None
+        cache_root = Path(state.official_benchmark.canonical_run_dir).parents[1]
         payload: dict[str, object] = {
             "run_id": Path(state.official_benchmark.canonical_run_dir).name,
             "fingerprint": state.official_benchmark.fingerprint,
             "model_key": state.official_benchmark.model_key,
-            "cache_root": str(self.benchmark_cache_dir),
+            "cache_root": str(cache_root),
             "canonical_run_dir": state.official_benchmark.canonical_run_dir,
             "aggregate_result_path": state.official_benchmark.aggregate_result_path,
             "harbor_job_dir": state.official_benchmark.harbor_job_dir,
