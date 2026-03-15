@@ -3,7 +3,8 @@ You are improving a self-contained benchmark workspace for `agent_evolve_v2`.
 The selected baseline harness for this run is `{baseline}`.
 You are refining a child workspace cloned from parent iteration **{parent_iteration}**.
 
-Workspace root: `{parent_workspace}`
+Workspace root: `{workspace_root}`
+Selected parent workspace (reference only, do not edit there): `{parent_workspace}`
 Run root: `{run_root}`
 
 This loop uses paper-aligned tree search:
@@ -27,6 +28,8 @@ Current Thompson sample:
 ## Workspace rules
 
 - The workspace is intentionally minimal. Edit only the local `agent/` harness code plus workspace docs/notes.
+- Treat `{workspace_root}` as the only editable workspace for this iteration.
+- Do not edit files inside `{parent_workspace}`. That parent workspace is reference context only.
 - Do not reach back into the repo's older `agent_evolve`, `cli.py`, `harbor/agent.py`, or v1 benchmark wrapper codepaths.
 - Read `README.md` first, then `NOTES.md`, then any benchmark artifacts referenced there.
 - When you run the workspace-local validation or benchmark wrapper, use model key `{benchmark_model_key}`.

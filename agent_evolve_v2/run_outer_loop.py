@@ -103,12 +103,6 @@ def main(argv: list[str]) -> int:
     while next_iteration <= run_spec.iterations:
         parent_sample = manager.sample_parent_state(rng=rng)
         scoreboard_text = _build_scoreboard(states=manager.states)
-        prompt_text = _render_prompt(
-            run_root=run_root,
-            parent_sample=parent_sample,
-            scoreboard_text=scoreboard_text,
-            benchmark_model_key=run_spec.model_key,
-        )
         state = manager.create_child_state(
             parent_state=parent_sample.state,
             iteration=next_iteration,
@@ -116,6 +110,13 @@ def main(argv: list[str]) -> int:
                 "Refine the selected parent workspace using the critic summary "
                 f"from iteration {parent_sample.state.iteration}."
             ),
+        )
+        prompt_text = _render_prompt(
+            run_root=run_root,
+            workspace_root=Path(state.refiner_workspace_path),
+            parent_sample=parent_sample,
+            scoreboard_text=scoreboard_text,
+            benchmark_model_key=run_spec.model_key,
         )
         artifacts_dir = run_root / "artifacts" / f"iteration-{next_iteration:04d}"
         artifacts_dir.mkdir(parents=True, exist_ok=True)
@@ -325,6 +326,7 @@ def _write_scoreboard(*, run_root: Path, states: list[AgentState]) -> None:
 def _render_prompt(
     *,
     run_root: Path,
+    workspace_root: Path,
     parent_sample: ParentSample,
     scoreboard_text: str,
     benchmark_model_key: str,
@@ -339,6 +341,7 @@ def _render_prompt(
     )
     return template.format(
         run_root=run_root,
+        workspace_root=workspace_root,
         parent_iteration=parent_sample.state.iteration,
         parent_workspace=parent_sample.state.refiner_workspace_path,
         baseline=parent_sample.state.baseline,

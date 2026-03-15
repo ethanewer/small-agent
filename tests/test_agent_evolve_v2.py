@@ -13,6 +13,7 @@ import pytest
 from agent_evolve_v2.benchmark import resolve_benchmark_cache_root
 from agent_evolve_v2.config import RunSpec, load_runs_config
 from agent_evolve_v2.critic import summarize_job
+from agent_evolve_v2 import run_outer_loop
 from agent_evolve_v2.service_remote_runner import _load_extra_params
 from agent_evolve_v2.service_runtime import (
     ResolvedAgentConfig,
@@ -20,7 +21,7 @@ from agent_evolve_v2.service_runtime import (
     build_runtime_env_payload,
 )
 from agent_evolve_v2.state import AgentState, BenchmarkSummary, OfficialBenchmarkRun
-from agent_evolve_v2.state_manager import StateManager
+from agent_evolve_v2.state_manager import ParentSample, StateManager
 from agent_evolve_v2.workspace_support.benchmark_cache import (
     CanonicalRunRecord,
     compute_benchmark_fingerprint,
@@ -217,6 +218,32 @@ def test_child_workspace_rewrites_model_key_in_docs(tmp_path: Path) -> None:
     assert "./run_benchmark.sh qwen3.5-9b" in (child_workspace / "NOTES.md").read_text(
         encoding="utf-8"
     )
+
+
+def test_render_prompt_targets_child_workspace_not_parent(tmp_path: Path) -> None:
+    manager, root = _bootstrap_manager(tmp_path=tmp_path)
+    child = manager.create_child_state(
+        parent_state=root,
+        iteration=1,
+        plan="verify prompt workspace target",
+    )
+    prompt = run_outer_loop._render_prompt(
+        run_root=manager.run_root,
+        workspace_root=Path(child.refiner_workspace_path),
+        parent_sample=ParentSample(
+            state=root,
+            score_sample=0.25,
+            alpha=11.0,
+            beta=9.0,
+        ),
+        scoreboard_text=run_outer_loop._build_scoreboard(states=manager.states),
+        benchmark_model_key=manager.run_spec.model_key,
+    )
+    assert f"Workspace root: `{child.refiner_workspace_path}`" in prompt
+    assert (
+        f"Selected parent workspace (reference only, do not edit there): `{root.refiner_workspace_path}`"
+    ) in prompt
+    assert f"Do not edit files inside `{root.refiner_workspace_path}`." in prompt
 
 
 def test_summarize_job_extracts_summary_and_critic(tmp_path: Path) -> None:
