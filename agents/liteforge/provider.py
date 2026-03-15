@@ -5,9 +5,32 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import dataclass, field
-from typing import Any
+import time
+from typing import Any, Callable, TypeVar
 
 from agents.liteforge.context import Context, ToolCall
+
+T = TypeVar("T")
+TRANSIENT_HTTP_STATUS_CODES = {408, 409, 425, 429, 500, 502, 503, 504}
+TRANSIENT_LLM_ERROR_TYPE_NAMES = {
+    "apiconnectionerror",
+    "apitimeouterror",
+    "ratelimiterror",
+    "internalservererror",
+}
+TRANSIENT_LLM_ERROR_MESSAGE_SNIPPETS = (
+    "connection error",
+    "connection reset",
+    "connection aborted",
+    "connection timed out",
+    "timed out",
+    "temporary failure",
+    "temporarily unavailable",
+    "server disconnected",
+    "rate limit",
+    "overloaded",
+)
+LLM_RETRY_DELAYS_SECONDS = (1.0, 2.0, 4.0, 8.0)
 
 
 @dataclass
@@ -69,6 +92,45 @@ def chat(
         return _chat_openai(context, model, tools, stream_callback)
 
 
+def _extract_status_code(*, error: Exception) -> int | None:
+    for candidate in (
+        getattr(error, "status_code", None),
+        getattr(getattr(error, "response", None), "status_code", None),
+    ):
+        if isinstance(candidate, int):
+            return candidate
+    return None
+
+
+def _is_transient_llm_error(*, error: Exception) -> bool:
+    if type(error).__name__.lower() in TRANSIENT_LLM_ERROR_TYPE_NAMES:
+        return True
+    if _extract_status_code(error=error) in TRANSIENT_HTTP_STATUS_CODES:
+        return True
+    message = str(error).lower()
+    return any(snippet in message for snippet in TRANSIENT_LLM_ERROR_MESSAGE_SNIPPETS)
+
+
+def _retry_delay_seconds(*, attempt: int) -> float:
+    index = min(max(0, attempt - 1), len(LLM_RETRY_DELAYS_SECONDS) - 1)
+    return LLM_RETRY_DELAYS_SECONDS[index]
+
+
+def _call_with_retries(
+    *,
+    operation: Callable[[], T],
+) -> T:
+    attempt = 0
+    while True:
+        try:
+            return operation()
+        except Exception as error:
+            if not _is_transient_llm_error(error=error):
+                raise
+            attempt += 1
+            time.sleep(_retry_delay_seconds(attempt=attempt))
+
+
 def _chat_anthropic(
     context: Context,
     model_id: str,
@@ -110,7 +172,9 @@ def _chat_anthropic(
     if stream_callback:
         return _stream_anthropic(client, kwargs, stream_callback)
 
-    response = client.messages.create(**kwargs)
+    response = _call_with_retries(
+        operation=lambda: client.messages.create(**kwargs),
+    )
 
     content_text = ""
     tool_calls = []
@@ -153,74 +217,86 @@ def _stream_anthropic(
     kwargs: dict[str, Any],
     stream_callback: Any,
 ) -> ChatResponse:
-    content_text = ""
-    tool_calls: list[ToolCall] = []
-    current_tool: dict[str, Any] | None = None
-    finish_reason = None
-    usage = None
+    attempt = 0
+    while True:
+        content_text = ""
+        tool_calls: list[ToolCall] = []
+        current_tool: dict[str, Any] | None = None
+        finish_reason = None
+        usage = None
 
-    with client.messages.stream(**kwargs) as stream:
-        for event in stream:
-            if hasattr(event, "type"):
-                if event.type == "content_block_start":
-                    block = event.content_block
-                    if hasattr(block, "type") and block.type == "tool_use":
-                        current_tool = {
-                            "id": block.id,
-                            "name": block.name,
-                            "json_str": "",
-                        }
-                elif event.type == "content_block_delta":
-                    delta = event.delta
-                    if hasattr(delta, "type"):
-                        if delta.type == "text_delta":
-                            content_text += delta.text
-                            stream_callback(delta.text)
-                        elif delta.type == "input_json_delta" and current_tool:
-                            current_tool["json_str"] += delta.partial_json
-                elif event.type == "content_block_stop":
-                    if current_tool:
-                        try:
-                            args = (
-                                json.loads(current_tool["json_str"])
-                                if current_tool["json_str"]
-                                else {}
-                            )
-                        except json.JSONDecodeError:
-                            args = {}
-                        tool_calls.append(
-                            ToolCall(
-                                id=current_tool["id"],
-                                name=current_tool["name"],
-                                arguments=args,
-                            )
-                        )
-                        current_tool = None
-                elif event.type == "message_delta":
-                    if hasattr(event, "delta") and hasattr(event.delta, "stop_reason"):
-                        sr = event.delta.stop_reason
-                        if sr == "end_turn":
-                            finish_reason = "stop"
-                        elif sr == "tool_use":
-                            finish_reason = "tool_calls"
-                        else:
-                            finish_reason = sr
-                    if hasattr(event, "usage") and event.usage:
-                        usage = {"output_tokens": event.usage.output_tokens}
+        try:
+            with client.messages.stream(**kwargs) as stream:
+                for event in stream:
+                    if hasattr(event, "type"):
+                        if event.type == "content_block_start":
+                            block = event.content_block
+                            if hasattr(block, "type") and block.type == "tool_use":
+                                current_tool = {
+                                    "id": block.id,
+                                    "name": block.name,
+                                    "json_str": "",
+                                }
+                        elif event.type == "content_block_delta":
+                            delta = event.delta
+                            if hasattr(delta, "type"):
+                                if delta.type == "text_delta":
+                                    content_text += delta.text
+                                    stream_callback(delta.text)
+                                elif delta.type == "input_json_delta" and current_tool:
+                                    current_tool["json_str"] += delta.partial_json
+                        elif event.type == "content_block_stop":
+                            if current_tool:
+                                try:
+                                    args = (
+                                        json.loads(current_tool["json_str"])
+                                        if current_tool["json_str"]
+                                        else {}
+                                    )
+                                except json.JSONDecodeError:
+                                    args = {}
+                                tool_calls.append(
+                                    ToolCall(
+                                        id=current_tool["id"],
+                                        name=current_tool["name"],
+                                        arguments=args,
+                                    )
+                                )
+                                current_tool = None
+                        elif event.type == "message_delta":
+                            if hasattr(event, "delta") and hasattr(
+                                event.delta, "stop_reason"
+                            ):
+                                sr = event.delta.stop_reason
+                                if sr == "end_turn":
+                                    finish_reason = "stop"
+                                elif sr == "tool_use":
+                                    finish_reason = "tool_calls"
+                                else:
+                                    finish_reason = sr
+                            if hasattr(event, "usage") and event.usage:
+                                usage = {"output_tokens": event.usage.output_tokens}
 
-        msg = stream.get_final_message()
-        if msg and msg.usage:
-            usage = {
-                "input_tokens": msg.usage.input_tokens,
-                "output_tokens": msg.usage.output_tokens,
-            }
-
-    return ChatResponse(
-        content=content_text or None,
-        tool_calls=tool_calls,
-        finish_reason=finish_reason,
-        usage=usage,
-    )
+                msg = stream.get_final_message()
+                if msg and msg.usage:
+                    usage = {
+                        "input_tokens": msg.usage.input_tokens,
+                        "output_tokens": msg.usage.output_tokens,
+                    }
+            return ChatResponse(
+                content=content_text or None,
+                tool_calls=tool_calls,
+                finish_reason=finish_reason,
+                usage=usage,
+            )
+        except Exception as error:
+            has_partial_response = bool(
+                content_text or tool_calls or current_tool is not None
+            )
+            if has_partial_response or not _is_transient_llm_error(error=error):
+                raise
+            attempt += 1
+            time.sleep(_retry_delay_seconds(attempt=attempt))
 
 
 def _chat_openai(
@@ -260,7 +336,9 @@ def _chat_openai(
     if stream_callback:
         return _stream_openai(client, kwargs, stream_callback)
 
-    response = client.chat.completions.create(**kwargs)
+    response = _call_with_retries(
+        operation=lambda: client.chat.completions.create(**kwargs),
+    )
 
     choice = response.choices[0]
     msg = choice.message
@@ -314,67 +392,82 @@ def _stream_openai(
     stream_callback: Any,
 ) -> ChatResponse:
     kwargs["stream"] = True
+    attempt = 0
+    while True:
+        content_text = ""
+        tool_calls_map: dict[int, dict[str, str]] = {}
+        finish_reason = None
 
-    content_text = ""
-    tool_calls_map: dict[int, dict] = {}
-    finish_reason = None
-
-    response = client.chat.completions.create(**kwargs)
-
-    for chunk in response:
-        if not chunk.choices:
-            continue
-        delta = chunk.choices[0].delta
-        fr = chunk.choices[0].finish_reason
-
-        if delta.content:
-            content_text += delta.content
-            stream_callback(delta.content)
-
-        if delta.tool_calls:
-            for tc_delta in delta.tool_calls:
-                idx = tc_delta.index
-                if idx not in tool_calls_map:
-                    tool_calls_map[idx] = {
-                        "id": tc_delta.id or "",
-                        "name": tc_delta.function.name
-                        if tc_delta.function and tc_delta.function.name
-                        else "",
-                        "arguments_str": "",
-                    }
-                entry = tool_calls_map[idx]
-                if tc_delta.id:
-                    entry["id"] = tc_delta.id
-                if tc_delta.function:
-                    if tc_delta.function.name:
-                        entry["name"] = tc_delta.function.name
-                    if tc_delta.function.arguments:
-                        entry["arguments_str"] += tc_delta.function.arguments
-
-        if fr:
-            finish_reason = fr
-
-    tool_calls = []
-    for idx in sorted(tool_calls_map.keys()):
-        entry = tool_calls_map[idx]
         try:
-            args = json.loads(entry["arguments_str"]) if entry["arguments_str"] else {}
-        except json.JSONDecodeError:
-            args = {}
-        tool_calls.append(
-            ToolCall(
-                id=entry["id"],
-                name=entry["name"],
-                arguments=args,
+            response = client.chat.completions.create(**kwargs)
+
+            for chunk in response:
+                if not chunk.choices:
+                    continue
+                delta = chunk.choices[0].delta
+                fr = chunk.choices[0].finish_reason
+
+                if delta.content:
+                    content_text += delta.content
+                    stream_callback(delta.content)
+
+                if delta.tool_calls:
+                    for tc_delta in delta.tool_calls:
+                        idx = tc_delta.index
+                        if idx not in tool_calls_map:
+                            tool_calls_map[idx] = {
+                                "id": tc_delta.id or "",
+                                "name": tc_delta.function.name
+                                if tc_delta.function and tc_delta.function.name
+                                else "",
+                                "arguments_str": "",
+                            }
+                        entry = tool_calls_map[idx]
+                        if tc_delta.id:
+                            entry["id"] = tc_delta.id
+                        if tc_delta.function:
+                            if tc_delta.function.name:
+                                entry["name"] = tc_delta.function.name
+                            if tc_delta.function.arguments:
+                                entry["arguments_str"] += tc_delta.function.arguments
+
+                if fr:
+                    finish_reason = fr
+
+            tool_calls = []
+            for idx in sorted(tool_calls_map.keys()):
+                entry = tool_calls_map[idx]
+                try:
+                    args = (
+                        json.loads(entry["arguments_str"])
+                        if entry["arguments_str"]
+                        else {}
+                    )
+                except json.JSONDecodeError:
+                    args = {}
+                tool_calls.append(
+                    ToolCall(
+                        id=entry["id"],
+                        name=entry["name"],
+                        arguments=args,
+                    )
+                )
+
+            if tool_calls and finish_reason != "tool_calls":
+                finish_reason = "tool_calls"
+
+            return ChatResponse(
+                content=content_text or None,
+                tool_calls=tool_calls,
+                finish_reason=finish_reason,
+                usage=None,
             )
-        )
-
-    if tool_calls and finish_reason != "tool_calls":
-        finish_reason = "tool_calls"
-
-    return ChatResponse(
-        content=content_text or None,
-        tool_calls=tool_calls,
-        finish_reason=finish_reason,
-        usage=None,
-    )
+        except Exception as error:
+            if (
+                content_text
+                or tool_calls_map
+                or not _is_transient_llm_error(error=error)
+            ):
+                raise
+            attempt += 1
+            time.sleep(_retry_delay_seconds(attempt=attempt))

@@ -1,3 +1,5 @@
+# pyright: reportMissingImports=false, reportAny=false, reportExplicitAny=false, reportUnknownVariableType=false, reportUnknownMemberType=false, reportUnknownParameterType=false, reportUnknownArgumentType=false, reportUnusedCallResult=false
+
 from __future__ import annotations
 
 from contextlib import contextmanager
@@ -185,8 +187,8 @@ class WorkspaceAgent:
                     executor=executor,
                     model=model,
                     tools=context.tools,
-                    max_requests_per_turn=_coerce_int(
-                        value=options.get("max_requests_per_turn"),
+                    max_turns=_coerce_int(
+                        value=options.get("max_turns"),
                         default=100,
                     ),
                     max_tool_failure_per_turn=_coerce_int(

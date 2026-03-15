@@ -48,7 +48,7 @@ class Orchestrator:
         executor: ToolExecutor,
         model: str,
         tools: list[dict[str, object]],
-        max_requests_per_turn: int = 100,
+        max_turns: int = 100,
         max_tool_failure_per_turn: int = 3,
         stream: bool = True,
     ) -> None:
@@ -56,7 +56,7 @@ class Orchestrator:
         self.executor = executor
         self.model = model
         self.tools = tools
-        self.max_requests_per_turn = max_requests_per_turn
+        self.max_turns = max_turns
         self.error_tracker = ToolErrorTracker(max_failures=max_tool_failure_per_turn)
         self.stream = stream
         self._log_console = Console(stderr=True)
@@ -179,7 +179,7 @@ class Orchestrator:
         """Execute the main agent loop."""
         should_yield = False
         is_complete = False
-        request_count = 0
+        turn_count = 0
         failed = False
 
         while not should_yield:
@@ -241,14 +241,11 @@ class Orchestrator:
                 should_yield = True
                 failed = True
 
-            request_count += 1
-            if not should_yield and request_count >= self.max_requests_per_turn:
+            turn_count += 1
+            if not should_yield and turn_count >= self.max_turns:
                 self._render_status(
                     label="error",
-                    message=(
-                        "Max requests per turn limit reached "
-                        f"({self.max_requests_per_turn})."
-                    ),
+                    message=f"Reached max turns ({self.max_turns}).",
                     color="red",
                 )
                 should_yield = True

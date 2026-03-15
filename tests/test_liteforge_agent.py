@@ -1,3 +1,5 @@
+# pyright: reportAny=false, reportUnknownVariableType=false, reportUnusedCallResult=false, reportUnannotatedClassAttribute=false, reportPrivateUsage=false, reportUnknownLambdaType=false, reportUnknownArgumentType=false, reportUnknownParameterType=false, reportMissingParameterType=false, reportImplicitOverride=false, reportUnknownMemberType=false
+
 from __future__ import annotations
 
 import io
@@ -24,7 +26,7 @@ def _runtime_cfg(
 ) -> AgentRuntimeConfig:
     agent_config: dict[str, object] = {
         "stream": False,
-        "max_requests_per_turn": 4,
+        "max_turns": 4,
         "max_tool_failure_per_turn": 2,
     }
     if cwd:
@@ -69,13 +71,13 @@ def test_liteforge_run_task_returns_success_and_final_message(
             executor,
             model,
             tools,
-            max_requests_per_turn,
+            max_turns,
             max_tool_failure_per_turn,
             stream,
         ) -> None:
             del executor, tools
             recorded["model"] = model
-            recorded["max_requests_per_turn"] = max_requests_per_turn
+            recorded["max_turns"] = max_turns
             recorded["max_tool_failure_per_turn"] = max_tool_failure_per_turn
             recorded["stream"] = stream
             recorded["context"] = context
@@ -105,7 +107,7 @@ def test_liteforge_run_task_returns_success_and_final_message(
     assert result.task_id == "lf-1"
     assert result.final_message == "liteforge complete"
     assert recorded["model"] == "openai/gpt-4o-mini"
-    assert recorded["max_requests_per_turn"] == 4
+    assert recorded["max_turns"] == 4
     assert recorded["max_tool_failure_per_turn"] == 2
     assert recorded["stream"] is False
     assert recorded["openai_model"] == "openai/gpt-4o-mini"
@@ -132,7 +134,7 @@ def test_liteforge_run_task_maps_failed_orchestrator_to_nonzero(monkeypatch) -> 
             executor,
             model,
             tools,
-            max_requests_per_turn,
+            max_turns,
             max_tool_failure_per_turn,
             stream,
         ) -> None:
@@ -140,7 +142,7 @@ def test_liteforge_run_task_maps_failed_orchestrator_to_nonzero(monkeypatch) -> 
             del executor
             del model
             del tools
-            del max_requests_per_turn
+            del max_turns
             del max_tool_failure_per_turn
             del stream
 
@@ -173,14 +175,14 @@ def test_liteforge_honors_disabled_final_output_panel(monkeypatch) -> None:
             executor,
             model,
             tools,
-            max_requests_per_turn,
+            max_turns,
             max_tool_failure_per_turn,
             stream,
         ) -> None:
             del executor
             del model
             del tools
-            del max_requests_per_turn
+            del max_turns
             del max_tool_failure_per_turn
             del stream
             self._context = context
@@ -227,14 +229,14 @@ def test_liteforge_defaults_max_tokens_for_large_context(monkeypatch) -> None:
             executor,
             model,
             tools,
-            max_requests_per_turn,
+            max_turns,
             max_tool_failure_per_turn,
             stream,
         ) -> None:
             del executor
             del model
             del tools
-            del max_requests_per_turn
+            del max_turns
             del max_tool_failure_per_turn
             del stream
             recorded["max_tokens"] = context.max_tokens
@@ -271,14 +273,14 @@ def test_liteforge_caps_configured_max_tokens_to_context_length(monkeypatch) -> 
             executor,
             model,
             tools,
-            max_requests_per_turn,
+            max_turns,
             max_tool_failure_per_turn,
             stream,
         ) -> None:
             del executor
             del model
             del tools
-            del max_requests_per_turn
+            del max_turns
             del max_tool_failure_per_turn
             del stream
             recorded["max_tokens"] = context.max_tokens
@@ -586,14 +588,14 @@ def test_liteforge_stream_mode_skips_final_output_panel(monkeypatch) -> None:
             executor,
             model,
             tools,
-            max_requests_per_turn,
+            max_turns,
             max_tool_failure_per_turn,
             stream,
         ) -> None:
             del executor
             del model
             del tools
-            del max_requests_per_turn
+            del max_turns
             del max_tool_failure_per_turn
             del stream
             self._context = context

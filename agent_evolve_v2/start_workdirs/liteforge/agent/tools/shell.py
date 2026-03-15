@@ -15,10 +15,24 @@ STDOUT_MAX_SUFFIX_LENGTH = 200
 STDOUT_MAX_LINE_LENGTH = 2000
 
 ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]|\x1b\].*?\x07|\x1b\[.*?[@-~]")
+SELF_DESTRUCTIVE_KILL_PATTERNS = [
+    re.compile(
+        r"\b(?:killall|pkill)\b[^\n;|&]*\b(?:python|python3|bash|sh|zsh|node|ruby|perl)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\bkill\b[^\n;|&]*\$\((?:pgrep|pidof)[^)]*\b(?:python|python3|bash|sh|zsh|node|ruby|perl)\b[^)]*\)",
+        re.IGNORECASE,
+    ),
+]
 
 
 def _strip_ansi(text: str) -> str:
     return ANSI_ESCAPE_RE.sub("", text)
+
+
+def _is_self_destructive_kill_command(*, command: str) -> bool:
+    return any(pattern.search(command) for pattern in SELF_DESTRUCTIVE_KILL_PATTERNS)
 
 
 def _truncate_output(text: str, label: str) -> tuple[str, bool]:
@@ -60,6 +74,12 @@ def execute(args: dict[str, Any], env: dict[str, Any]) -> str:
 
     if not command or not command.strip():
         return "Error: Command string is empty or contains only whitespace"
+    if _is_self_destructive_kill_command(command=command):
+        return (
+            "Error: Refusing broad process-kill command because it may terminate the "
+            "agent runtime itself. Find the exact service PID first, then kill only "
+            "that PID or target a narrowly scoped process name."
+        )
 
     work_dir = cwd or str(env.get("cwd", "."))
     work_path = Path(work_dir)

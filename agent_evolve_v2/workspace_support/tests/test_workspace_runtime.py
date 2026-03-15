@@ -1,4 +1,4 @@
-# pyright: reportImplicitRelativeImport=false, reportUnknownParameterType=false, reportMissingParameterType=false, reportUnknownArgumentType=false, reportUnknownMemberType=false
+# pyright: reportImplicitRelativeImport=false, reportUnknownParameterType=false, reportMissingParameterType=false, reportUnknownArgumentType=false, reportUnknownMemberType=false, reportMissingImports=false, reportAny=false, reportUnknownVariableType=false, reportAttributeAccessIssue=false, reportMissingTypeStubs=false
 
 from __future__ import annotations
 
@@ -91,13 +91,13 @@ def _assert_liteforge_runtime(*, tmp_path: Path, monkeypatch) -> None:
             executor,
             model,
             tools,
-            max_requests_per_turn,
+            max_turns,
             max_tool_failure_per_turn,
             stream,
         ) -> None:
             del executor, tools
             recorded["model"] = model
-            recorded["max_requests_per_turn"] = max_requests_per_turn
+            recorded["max_turns"] = max_turns
             recorded["max_tool_failure_per_turn"] = max_tool_failure_per_turn
             recorded["stream"] = stream
             recorded["context"] = context
@@ -120,7 +120,7 @@ def _assert_liteforge_runtime(*, tmp_path: Path, monkeypatch) -> None:
         agent_config={
             "stream": False,
             "cwd": str(tmp_path),
-            "max_requests_per_turn": 4,
+            "max_turns": 4,
             "max_tool_failure_per_turn": 2,
         },
     )
@@ -132,6 +132,7 @@ def _assert_liteforge_runtime(*, tmp_path: Path, monkeypatch) -> None:
     )
     assert result.success
     assert result.final_message == "liteforge complete"
+    assert recorded["max_turns"] == 4
 
 
 def _assert_terminus2_runtime() -> None:

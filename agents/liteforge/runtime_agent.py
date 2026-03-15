@@ -1,3 +1,5 @@
+# pyright: reportAny=false, reportExplicitAny=false, reportUnknownVariableType=false, reportUnknownMemberType=false, reportUnknownParameterType=false, reportUnknownArgumentType=false, reportUnusedCallResult=false
+
 from __future__ import annotations
 
 from contextlib import contextmanager
@@ -185,8 +187,8 @@ def _run_agent_pass(
     if executor is None:
         executor = ToolExecutor(env=env)
 
-    max_requests_per_turn = _coerce_int(
-        value=options.get("max_requests_per_turn"),
+    max_turns = _coerce_int(
+        value=options.get("max_turns"),
         default=100,
     )
     max_tool_failure_per_turn = _coerce_int(
@@ -199,7 +201,7 @@ def _run_agent_pass(
         executor=executor,
         model=model,
         tools=tool_defs,
-        max_requests_per_turn=max_requests_per_turn,
+        max_turns=max_turns,
         max_tool_failure_per_turn=max_tool_failure_per_turn,
         stream=stream,
     )

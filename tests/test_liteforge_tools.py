@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import importlib.util
 from pathlib import Path
+import sys
 import types
 
 import httpx
@@ -23,6 +25,35 @@ from agents.liteforge.tools import (
 )
 from agents.liteforge.tools.executor import ToolExecutor
 from agents.liteforge.tools.todo import TodoManager, execute_read, execute_write
+
+
+def _load_shell_module_from_source() -> types.ModuleType:
+    shell_path = (
+        Path(__file__).resolve().parent.parent / "agents/liteforge/tools/shell.py"
+    )
+    spec = importlib.util.spec_from_file_location("liteforge_shell_source", shell_path)
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _load_provider_module_from_source() -> types.ModuleType:
+    provider_path = (
+        Path(__file__).resolve().parent.parent / "agents/liteforge/provider.py"
+    )
+    module_name = "liteforge_provider_source"
+    spec = importlib.util.spec_from_file_location(
+        module_name,
+        provider_path,
+    )
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    spec.loader.exec_module(module)
+    return module
 
 
 @pytest.fixture
@@ -240,6 +271,40 @@ def test_shell_execute_uses_subprocess_and_formats_output(
     assert "Exit code: 0" in output
 
 
+def test_shell_rejects_broad_python_process_kills(
+    monkeypatch: pytest.MonkeyPatch,
+    tool_env: dict[str, object],
+) -> None:
+    shell_module = _load_shell_module_from_source()
+    called = False
+
+    def fake_run(*args: object, **kwargs: object) -> types.SimpleNamespace:
+        del args, kwargs
+        nonlocal called
+        called = True
+        return types.SimpleNamespace(stdout="", stderr="", returncode=0)
+
+    monkeypatch.setattr(shell_module.subprocess, "run", fake_run)
+    output = shell_module.execute(args={"command": "pkill -f python"}, env=tool_env)
+    assert "Refusing broad process-kill command" in output
+    assert called is False
+
+
+def test_shell_allows_targeted_pid_kill(
+    monkeypatch: pytest.MonkeyPatch,
+    tool_env: dict[str, object],
+) -> None:
+    shell_module = _load_shell_module_from_source()
+
+    def fake_run(*args: object, **kwargs: object) -> types.SimpleNamespace:
+        del args, kwargs
+        return types.SimpleNamespace(stdout="", stderr="", returncode=0)
+
+    monkeypatch.setattr(shell_module.subprocess, "run", fake_run)
+    output = shell_module.execute(args={"command": "kill 12345"}, env=tool_env)
+    assert "Exit code: 0" in output
+
+
 def test_executor_enforces_read_before_patch(tool_env: dict[str, object]) -> None:
     target = Path(str(tool_env["cwd"])) / "file.txt"
     target.write_text("old value\n")
@@ -357,3 +422,117 @@ def test_provider_preserves_openrouter_model_names() -> None:
         )
         == "z-ai/glm-5"
     )
+
+
+def test_provider_retries_transient_openai_connection_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider_module = _load_provider_module_from_source()
+    attempts = 0
+
+    class FakeOpenAI:
+        def __init__(self, **kwargs: object) -> None:
+            del kwargs
+            self.chat = types.SimpleNamespace(
+                completions=types.SimpleNamespace(create=self.create)
+            )
+
+        def create(self, **kwargs: object) -> types.SimpleNamespace:
+            del kwargs
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise RuntimeError("Connection error.")
+            return types.SimpleNamespace(
+                choices=[
+                    types.SimpleNamespace(
+                        message=types.SimpleNamespace(
+                            content="retry ok", tool_calls=None
+                        ),
+                        finish_reason="stop",
+                    )
+                ],
+                usage=types.SimpleNamespace(
+                    prompt_tokens=1,
+                    completion_tokens=1,
+                    total_tokens=2,
+                ),
+            )
+
+    fake_openai = types.ModuleType("openai")
+    setattr(fake_openai, "OpenAI", FakeOpenAI)
+    monkeypatch.setitem(sys.modules, "openai", fake_openai)
+    monkeypatch.setattr(provider_module.time, "sleep", lambda _seconds: None)
+
+    context = Context()
+    context.add_user_message(text="hello")
+    response = provider_module.chat(
+        context=context,
+        model="openai/gpt-4o-mini",
+        tools=[],
+    )
+
+    assert response.content == "retry ok"
+    assert attempts == 2
+
+
+def test_provider_retries_streaming_openai_connection_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider_module = _load_provider_module_from_source()
+    attempts = 0
+
+    class FakeOpenAI:
+        def __init__(self, **kwargs: object) -> None:
+            del kwargs
+            self.chat = types.SimpleNamespace(
+                completions=types.SimpleNamespace(create=self.create)
+            )
+
+        def create(self, **kwargs: object):
+            del kwargs
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise RuntimeError("Connection error.")
+
+            def stream():
+                yield types.SimpleNamespace(
+                    choices=[
+                        types.SimpleNamespace(
+                            delta=types.SimpleNamespace(
+                                content="retry stream", tool_calls=None
+                            ),
+                            finish_reason=None,
+                        )
+                    ]
+                )
+                yield types.SimpleNamespace(
+                    choices=[
+                        types.SimpleNamespace(
+                            delta=types.SimpleNamespace(content=None, tool_calls=None),
+                            finish_reason="stop",
+                        )
+                    ]
+                )
+
+            return stream()
+
+    fake_openai = types.ModuleType("openai")
+    setattr(fake_openai, "OpenAI", FakeOpenAI)
+    monkeypatch.setitem(sys.modules, "openai", fake_openai)
+    monkeypatch.setattr(provider_module.time, "sleep", lambda _seconds: None)
+
+    chunks: list[str] = []
+    context = Context()
+    context.add_user_message(text="hello")
+    response = provider_module.chat(
+        context=context,
+        model="openai/gpt-4o-mini",
+        tools=[],
+        stream_callback=chunks.append,
+    )
+
+    assert response.content == "retry stream"
+    assert chunks == ["retry stream"]
+    assert attempts == 2
