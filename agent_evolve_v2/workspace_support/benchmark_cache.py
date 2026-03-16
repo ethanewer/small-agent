@@ -102,12 +102,18 @@ def compute_benchmark_fingerprint(
     *,
     workspace_root: Path,
     model_key: str,
+    task_names: list[str] | tuple[str, ...] | None = None,
 ) -> BenchmarkFingerprint:
     inputs = _collect_fingerprint_inputs(workspace_root=workspace_root)
     digest = hashlib.sha256()
     digest.update(b"model_key\0")
     digest.update(model_key.encode("utf-8"))
     digest.update(b"\0")
+    if task_names is not None:
+        digest.update(b"task_names\0")
+        for task_name in task_names:
+            digest.update(task_name.encode("utf-8"))
+            digest.update(b"\0")
     for item in inputs:
         digest.update(item.relative_path.encode("utf-8"))
         digest.update(b"\0")

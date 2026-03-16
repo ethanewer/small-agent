@@ -20,6 +20,7 @@ class RunSpec:
     max_critic_failures: int = 5
     max_critic_successes: int = 1
     random_seed: int = 0
+    benchmark_tasks: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -73,6 +74,22 @@ def load_runs_config(*, path: Path) -> RunsConfig:
             raise ValueError(f"Run '{run_name}' must define 'model_key'.")
         if not cursor_model:
             raise ValueError(f"Run '{run_name}' must define 'cursor_model'.")
+        raw_benchmark_tasks = run_payload.get("benchmark_tasks", [])
+        if raw_benchmark_tasks is None:
+            benchmark_tasks: tuple[str, ...] = ()
+        elif isinstance(raw_benchmark_tasks, list):
+            benchmark_tasks = tuple(
+                str(task_name).strip() for task_name in raw_benchmark_tasks
+            )
+            if any(not task_name for task_name in benchmark_tasks):
+                raise ValueError(
+                    f"Run '{run_name}' benchmark_tasks must contain only "
+                    "non-empty strings."
+                )
+        else:
+            raise ValueError(
+                f"Run '{run_name}' benchmark_tasks must be a list of strings."
+            )
 
         runs[run_name] = RunSpec(
             name=run_name,
@@ -89,6 +106,7 @@ def load_runs_config(*, path: Path) -> RunsConfig:
                 int(run_payload.get("max_critic_successes", 1)),
             ),
             random_seed=int(run_payload.get("random_seed", 0)),
+            benchmark_tasks=benchmark_tasks,
         )
 
     if default_run not in runs:

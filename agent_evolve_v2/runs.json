@@ -17,7 +17,18 @@
       "iterations": 25,
       "max_critic_failures": 5,
       "max_critic_successes": 1,
-      "random_seed": 0
+      "random_seed": 0,
+      "benchmark_tasks": [
+        "polyglot-c-py",
+        "polyglot-rust-c",
+        "headless-terminal",
+        "regex-log",
+        "configure-git-webserver",
+        "cancel-async-tasks",
+        "pypi-server",
+        "kv-store-grpc",
+        "log-summary-date-ranges"
+      ]
     }
   }
 }

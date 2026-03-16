@@ -62,6 +62,9 @@ def main(argv: list[str]) -> int:
             max_critic_failures=int(manifest["max_critic_failures"]),
             max_critic_successes=int(manifest["max_critic_successes"]),
             random_seed=int(manifest["random_seed"]),
+            benchmark_tasks=tuple(
+                str(task_name) for task_name in manifest.get("benchmark_tasks", [])
+            ),
         )
     else:
         runs_config = load_runs_config(path=(repo_root / args.config).resolve())
@@ -76,6 +79,7 @@ def main(argv: list[str]) -> int:
                 max_critic_failures=run_spec.max_critic_failures,
                 max_critic_successes=run_spec.max_critic_successes,
                 random_seed=run_spec.random_seed,
+                benchmark_tasks=run_spec.benchmark_tasks,
             )
         run_root = _create_run_root(outputs_root=outputs_root, run_spec=run_spec)
 
@@ -103,6 +107,7 @@ def main(argv: list[str]) -> int:
     while next_iteration <= run_spec.iterations:
         parent_sample = manager.sample_parent_state(rng=rng)
         scoreboard_text = _build_scoreboard(states=manager.states)
+        best_completed_state = _select_best_completed_state(states=manager.states)
         state = manager.create_child_state(
             parent_state=parent_sample.state,
             iteration=next_iteration,
@@ -115,6 +120,7 @@ def main(argv: list[str]) -> int:
             run_root=run_root,
             workspace_root=Path(state.refiner_workspace_path),
             parent_sample=parent_sample,
+            best_completed_state=best_completed_state,
             scoreboard_text=scoreboard_text,
             benchmark_model_key=run_spec.model_key,
         )
@@ -126,6 +132,7 @@ def main(argv: list[str]) -> int:
         _seed_workspace_notes(
             state=state,
             parent_sample=parent_sample,
+            best_completed_state=best_completed_state,
             scoreboard_text=scoreboard_text,
         )
         cursor_completed = run_cursor_refiner(
@@ -193,6 +200,7 @@ def _write_manifest(*, run_root: Path, run_spec: RunSpec) -> None:
         "max_critic_failures": run_spec.max_critic_failures,
         "max_critic_successes": run_spec.max_critic_successes,
         "random_seed": run_spec.random_seed,
+        "benchmark_tasks": list(run_spec.benchmark_tasks),
     }
     (run_root / "run_manifest.json").write_text(
         json.dumps(payload, indent=2, ensure_ascii=True) + "\n",
@@ -296,8 +304,8 @@ def _build_scoreboard(*, states: list[AgentState]) -> str:
     lines = [
         "## Scoreboard",
         "",
-        "| Iter | Baseline | Reward | Passed | Failed | Parent |",
-        "|------|----------|--------|--------|--------|--------|",
+        "| Iter | Baseline | Reward | Passed | Failed | Errors | Parent |",
+        "|------|----------|--------|--------|--------|--------|--------|",
     ]
     for state in states:
         parent = "root"
@@ -310,10 +318,37 @@ def _build_scoreboard(*, states: list[AgentState]) -> str:
         )
         passed = state.result.pass_count if state.result else "N/A"
         failed = state.result.failure_count if state.result else "N/A"
+        errors = state.result.error_count if state.result else "N/A"
         lines.append(
-            f"| {state.iteration} | {state.baseline} | {reward} | {passed} | {failed} | {parent} |"
+            f"| {state.iteration} | {state.baseline} | {reward} | {passed} | {failed} | {errors} | {parent} |"
         )
     return "\n".join(lines)
+
+
+def _select_best_completed_state(*, states: list[AgentState]) -> AgentState | None:
+    completed = [
+        state
+        for state in states
+        if state.result and state.result.reward_mean is not None
+    ]
+    if not completed:
+        return None
+
+    def _sort_key(state: AgentState) -> tuple[float, int, int, int, int]:
+        assert state.result is not None
+        assert state.result.reward_mean is not None
+        return (
+            state.result.reward_mean,
+            state.result.pass_count,
+            -state.result.error_count,
+            -state.result.failure_count,
+            -state.iteration,
+        )
+
+    return max(
+        completed,
+        key=_sort_key,
+    )
 
 
 def _write_scoreboard(*, run_root: Path, states: list[AgentState]) -> None:
@@ -328,12 +363,15 @@ def _render_prompt(
     run_root: Path,
     workspace_root: Path,
     parent_sample: ParentSample,
+    best_completed_state: AgentState | None,
     scoreboard_text: str,
     benchmark_model_key: str,
 ) -> str:
     template = (Path(__file__).with_name("headless_inner_loop_prompt.md")).read_text(
         encoding="utf-8"
     )
+    best_state = best_completed_state or parent_sample.state
+    best_result = best_state.result
     critic_summary = (
         parent_sample.state.critic.summary_markdown
         if parent_sample.state.critic
@@ -349,6 +387,16 @@ def _render_prompt(
         alpha=f"{parent_sample.alpha:.2f}",
         beta=f"{parent_sample.beta:.2f}",
         benchmark_model_key=benchmark_model_key,
+        best_iteration=best_state.iteration,
+        best_reward=(
+            f"{best_result.reward_mean:.3f}"
+            if best_result and best_result.reward_mean is not None
+            else "N/A"
+        ),
+        best_passed=best_result.pass_count if best_result else "N/A",
+        best_failed=best_result.failure_count if best_result else "N/A",
+        best_errors=best_result.error_count if best_result else "N/A",
+        best_workspace=best_state.refiner_workspace_path,
         scoreboard=scoreboard_text,
         critic_summary=critic_summary,
     )
@@ -358,10 +406,13 @@ def _seed_workspace_notes(
     *,
     state: AgentState,
     parent_sample: ParentSample,
+    best_completed_state: AgentState | None,
     scoreboard_text: str,
 ) -> None:
     notes_path = Path(state.refiner_workspace_path) / "NOTES.md"
     existing = notes_path.read_text(encoding="utf-8") if notes_path.exists() else ""
+    best_state = best_completed_state or parent_sample.state
+    best_result = best_state.result
     auto_block = "\n".join(
         [
             "<!-- BEGIN AUTO STATE CONTEXT -->",
@@ -369,6 +420,23 @@ def _seed_workspace_notes(
             f"Baseline: {parent_sample.state.baseline}",
             f"Thompson sample: {parent_sample.score_sample:.6f}",
             f"Posterior alpha/beta: {parent_sample.alpha:.2f}/{parent_sample.beta:.2f}",
+            f"Best completed iteration so far: {best_state.iteration}",
+            (
+                "Best completed reward / passed / failed / errors: "
+                + (
+                    " / ".join(
+                        [
+                            f"{best_result.reward_mean:.3f}",
+                            str(best_result.pass_count),
+                            str(best_result.failure_count),
+                            str(best_result.error_count),
+                        ]
+                    )
+                    if best_result and best_result.reward_mean is not None
+                    else "N/A"
+                )
+            ),
+            f"Best workspace (reference only): {best_state.refiner_workspace_path}",
             "",
             scoreboard_text,
             "",

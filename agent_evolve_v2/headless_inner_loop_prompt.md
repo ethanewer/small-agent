@@ -19,6 +19,12 @@ Current Thompson sample:
 - beta: `{beta}`
 - workspace benchmark model key: `{benchmark_model_key}`
 
+Current best completed state:
+- iteration: `{best_iteration}`
+- reward: `{best_reward}`
+- passed / failed / errors: `{best_passed}` / `{best_failed}` / `{best_errors}`
+- workspace (reference only): `{best_workspace}`
+
 {scoreboard}
 
 ## Parent critic summary
@@ -30,6 +36,7 @@ Current Thompson sample:
 - The workspace is intentionally minimal. Edit only the local `agent/` harness code plus workspace docs/notes.
 - Treat `{workspace_root}` as the only editable workspace for this iteration.
 - Do not edit files inside `{parent_workspace}`. That parent workspace is reference context only.
+- The selected parent may be exploratory rather than the current best. Compare your final change against the best completed state and avoid obvious regressions in its stronger behavior.
 - Do not reach back into the repo's older `agent_evolve`, `cli.py`, `harbor/agent.py`, or v1 benchmark wrapper codepaths.
 - Read `README.md` first, then `NOTES.md`, then any benchmark artifacts referenced there.
 - When you run the workspace-local validation or benchmark wrapper, use model key `{benchmark_model_key}`.
@@ -38,6 +45,7 @@ Current Thompson sample:
 - Only files under `agent/` participate in benchmark invalidation; edits to `README.md` or `NOTES.md` do not trigger a fresh benchmark.
 - Keep changes general. Do not add task-name-specific hacks.
 - Prefer small, well-documented changes over wide rewrites unless the critic clearly points to an architectural issue.
+- Prefer task-solving and task-verification improvements over meta-control edits like retry thresholds, completion guards, or error-classification tweaks unless the benchmark evidence directly points to those mechanisms.
 
 ## Required validation flow
 

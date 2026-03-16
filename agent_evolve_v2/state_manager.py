@@ -284,5 +284,5 @@ def _state_posterior(*, state: AgentState) -> tuple[float, float]:
     if state.result is None:
         return 1.0, 1.0
     alpha = 1.0 + max(0, state.result.pass_count)
-    beta = 1.0 + max(0, state.result.failure_count)
+    beta = 1.0 + max(0, state.result.failure_count) + max(0, state.result.error_count)
     return alpha, beta

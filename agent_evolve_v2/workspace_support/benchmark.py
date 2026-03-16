@@ -23,7 +23,7 @@ from benchmark_cache import (
 from critic_tools import summarize_job
 from workspace_config import load_workspace_metadata, resolve_env_value
 
-BENCHMARK_TASKS = [
+DEFAULT_BENCHMARK_TASKS = [
     "polyglot-c-py",
     "polyglot-rust-c",
     "headless-terminal",
@@ -54,9 +54,11 @@ def main(argv: list[str]) -> int:
     if not metadata.benchmark_cache_root:
         raise ValueError("workspace_metadata.json is missing benchmark_cache_root.")
     cache_root = Path(metadata.benchmark_cache_root).resolve()
+    task_names = resolve_workspace_benchmark_tasks(workspace_root=workspace_root)
     fingerprint_bundle = compute_benchmark_fingerprint(
         workspace_root=workspace_root,
         model_key=args.model_key,
+        task_names=task_names,
     )
     cached_run = load_cached_run(
         cache_root=cache_root,
@@ -66,6 +68,7 @@ def main(argv: list[str]) -> int:
         command = build_harbor_command(
             jobs_dir=cache_root / "dry-run" / "harbor_jobs",
             model_key=args.model_key,
+            task_names=task_names,
         )
         print(
             json.dumps(
@@ -91,6 +94,7 @@ def main(argv: list[str]) -> int:
         args=args,
         cache_root=cache_root,
         fingerprint_bundle=fingerprint_bundle,
+        task_names=task_names,
         workspace_root=workspace_root,
     )
 
@@ -100,6 +104,7 @@ def _execute_and_emit_benchmark(
     args: argparse.Namespace,
     cache_root: Path,
     fingerprint_bundle,
+    task_names: list[str] | None,
     workspace_root: Path,
 ) -> int:
     canonical_run_dir = next_canonical_run_dir(
@@ -112,6 +117,7 @@ def _execute_and_emit_benchmark(
     command = build_harbor_command(
         jobs_dir=jobs_dir,
         model_key=args.model_key,
+        task_names=task_names,
     )
     if args.dry_run:
         print(json.dumps({"command": command}, ensure_ascii=True))
@@ -278,7 +284,12 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def build_harbor_command(*, jobs_dir: Path, model_key: str) -> list[str]:
+def build_harbor_command(
+    *,
+    jobs_dir: Path,
+    model_key: str,
+    task_names: list[str] | None = None,
+) -> list[str]:
     base_command = resolve_harbor_command()
     command = [
         *base_command,
@@ -307,9 +318,36 @@ def build_harbor_command(*, jobs_dir: Path, model_key: str) -> list[str]:
         value = resolve_env_value(env_name=env_name)
         if value:
             command.extend(["--agent-env", f"{env_name}={value}"])
-    for task_name in BENCHMARK_TASKS:
+    selected_tasks = task_names or DEFAULT_BENCHMARK_TASKS
+    for task_name in selected_tasks:
         command.extend(["--task-name", task_name])
     return command
+
+
+def resolve_workspace_benchmark_tasks(*, workspace_root: Path) -> list[str] | None:
+    manifest_path = _discover_run_manifest(start_path=workspace_root)
+    if manifest_path is None:
+        return None
+    try:
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    raw_task_names = payload.get("benchmark_tasks")
+    if not isinstance(raw_task_names, list):
+        return None
+    task_names = [str(task_name).strip() for task_name in raw_task_names]
+    task_names = [task_name for task_name in task_names if task_name]
+    return task_names or None
+
+
+def _discover_run_manifest(*, start_path: Path) -> Path | None:
+    for candidate_root in (start_path, *start_path.parents):
+        manifest_path = candidate_root / "run_manifest.json"
+        if manifest_path.exists():
+            return manifest_path
+    return None
 
 
 def resolve_harbor_command() -> list[str]:

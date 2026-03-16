@@ -23,7 +23,7 @@ from agent_evolve_v2.workspace_support.benchmark_cache import (
     write_canonical_run,
 )
 
-BENCHMARK_TASKS = [
+DEFAULT_BENCHMARK_TASKS = [
     "polyglot-c-py",
     "polyglot-rust-c",
     "headless-terminal",
@@ -119,9 +119,11 @@ def execute_workspace_benchmark(
 ) -> int:
     workspace_root = workspace_path.resolve()
     cache_root = resolve_benchmark_cache_root(workspace_root=workspace_root)
+    task_names = resolve_workspace_benchmark_tasks(workspace_root=workspace_root)
     fingerprint_bundle = compute_benchmark_fingerprint(
         workspace_root=workspace_root,
         model_key=model_key,
+        task_names=task_names,
     )
     cached_run = load_cached_run(
         cache_root=cache_root,
@@ -143,6 +145,7 @@ def execute_workspace_benchmark(
         result_json_out=result_json_out,
         record_visible=record_visible,
         request_label=request_label,
+        task_names=task_names,
         workspace_root=workspace_root,
     )
 
@@ -166,6 +169,7 @@ def _execute_and_emit_benchmark(
     result_json_out: Path | None,
     record_visible: bool,
     request_label: str,
+    task_names: list[str] | None,
     workspace_root: Path,
 ) -> int:
     canonical_run_dir = next_canonical_run_dir(
@@ -179,6 +183,7 @@ def _execute_and_emit_benchmark(
         workspace_root=workspace_root,
         jobs_dir=jobs_dir,
         model_key=model_key,
+        task_names=task_names,
     )
     completed = subprocess.run(
         command,
@@ -318,6 +323,7 @@ def build_harbor_command(
     workspace_root: Path,
     jobs_dir: Path,
     model_key: str,
+    task_names: list[str] | None = None,
 ) -> list[str]:
     repo_root = discover_repo_root(start_path=workspace_root)
     base_command = resolve_harbor_command()
@@ -352,9 +358,36 @@ def build_harbor_command(
         value = resolve_env_value(env_name=env_name)
         if value:
             command.extend(["--agent-env", f"{env_name}={value}"])
-    for task_name in BENCHMARK_TASKS:
+    selected_tasks = task_names or DEFAULT_BENCHMARK_TASKS
+    for task_name in selected_tasks:
         command.extend(["--task-name", task_name])
     return command
+
+
+def resolve_workspace_benchmark_tasks(*, workspace_root: Path) -> list[str] | None:
+    manifest_path = _discover_run_manifest(start_path=workspace_root)
+    if manifest_path is None:
+        return None
+    try:
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    raw_task_names = payload.get("benchmark_tasks")
+    if not isinstance(raw_task_names, list):
+        return None
+    task_names = [str(task_name).strip() for task_name in raw_task_names]
+    task_names = [task_name for task_name in task_names if task_name]
+    return task_names or None
+
+
+def _discover_run_manifest(*, start_path: Path) -> Path | None:
+    for candidate_root in (start_path, *start_path.parents):
+        manifest_path = candidate_root / "run_manifest.json"
+        if manifest_path.exists():
+            return manifest_path
+    return None
 
 
 def resolve_harbor_command() -> list[str]:

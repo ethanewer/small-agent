@@ -10,10 +10,14 @@ from pathlib import Path
 
 import pytest
 
-from agent_evolve_v2.benchmark import resolve_benchmark_cache_root
+from agent_evolve_v2.benchmark import (
+    build_harbor_command,
+    resolve_benchmark_cache_root,
+    resolve_workspace_benchmark_tasks,
+)
 from agent_evolve_v2.config import RunSpec, load_runs_config
 from agent_evolve_v2.critic import summarize_job
-from agent_evolve_v2 import run_outer_loop
+from agent_evolve_v2 import run_outer_loop, state_manager as state_manager_module
 from agent_evolve_v2.service_remote_runner import _load_extra_params
 from agent_evolve_v2.service_runtime import (
     ResolvedAgentConfig,
@@ -54,6 +58,7 @@ def test_load_runs_config_supports_json_subset_yaml(tmp_path: Path) -> None:
                         "baseline": "liteforge",
                         "model_key": "qwen3.5-flash",
                         "cursor_model": "opus-4.6-thinking",
+                        "benchmark_tasks": ["regex-log", "pypi-server"],
                     }
                 },
             }
@@ -64,6 +69,7 @@ def test_load_runs_config_supports_json_subset_yaml(tmp_path: Path) -> None:
     run = loaded.get_run(run_name=None)
     assert run.name == "demo"
     assert run.baseline == "liteforge"
+    assert run.benchmark_tasks == ("regex-log", "pypi-server")
 
 
 @pytest.mark.parametrize("baseline", ["liteforge", "terminus2"])
@@ -236,6 +242,7 @@ def test_render_prompt_targets_child_workspace_not_parent(tmp_path: Path) -> Non
             alpha=11.0,
             beta=9.0,
         ),
+        best_completed_state=root,
         scoreboard_text=run_outer_loop._build_scoreboard(states=manager.states),
         benchmark_model_key=manager.run_spec.model_key,
     )
@@ -244,6 +251,107 @@ def test_render_prompt_targets_child_workspace_not_parent(tmp_path: Path) -> Non
         f"Selected parent workspace (reference only, do not edit there): `{root.refiner_workspace_path}`"
     ) in prompt
     assert f"Do not edit files inside `{root.refiner_workspace_path}`." in prompt
+
+
+def test_state_posterior_counts_errors_as_failures() -> None:
+    state = AgentState(
+        prev_path=None,
+        path="/tmp/iteration-0007.json",
+        refiner_workspace_path="/tmp/workspace",
+        iteration=7,
+        baseline="liteforge",
+        result=BenchmarkSummary(
+            created_at_utc="now",
+            aggregate_result_path="result.json",
+            harbor_job_dir="job",
+            reward_mean=0.4,
+            n_trials=12,
+            pass_count=8,
+            failure_count=4,
+            error_count=9,
+        ),
+    )
+    alpha, beta = state_manager_module._state_posterior(state=state)
+    assert alpha == 9.0
+    assert beta == 14.0
+
+
+def test_build_scoreboard_includes_errors_column(tmp_path: Path) -> None:
+    _manager, root = _bootstrap_manager(tmp_path=tmp_path)
+    root.result = BenchmarkSummary(
+        created_at_utc="now",
+        aggregate_result_path="result.json",
+        harbor_job_dir="job",
+        reward_mean=0.5,
+        n_trials=4,
+        pass_count=2,
+        failure_count=1,
+        error_count=3,
+    )
+    scoreboard = run_outer_loop._build_scoreboard(states=[root])
+    assert (
+        "| Iter | Baseline | Reward | Passed | Failed | Errors | Parent |" in scoreboard
+    )
+    assert "| 0 | liteforge | 0.500 | 2 | 1 | 3 | root |" in scoreboard
+
+
+def test_render_prompt_includes_best_state_reference(tmp_path: Path) -> None:
+    manager, root = _bootstrap_manager(tmp_path=tmp_path)
+    root.result = BenchmarkSummary(
+        created_at_utc="now",
+        aggregate_result_path="root-result.json",
+        harbor_job_dir="root-job",
+        reward_mean=0.5,
+        n_trials=6,
+        pass_count=3,
+        failure_count=2,
+        error_count=1,
+    )
+    root.save()
+    best = AgentState(
+        prev_path=root.path,
+        path=str((manager.states_dir / "iteration-0002.json").resolve()),
+        refiner_workspace_path=str(
+            (manager.workspaces_dir / "iteration-0002").resolve()
+        ),
+        iteration=2,
+        baseline="liteforge",
+        result=BenchmarkSummary(
+            created_at_utc="now",
+            aggregate_result_path="best-result.json",
+            harbor_job_dir="best-job",
+            reward_mean=0.7,
+            n_trials=6,
+            pass_count=4,
+            failure_count=1,
+            error_count=0,
+        ),
+    )
+    best.save()
+    child = manager.create_child_state(
+        parent_state=root,
+        iteration=1,
+        plan="verify best state reference",
+    )
+    prompt = run_outer_loop._render_prompt(
+        run_root=manager.run_root,
+        workspace_root=Path(child.refiner_workspace_path),
+        parent_sample=ParentSample(
+            state=root,
+            score_sample=0.25,
+            alpha=4.0,
+            beta=4.0,
+        ),
+        best_completed_state=best,
+        scoreboard_text=run_outer_loop._build_scoreboard(states=manager.states),
+        benchmark_model_key=manager.run_spec.model_key,
+    )
+    assert "Current best completed state:" in prompt
+    assert f"- iteration: `{best.iteration}`" in prompt
+    assert "- reward: `0.700`" in prompt
+    assert "- passed / failed / errors: `4` / `1` / `0`" in prompt
+    assert f"- workspace (reference only): `{best.refiner_workspace_path}`" in prompt
+    assert "Compare your final change against the best completed state" in prompt
 
 
 def test_summarize_job_extracts_summary_and_critic(tmp_path: Path) -> None:
@@ -482,6 +590,73 @@ def test_benchmark_fingerprint_is_stable_across_workspace_copies(
         model_key="qwen3.5-9b",
     )
     assert fingerprint_one.fingerprint == fingerprint_two.fingerprint
+
+
+def test_benchmark_fingerprint_changes_when_task_subset_changes(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    _write_minimal_agent_tree(workspace=workspace)
+    full = compute_benchmark_fingerprint(
+        workspace_root=workspace,
+        model_key="qwen3.5-9b",
+        task_names=["regex-log", "pypi-server"],
+    )
+    reduced = compute_benchmark_fingerprint(
+        workspace_root=workspace,
+        model_key="qwen3.5-9b",
+        task_names=["regex-log"],
+    )
+    assert full.fingerprint != reduced.fingerprint
+
+
+def test_resolve_workspace_benchmark_tasks_reads_run_manifest(tmp_path: Path) -> None:
+    run_root = tmp_path / "run"
+    workspace = run_root / "workspaces" / "iteration-0001"
+    workspace.mkdir(parents=True)
+    (run_root / "run_manifest.json").write_text(
+        json.dumps(
+            {
+                "benchmark_tasks": [
+                    "regex-log",
+                    "pypi-server",
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert resolve_workspace_benchmark_tasks(workspace_root=workspace) == [
+        "regex-log",
+        "pypi-server",
+    ]
+
+
+def test_build_harbor_command_uses_selected_task_subset(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo_root = tmp_path / "repo"
+    workspace = repo_root / "agent_evolve_v2" / "start_workdirs" / "terminus2"
+    workspace.mkdir(parents=True)
+    (repo_root / "agent_evolve_v2" / "runs.json").write_text(
+        "{}",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "agent_evolve_v2.benchmark.resolve_harbor_command",
+        lambda: ["harbor"],
+    )
+    command = build_harbor_command(
+        workspace_root=workspace,
+        jobs_dir=tmp_path / "jobs",
+        model_key="qwen3.5-flash",
+        task_names=["regex-log", "pypi-server"],
+    )
+    task_args = [
+        command[index + 1]
+        for index, value in enumerate(command[:-1])
+        if value == "--task-name"
+    ]
+    assert task_args == ["regex-log", "pypi-server"]
 
 
 def test_resolve_benchmark_cache_root_defaults_outside_workspace(
