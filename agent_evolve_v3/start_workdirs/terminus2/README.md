@@ -10,7 +10,6 @@ This workspace was seeded from the `{baseline}` baseline harness.
 - `test_agent.sh` smoke-tests the local harness against the hidden validation service.
 - `run_smoke_benchmark.sh` runs the single-task smoke benchmark for quick checks.
 - `outputs/` holds the copied official benchmark artifacts from the selected parent state.
-- `NOTES.md` is the working notebook for the refiner.
 
 ## Run validation
 
@@ -36,5 +35,3 @@ quick local signal before finishing.
 - Validation and benchmarking are provided by hidden local services.
 - Read the copied prior benchmark artifacts under `outputs/` when the plan
   references specific failure modes.
-- Update `NOTES.md` with your hypothesis, validation results, and whether the
-  change should generalize.

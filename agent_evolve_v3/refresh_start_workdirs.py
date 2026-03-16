@@ -32,7 +32,6 @@ IGNORE_NAMES = (
 def refresh_start_workdir(*, repo_root: Path, baseline: str) -> Path:
     destination = repo_root / "agent_evolve_v3" / "start_workdirs" / baseline
     readme_template = (destination / "README.md").read_text(encoding="utf-8")
-    notes_template = (destination / "NOTES.md").read_text(encoding="utf-8")
     wrapper_templates = {
         name: (destination / name).read_text(encoding="utf-8")
         for name in (
@@ -111,7 +110,6 @@ def refresh_start_workdir(*, repo_root: Path, baseline: str) -> Path:
         encoding="utf-8",
     )
     (destination / "README.md").write_text(readme_template, encoding="utf-8")
-    (destination / "NOTES.md").write_text(notes_template, encoding="utf-8")
     for name, template in wrapper_templates.items():
         (destination / name).write_text(template, encoding="utf-8")
     (destination / "pyproject.toml").write_text(

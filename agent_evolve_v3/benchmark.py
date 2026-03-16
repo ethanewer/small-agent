@@ -228,16 +228,6 @@ def reset_visible_benchmark_outputs(
 
 
 @lru_cache(maxsize=None)
-def load_small_benchmark_spec(*, repo_root: Path) -> BenchmarkSpec:
-    return load_benchmark_spec(repo_root=repo_root, benchmark_preset="official")
-
-
-@lru_cache(maxsize=None)
-def load_smoke_benchmark_spec(*, repo_root: Path) -> BenchmarkSpec:
-    return load_benchmark_spec(repo_root=repo_root, benchmark_preset="smoke")
-
-
-@lru_cache(maxsize=None)
 def load_benchmark_spec(
     *,
     repo_root: Path,

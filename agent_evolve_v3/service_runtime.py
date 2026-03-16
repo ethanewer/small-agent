@@ -18,8 +18,6 @@ from types import ModuleType
 from typing import Any
 import tempfile
 
-from rich.console import Console
-
 RUNS_CONFIG_NAMES = ("runs.json", "runs.yaml")
 
 
@@ -121,29 +119,6 @@ def smoke_test_workspace(
         "agent_class": agent.__class__.__name__,
         "ready": hasattr(agent, "run_task"),
     }
-
-
-def run_workspace_agent_task(
-    *,
-    workspace_root: Path,
-    repo_root: Path,
-    model_key: str,
-    instruction: str,
-    final_message_enabled: bool,
-) -> object:
-    runtime_cfg = build_runtime_config(
-        workspace_root=workspace_root,
-        repo_root=repo_root,
-        model_key=model_key,
-        final_message_enabled=final_message_enabled,
-    )
-    agent = load_workspace_agent(workspace_root=workspace_root)
-    return agent.run_task(
-        instruction=instruction,
-        cfg=runtime_cfg,
-        console=Console(),
-        task_id="workspace-benchmark",
-    )
 
 
 def resolve_model_config(

@@ -15,15 +15,14 @@ from agent_evolve_v3.benchmark import (
 )
 from agent_evolve_v3.config import RunSpec, load_runs_config
 from agent_evolve_v3.planner_context import (
-    FAILED_TASK_INDEX_FILE_NAME,
-    FAILED_TASK_TRAJECTORIES_FILE_NAME,
-    PLAN_HISTORY_FILE_NAME,
-    PLANNER_CONTEXT_FILE_NAME,
     PLANNER_NOTES_FILE_NAME,
-    SCORE_ANALYSIS_FILE_NAME,
     classify_state_status,
     latest_iteration_header,
     latest_iteration_section,
+    latest_run_artifact_map,
+    latest_run_parent_iteration_text,
+    latest_run_selectable_text,
+    plan_summary,
     planner_notes_template,
     summarize_problem_trials,
 )
@@ -140,7 +139,6 @@ def main(argv: list[str]) -> int:
         planner_prompt_path.write_text(planner_prompt_text, encoding="utf-8")
 
         with manager.planning_environment(
-            scoreboard_text=scoreboard_text,
             planner_notes_path=planner_notes_path,
         ) as (planning_workspace, candidate_states):
             _copy_planning_inputs(
@@ -191,12 +189,7 @@ def main(argv: list[str]) -> int:
             planner_output_artifact_path=planner_output_path,
         )
         implementation_prompt_text = _render_implementation_prompt(
-            run_root=run_root,
-            workspace_root=Path(state.refiner_workspace_path),
             parent_state=parent_state,
-            best_completed_state=best_completed_state,
-            scoreboard_text=scoreboard_text,
-            benchmark_model_key=run_spec.model_key,
             plan=planning_output.plan,
         )
         implementation_prompt_path = artifacts_dir / "implementation_prompt.txt"
@@ -204,13 +197,6 @@ def main(argv: list[str]) -> int:
             implementation_prompt_text,
             encoding="utf-8",
         )
-        _seed_workspace_notes(
-            state=state,
-            parent_state=parent_state,
-            best_completed_state=best_completed_state,
-            scoreboard_text=scoreboard_text,
-        )
-
         implementation_completed = run_implementation_agent(
             workspace_path=Path(state.refiner_workspace_path),
             prompt_text=implementation_prompt_text,
@@ -314,7 +300,6 @@ def _ensure_state_evaluated(
         )
     if seed_refiner_outputs:
         manager.seed_refiner_outputs(state=state)
-    manager.capture_workspace_notes(state=state)
 
 
 def _benchmark_state(
@@ -422,6 +407,10 @@ def _render_planner_prompt(
         encoding="utf-8"
     )
     latest_result = latest_state.result if latest_state else None
+    latest_artifacts = latest_run_artifact_map(
+        state=latest_state,
+        run_root=run_root,
+    )
     best_state = best_completed_state
     best_result = best_state.result if best_state else None
     return template.format(
@@ -446,6 +435,21 @@ def _render_planner_prompt(
         latest_problem_tasks=(
             summarize_problem_trials(state=latest_state) if latest_state else "N/A"
         ),
+        latest_plan_summary=(
+            plan_summary(plan=latest_state.plan)
+            if latest_state
+            else "No plan recorded."
+        ),
+        latest_selectable=latest_run_selectable_text(state=latest_state),
+        latest_parent_iteration=latest_run_parent_iteration_text(state=latest_state),
+        latest_benchmark_summary_path=latest_artifacts["benchmark_summary_path"],
+        latest_benchmark_stdout_path=latest_artifacts["benchmark_stdout_path"],
+        latest_benchmark_stderr_path=latest_artifacts["benchmark_stderr_path"],
+        latest_harbor_job_dir=latest_artifacts["harbor_job_dir"],
+        latest_implementation_step_path=latest_artifacts["implementation_step_path"],
+        latest_validation_step_path=latest_artifacts["validation_step_path"],
+        latest_benchmark_step_path=latest_artifacts["benchmark_step_path"],
+        latest_benchmark_result_path=latest_artifacts["benchmark_result_path"],
         best_iteration=best_state.iteration if best_state else "N/A",
         best_reward=(
             f"{best_result.reward_mean:.3f}"
@@ -461,12 +465,7 @@ def _render_planner_prompt(
 
 def _render_implementation_prompt(
     *,
-    run_root: Path,
-    workspace_root: Path,
     parent_state: AgentState,
-    best_completed_state: AgentState | None,
-    scoreboard_text: str,
-    benchmark_model_key: str,
     plan: str,
 ) -> str:
     template = (
@@ -474,27 +473,9 @@ def _render_implementation_prompt(
         .with_name("headless_implementation_prompt.md")
         .read_text(encoding="utf-8")
     )
-    best_state = best_completed_state or parent_state
-    best_result = best_state.result
     parent_result = parent_state.result
     parent_benchmark = parent_state.official_benchmark
     return template.format(
-        run_root=run_root,
-        workspace_root=workspace_root,
-        parent_iteration=parent_state.iteration,
-        parent_workspace=parent_state.refiner_workspace_path,
-        baseline=parent_state.baseline,
-        benchmark_model_key=benchmark_model_key,
-        best_iteration=best_state.iteration,
-        best_reward=(
-            f"{best_result.reward_mean:.3f}"
-            if best_result and best_result.reward_mean is not None
-            else "N/A"
-        ),
-        best_passed=best_result.pass_count if best_result else "N/A",
-        best_failed=best_result.failure_count if best_result else "N/A",
-        best_errors=best_result.error_count if best_result else "N/A",
-        best_workspace=best_state.refiner_workspace_path,
         parent_reward=(
             f"{parent_result.reward_mean:.3f}"
             if parent_result and parent_result.reward_mean is not None
@@ -515,107 +496,8 @@ def _render_implementation_prompt(
         parent_harbor_job_dir=(
             parent_benchmark.harbor_job_dir if parent_benchmark else "N/A"
         ),
-        scoreboard=scoreboard_text,
         plan=plan,
     )
-
-
-def _seed_workspace_notes(
-    *,
-    state: AgentState,
-    parent_state: AgentState,
-    best_completed_state: AgentState | None,
-    scoreboard_text: str,
-) -> None:
-    notes_path = Path(state.refiner_workspace_path) / "NOTES.md"
-    existing = notes_path.read_text(encoding="utf-8") if notes_path.exists() else ""
-    best_state = best_completed_state or parent_state
-    best_result = best_state.result
-    parent_result = parent_state.result
-    parent_benchmark = parent_state.official_benchmark
-    auto_block = "\n".join(
-        [
-            "<!-- BEGIN AUTO STATE CONTEXT -->",
-            f"Selected parent iteration: {parent_state.iteration}",
-            f"Planner-selected state index: {state.planner_selected_state_index}",
-            f"Baseline: {parent_state.baseline}",
-            (
-                "Selected parent reward / passed / failed / errors: "
-                + (
-                    " / ".join(
-                        [
-                            f"{parent_result.reward_mean:.3f}",
-                            str(parent_result.pass_count),
-                            str(parent_result.failure_count),
-                            str(parent_result.error_count),
-                        ]
-                    )
-                    if parent_result and parent_result.reward_mean is not None
-                    else "N/A"
-                )
-            ),
-            (
-                "Selected parent official benchmark summary: "
-                + (
-                    parent_benchmark.benchmark_summary_path
-                    if parent_benchmark
-                    else "N/A"
-                )
-            ),
-            (
-                "Selected parent official benchmark stdout: "
-                + (
-                    parent_benchmark.benchmark_stdout_path
-                    if parent_benchmark
-                    else "N/A"
-                )
-            ),
-            (
-                "Selected parent official benchmark stderr: "
-                + (
-                    parent_benchmark.benchmark_stderr_path
-                    if parent_benchmark
-                    else "N/A"
-                )
-            ),
-            (
-                "Selected parent official Harbor job dir: "
-                + (parent_benchmark.harbor_job_dir if parent_benchmark else "N/A")
-            ),
-            "Selected parent benchmark artifacts were copied into local outputs/ for reference.",
-            f"Best completed iteration so far: {best_state.iteration}",
-            (
-                "Best completed reward / passed / failed / errors: "
-                + (
-                    " / ".join(
-                        [
-                            f"{best_result.reward_mean:.3f}",
-                            str(best_result.pass_count),
-                            str(best_result.failure_count),
-                            str(best_result.error_count),
-                        ]
-                    )
-                    if best_result and best_result.reward_mean is not None
-                    else "N/A"
-                )
-            ),
-            f"Best workspace (reference only): {best_state.refiner_workspace_path}",
-            "",
-            "## Planner-selected change",
-            "",
-            state.plan or "No plan recorded.",
-            "",
-            scoreboard_text,
-            "<!-- END AUTO STATE CONTEXT -->",
-            "",
-        ]
-    )
-    stripped_existing = existing
-    if "<!-- BEGIN AUTO STATE CONTEXT -->" in existing:
-        _, _, remainder = existing.partition("<!-- BEGIN AUTO STATE CONTEXT -->")
-        _, _, stripped_existing = remainder.partition("<!-- END AUTO STATE CONTEXT -->")
-        stripped_existing = stripped_existing.lstrip("\n")
-    notes_path.write_text(auto_block + stripped_existing, encoding="utf-8")
 
 
 def _copy_planning_inputs(*, planning_workspace: Path, artifacts_dir: Path) -> None:
@@ -625,17 +507,6 @@ def _copy_planning_inputs(*, planning_workspace: Path, artifacts_dir: Path) -> N
         / "planner_state_schema.json",
         planning_workspace / "output-schema.json": artifacts_dir
         / "planner_output_schema.json",
-        planning_workspace / "scoreboard.md": artifacts_dir / "planner_scoreboard.md",
-        planning_workspace / PLANNER_CONTEXT_FILE_NAME: artifacts_dir
-        / "planner_context.json",
-        planning_workspace / PLAN_HISTORY_FILE_NAME: artifacts_dir
-        / "planner_plan_history.md",
-        planning_workspace / FAILED_TASK_INDEX_FILE_NAME: artifacts_dir
-        / "planner_failed_task_index.json",
-        planning_workspace / FAILED_TASK_TRAJECTORIES_FILE_NAME: artifacts_dir
-        / "planner_failed_task_trajectories.md",
-        planning_workspace / SCORE_ANALYSIS_FILE_NAME: artifacts_dir
-        / "planner_score_analysis.md",
         planning_workspace / PLANNER_NOTES_FILE_NAME: artifacts_dir
         / "planner_notes_input.md",
     }
@@ -683,7 +554,6 @@ def _sync_planner_notes(
 def _persist_failed_state_context(
     *, manager: StateManager, run_root: Path, state: AgentState
 ) -> None:
-    manager.capture_workspace_notes(state=state)
     state.save()
     _write_scoreboard(run_root=run_root, states=manager.states)
 

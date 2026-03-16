@@ -12,15 +12,7 @@ from pathlib import Path
 
 from agent_evolve_v3.benchmark import reset_visible_benchmark_outputs
 from agent_evolve_v3.config import RunSpec
-from agent_evolve_v3.planner_context import (
-    FAILED_TASK_INDEX_FILE_NAME,
-    FAILED_TASK_TRAJECTORIES_FILE_NAME,
-    PLAN_HISTORY_FILE_NAME,
-    PLANNER_CONTEXT_FILE_NAME,
-    PLANNER_NOTES_FILE_NAME,
-    SCORE_ANALYSIS_FILE_NAME,
-    build_planner_context_bundle,
-)
+from agent_evolve_v3.planner_context import PLANNER_NOTES_FILE_NAME
 from agent_evolve_v3.state import (
     AgentState,
     agent_state_json_schema,
@@ -88,7 +80,6 @@ class StateManager:
             refiner_workspace_path=str(workspace_path.resolve()),
             iteration=0,
             baseline=self.run_spec.baseline,
-            notes="Seed workspace created from the configured terminus2 harness.",
         )
         state.save()
         return state
@@ -136,14 +127,9 @@ class StateManager:
     def planning_environment(
         self,
         *,
-        scoreboard_text: str,
         planner_notes_path: Path,
     ) -> Iterator[tuple[Path, list[AgentState]]]:
         candidate_states = self.completed_states
-        bundle = build_planner_context_bundle(
-            states=self.states,
-            run_root=self.run_root,
-        )
         with tempfile.TemporaryDirectory(prefix="agent-evolve-v3-planning-") as tmpdir:
             planning_root = Path(tmpdir)
             (planning_root / "states.json").write_text(
@@ -173,40 +159,6 @@ class StateManager:
                 + "\n",
                 encoding="utf-8",
             )
-            (planning_root / "scoreboard.md").write_text(
-                scoreboard_text + "\n",
-                encoding="utf-8",
-            )
-            (planning_root / PLANNER_CONTEXT_FILE_NAME).write_text(
-                json.dumps(
-                    bundle.planning_context_payload,
-                    indent=2,
-                    ensure_ascii=True,
-                )
-                + "\n",
-                encoding="utf-8",
-            )
-            (planning_root / PLAN_HISTORY_FILE_NAME).write_text(
-                bundle.plan_history_text,
-                encoding="utf-8",
-            )
-            (planning_root / FAILED_TASK_INDEX_FILE_NAME).write_text(
-                json.dumps(
-                    bundle.failed_task_index_payload,
-                    indent=2,
-                    ensure_ascii=True,
-                )
-                + "\n",
-                encoding="utf-8",
-            )
-            (planning_root / FAILED_TASK_TRAJECTORIES_FILE_NAME).write_text(
-                bundle.failed_task_trajectories_text,
-                encoding="utf-8",
-            )
-            (planning_root / SCORE_ANALYSIS_FILE_NAME).write_text(
-                bundle.score_analysis_text,
-                encoding="utf-8",
-            )
             planner_notes_text = (
                 planner_notes_path.read_text(encoding="utf-8")
                 if planner_notes_path.exists()
@@ -217,26 +169,6 @@ class StateManager:
                 encoding="utf-8",
             )
             yield planning_root.resolve(), candidate_states
-
-    def write_run_manifest(self) -> Path:
-        payload = {
-            "baseline": self.run_spec.baseline,
-            "model_key": self.run_spec.model_key,
-            "cursor_model": self.run_spec.cursor_model,
-            "iterations": self.run_spec.iterations,
-            "random_seed": self.run_spec.random_seed,
-        }
-        path = self.run_root / "run_manifest.json"
-        path.write_text(
-            json.dumps(payload, indent=2, ensure_ascii=True) + "\n",
-            encoding="utf-8",
-        )
-        return path
-
-    def capture_workspace_notes(self, *, state: AgentState) -> None:
-        notes_path = Path(state.refiner_workspace_path) / "NOTES.md"
-        if notes_path.exists():
-            state.notes = notes_path.read_text(encoding="utf-8")
 
     def _materialize_seed_workspace(
         self,
@@ -252,18 +184,15 @@ class StateManager:
             dirs_exist_ok=False,
         )
 
-        for template_path in (
-            workspace_path / "README.md",
-            workspace_path / "NOTES.md",
-        ):
-            if template_path.exists():
-                template_path.write_text(
-                    template_path.read_text(encoding="utf-8").format(
-                        baseline=baseline,
-                        model_key=self.run_spec.model_key,
-                    ),
-                    encoding="utf-8",
-                )
+        readme_path = workspace_path / "README.md"
+        if readme_path.exists():
+            readme_path.write_text(
+                readme_path.read_text(encoding="utf-8").format(
+                    baseline=baseline,
+                    model_key=self.run_spec.model_key,
+                ),
+                encoding="utf-8",
+            )
         self._sync_workspace_docs(workspace_path=workspace_path)
 
     def _sync_workspace_docs(self, *, workspace_path: Path) -> None:
@@ -273,15 +202,15 @@ class StateManager:
         test_pattern = re.compile(r"\./test_agent\.sh \S+")
         benchmark_pattern = re.compile(r"\./run_benchmark\.sh \S+")
         smoke_benchmark_pattern = re.compile(r"\./run_smoke_benchmark\.sh \S+")
-        for relative_path in ("README.md", "NOTES.md"):
-            doc_path = workspace_path / relative_path
-            if not doc_path.exists():
-                continue
-            content = doc_path.read_text(encoding="utf-8")
-            updated = test_pattern.sub(test_command, content)
-            updated = benchmark_pattern.sub(benchmark_command, updated)
-            updated = smoke_benchmark_pattern.sub(smoke_benchmark_command, updated)
-            doc_path.write_text(updated, encoding="utf-8")
+        readme_path = workspace_path / "README.md"
+        if not readme_path.exists():
+            return
+
+        content = readme_path.read_text(encoding="utf-8")
+        updated = test_pattern.sub(test_command, content)
+        updated = benchmark_pattern.sub(benchmark_command, updated)
+        updated = smoke_benchmark_pattern.sub(smoke_benchmark_command, updated)
+        readme_path.write_text(updated, encoding="utf-8")
 
     def seed_refiner_outputs(self, *, state: AgentState) -> None:
         self._seed_workspace_outputs(

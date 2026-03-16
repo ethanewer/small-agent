@@ -69,7 +69,6 @@ class AgentState:
     iteration: int
     baseline: str
     plan: str | None = None
-    notes: str | None = None
     result: BenchmarkSummary | None = None
     official_benchmark: OfficialBenchmarkRun | None = None
     planner_selected_state_index: int | None = None
@@ -123,7 +122,6 @@ class AgentState:
             iteration=int(data["iteration"]),
             baseline=str(data["baseline"]),
             plan=_optional_text(value=data.get("plan")),
-            notes=_optional_text(value=data.get("notes")),
             result=result,
             official_benchmark=official_benchmark,
             planner_selected_state_index=_optional_int(
@@ -161,7 +159,6 @@ def agent_state_json_schema() -> dict[str, object]:
             "iteration": {"type": "integer"},
             "baseline": {"type": "string"},
             "plan": {"type": ["string", "null"]},
-            "notes": {"type": ["string", "null"]},
             "result": {"type": ["object", "null"]},
             "official_benchmark": {"type": ["object", "null"]},
             "planner_selected_state_index": {"type": ["integer", "null"]},

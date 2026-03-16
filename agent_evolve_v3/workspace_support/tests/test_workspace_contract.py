@@ -50,7 +50,6 @@ class TestWorkspaceContract(unittest.TestCase):
     def test_workspace_contains_visible_runtime_files(self) -> None:
         required = [
             "README.md",
-            "NOTES.md",
             "pyproject.toml",
             "agents/agent.py",
             "benchmark.py",

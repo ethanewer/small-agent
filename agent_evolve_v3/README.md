@@ -50,7 +50,7 @@ Every materialized workspace contains:
 - workspace-local runtime and Harbor entrypoints
 - an optional smoke benchmark launcher plus copied prior benchmark artifacts
 - validation scripts and tests
-- `README.md` and `NOTES.md`
+- `README.md`
 
 The checked-in seeds under `agent_evolve_v3/start_workdirs/` are the actual
 pre-assembled starting workspaces. Refresh them after support or baseline code

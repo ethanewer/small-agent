@@ -8,18 +8,12 @@ from pathlib import Path
 
 from agent_evolve_v3 import run_outer_loop
 from agent_evolve_v3.config import RunSpec
-from agent_evolve_v3.planner_context import (
-    PLANNER_CONTEXT_FILE_NAME,
-    PLANNER_NOTES_FILE_NAME,
-    build_planner_context_bundle,
-)
+from agent_evolve_v3.planner_context import PLANNER_NOTES_FILE_NAME
 from agent_evolve_v3.state import AgentState, BenchmarkSummary, OfficialBenchmarkRun
 from agent_evolve_v3.state_manager import StateManager
 
 
-def test_build_planner_context_bundle_summarizes_deltas_and_failures(
-    tmp_path: Path,
-) -> None:
+def test_planning_environment_keeps_only_required_files(tmp_path: Path) -> None:
     manager, root = _bootstrap_manager(tmp_path=tmp_path)
     _attach_benchmark(
         state=root,
@@ -58,26 +52,35 @@ def test_build_planner_context_bundle_summarizes_deltas_and_failures(
         exception_types={},
         preview_text="verifier expected localhost response",
     )
-    child.notes = "Iteration notes\n- Added tighter retries\n"
     child.save()
+    notes_path = manager.run_root / PLANNER_NOTES_FILE_NAME
+    notes_path.write_text("# Planner Notes\n\nseeded\n", encoding="utf-8")
 
-    bundle = build_planner_context_bundle(
-        states=manager.states,
-        run_root=manager.run_root,
-    )
+    with manager.planning_environment(
+        planner_notes_path=notes_path,
+    ) as (planning_root, candidate_states):
+        file_names = sorted(path.name for path in planning_root.iterdir())
+        candidate_payload = json.loads(
+            (planning_root / "states.json").read_text(encoding="utf-8")
+        )
+        copied_notes = (planning_root / PLANNER_NOTES_FILE_NAME).read_text(
+            encoding="utf-8"
+        )
 
-    assert bundle.planning_context_payload["iteration_count"] == 2
-    assert bundle.planning_context_payload["best_completed_iteration"] == 1
-    assert "reward +0.150" in bundle.score_analysis_text
-    assert "timeout-task__abc" in bundle.failed_task_trajectories_text
-    assert "Tighten retries and add result summaries." in bundle.plan_history_text
-    failed_iterations = bundle.failed_task_index_payload[
-        "iterations_with_problem_tasks"
+    assert file_names == [
+        "PLANNER_NOTES.md",
+        "output-schema.json",
+        "state-schema.json",
+        "states.json",
     ]
-    assert len(failed_iterations) == 2
+    assert len(candidate_states) == 2
+    assert len(candidate_payload) == 2
+    assert copied_notes == "# Planner Notes\n\nseeded\n"
 
 
-def test_planning_environment_exports_full_context_and_notes(tmp_path: Path) -> None:
+def test_planning_environment_excludes_failed_latest_state_from_states_json(
+    tmp_path: Path,
+) -> None:
     manager, root = _bootstrap_manager(tmp_path=tmp_path)
     _attach_benchmark(
         state=root,
@@ -119,33 +122,20 @@ def test_planning_environment_exports_full_context_and_notes(tmp_path: Path) -> 
     notes_path.write_text("# Planner Notes\n\nseeded\n", encoding="utf-8")
 
     with manager.planning_environment(
-        scoreboard_text="## Scoreboard\n",
         planner_notes_path=notes_path,
     ) as (planning_root, candidate_states):
         candidate_payload = json.loads(
             (planning_root / "states.json").read_text(encoding="utf-8")
         )
-        planning_context = json.loads(
-            (planning_root / PLANNER_CONTEXT_FILE_NAME).read_text(encoding="utf-8")
-        )
         copied_notes = (planning_root / PLANNER_NOTES_FILE_NAME).read_text(
-            encoding="utf-8"
-        )
-        failed_task_text = (planning_root / "failed_task_trajectories.md").read_text(
-            encoding="utf-8"
-        )
-        plan_history_text = (planning_root / "plan_history.md").read_text(
             encoding="utf-8"
         )
 
     assert len(candidate_states) == 1
     assert len(candidate_payload) == 1
-    assert planning_context["iteration_count"] == 2
-    assert planning_context["iterations"][1]["status"] == "implementation_failed"
     assert copied_notes == "# Planner Notes\n\nseeded\n"
-    assert "broken-task__xyz" in failed_task_text
-    assert failed_child.plan is not None
-    assert failed_child.plan in plan_history_text
+    assert failed_child.iteration == 1
+    assert candidate_payload[0]["iteration"] == 0
 
 
 def test_prepare_planner_notes_seeds_latest_iteration_once(tmp_path: Path) -> None:
@@ -179,12 +169,14 @@ def test_prepare_planner_notes_seeds_latest_iteration_once(tmp_path: Path) -> No
     assert "Problem tasks to inspect: failing-task__abc" in content
 
 
-def test_persist_failed_state_context_captures_workspace_notes(tmp_path: Path) -> None:
+def test_persist_failed_state_context_saves_state_and_scoreboard(
+    tmp_path: Path,
+) -> None:
     manager, root = _bootstrap_manager(tmp_path=tmp_path)
     child = manager.create_child_state(
         parent_state=root,
         iteration=1,
-        plan="Persist notes after failure.",
+        plan="Persist state after failure.",
         planner_selected_state_index=0,
         planner_prompt_artifact_path=manager.run_root
         / "artifacts"
@@ -193,8 +185,6 @@ def test_persist_failed_state_context_captures_workspace_notes(tmp_path: Path) -
         / "artifacts"
         / "planner_output.txt",
     )
-    notes_path = Path(child.refiner_workspace_path) / "NOTES.md"
-    notes_path.write_text("Failure notes\n- validation exploded\n", encoding="utf-8")
 
     run_outer_loop._persist_failed_state_context(
         manager=manager,
@@ -203,11 +193,11 @@ def test_persist_failed_state_context_captures_workspace_notes(tmp_path: Path) -
     )
 
     reloaded = AgentState.load(path=Path(child.path))
-    assert reloaded.notes == "Failure notes\n- validation exploded\n"
+    assert reloaded.plan == "Persist state after failure."
     assert (manager.run_root / "SCOREBOARD.md").exists()
 
 
-def test_render_planner_prompt_mentions_new_inputs(tmp_path: Path) -> None:
+def test_render_planner_prompt_embeds_latest_run_context(tmp_path: Path) -> None:
     manager, root = _bootstrap_manager(tmp_path=tmp_path)
     _attach_benchmark(
         state=root,
@@ -223,21 +213,61 @@ def test_render_planner_prompt_mentions_new_inputs(tmp_path: Path) -> None:
     )
     root.save()
 
+    child = manager.create_child_state(
+        parent_state=root,
+        iteration=1,
+        plan="Investigate timeout-heavy failures before branching.",
+        planner_selected_state_index=0,
+        planner_prompt_artifact_path=manager.run_root
+        / "artifacts"
+        / "planner_prompt.txt",
+        planner_output_artifact_path=manager.run_root
+        / "artifacts"
+        / "planner_output.txt",
+    )
+    child.save()
+    latest_artifacts_dir = manager.run_root / "artifacts" / "iteration-0001"
+    latest_artifacts_dir.mkdir(parents=True, exist_ok=True)
+    (latest_artifacts_dir / "implementation_step.json").write_text(
+        json.dumps(
+            {"returncode": 1, "stdout": "timeout", "stderr": ""}, ensure_ascii=True
+        ),
+        encoding="utf-8",
+    )
+
     prompt = run_outer_loop._render_planner_prompt(
         run_root=manager.run_root,
-        latest_state=root,
+        latest_state=child,
         best_completed_state=root,
         scoreboard_text="## Scoreboard\n",
         benchmark_model_key=manager.run_spec.model_key,
         candidate_state_count=1,
-        iteration_count=1,
+        iteration_count=2,
     )
 
-    assert "planning_context.json" in prompt
-    assert "score_analysis.md" in prompt
-    assert "failed_task_trajectories.md" in prompt
+    assert "Artifact pointers:" in prompt
+    assert "- selectable from `states.json`: `no`" in prompt
+    assert "- parent iteration: `0`" in prompt
+    assert "- official benchmark summary: `N/A`" in prompt
+    assert "- official benchmark stdout: `N/A`" in prompt
+    assert "- official benchmark stderr: `N/A`" in prompt
+    assert "- official Harbor job dir: `N/A`" in prompt
+    assert (
+        "plan tried: `Investigate timeout-heavy failures before branching.`"
+        not in prompt
+    )
+    assert "result summary:" not in prompt
+    assert "{latest_run_context}" not in prompt
+    assert "- implementation step: `" in prompt
+    assert "implementation_step.json" in prompt
     assert "PLANNER_NOTES.md" in prompt
-    assert "latest-task__123" in prompt
+    assert (
+        "Use Python to load `states.json` and do your own quantitative analysis"
+        in prompt
+    )
+    assert "planning_context.json" not in prompt
+    assert "score_analysis.md" not in prompt
+    assert "failed_task_trajectories.md" not in prompt
 
 
 def _bootstrap_manager(*, tmp_path: Path) -> tuple[StateManager, AgentState]:
