@@ -26,7 +26,6 @@ After you finish, the outer loop will automatically run the official benchmark a
 
 ## Constraints
 
-- Keep changes general. Do not add task-name-specific hacks.
-- Prefer a small, well-documented change over a wide rewrite unless the plan clearly points to an architectural issue.
-- Do not run the full benchmark yourself unless you are doing extra manual investigation beyond the required flow.
+- All changes must be general-purpose. Do not add task-name-specific hacks or hardcoded special cases. Results are validated against a separate holdout benchmark with different tasks, so only broadly applicable improvements will score well.
+- You do not have access to the full benchmark. The outer loop runs it automatically after you finish.
 - Do not ask for user input.

@@ -36,7 +36,6 @@ def refresh_start_workdir(*, repo_root: Path, baseline: str) -> Path:
         name: (destination / name).read_text(encoding="utf-8")
         for name in (
             "test_agent.sh",
-            "run_benchmark.sh",
             "run_smoke_benchmark.sh",
         )
         if (destination / name).exists()

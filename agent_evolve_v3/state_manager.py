@@ -197,10 +197,8 @@ class StateManager:
 
     def _sync_workspace_docs(self, *, workspace_path: Path) -> None:
         test_command = f"./test_agent.sh {self.run_spec.model_key}"
-        benchmark_command = f"./run_benchmark.sh {self.run_spec.model_key}"
         smoke_benchmark_command = f"./run_smoke_benchmark.sh {self.run_spec.model_key}"
         test_pattern = re.compile(r"\./test_agent\.sh \S+")
-        benchmark_pattern = re.compile(r"\./run_benchmark\.sh \S+")
         smoke_benchmark_pattern = re.compile(r"\./run_smoke_benchmark\.sh \S+")
         readme_path = workspace_path / "README.md"
         if not readme_path.exists():
@@ -208,7 +206,6 @@ class StateManager:
 
         content = readme_path.read_text(encoding="utf-8")
         updated = test_pattern.sub(test_command, content)
-        updated = benchmark_pattern.sub(benchmark_command, updated)
         updated = smoke_benchmark_pattern.sub(smoke_benchmark_command, updated)
         readme_path.write_text(updated, encoding="utf-8")
 

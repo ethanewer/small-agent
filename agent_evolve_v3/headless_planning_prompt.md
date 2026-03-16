@@ -70,5 +70,6 @@ Artifact pointers:
 - Do not ask for user input.
 - Do not make code changes outside this planning workspace.
 - Do not suggest multiple independent changes in one plan.
+- All proposed changes must be general-purpose. Do not plan task-name-specific hacks or hardcoded special cases. Results are validated against a separate holdout benchmark with different tasks, so only broadly applicable improvements will score well.
 - Prefer plans that reuse strengths from a strong parent while directly addressing its failure evidence.
 - In `PLANNER_NOTES.md`, always close out the previous iteration's `Result`/`Reflection` before recording the new `Plan`. Never delete older iteration sections. Use the notes to avoid repeating failed or low-signal ideas.
