@@ -12,11 +12,22 @@
         "polyglot-rust-c",
         "headless-terminal",
         "regex-log",
+        "git-multibranch",
         "configure-git-webserver",
+        "vulnerable-secret",
+        "sqlite-with-gcov",
         "cancel-async-tasks",
         "pypi-server",
+        "multi-source-data-merger",
+        "git-leak-recovery",
+        "fix-git",
+        "log-summary-date-ranges",
+        "modernize-scientific-stack",
+        "openssl-selfsigned-cert",
         "kv-store-grpc",
-        "log-summary-date-ranges"
+        "constraints-scheduling",
+        "nginx-request-logging",
+        "prove-plus-comm"
       ]
     }
   }
