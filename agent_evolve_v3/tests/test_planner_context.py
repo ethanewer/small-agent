@@ -8,9 +8,9 @@ from pathlib import Path
 
 from agent_evolve_v3 import run_outer_loop
 from agent_evolve_v3.config import RunSpec
-from agent_evolve_v3.planner_context import PLANNER_NOTES_FILE_NAME
 from agent_evolve_v3.state import AgentState, BenchmarkSummary, OfficialBenchmarkRun
-from agent_evolve_v3.state_manager import StateManager
+from agent_evolve_v3.state.manager import StateManager
+from agent_evolve_v3.state.planner_context import PLANNER_NOTES_FILE_NAME
 
 
 def test_planning_environment_keeps_only_required_files(tmp_path: Path) -> None:

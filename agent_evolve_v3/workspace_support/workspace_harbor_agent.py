@@ -11,7 +11,7 @@ import shlex
 import shutil
 from typing import Any
 
-from agent_evolve_v3.service_runtime import (
+from agent_evolve_v3.services.workspace import (
     build_runtime_env_payload,
     stage_remote_bundle,
 )

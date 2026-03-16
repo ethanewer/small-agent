@@ -40,9 +40,6 @@ class PlanningOutput:
     selected_state_index: int
     plan: str
 
-    def to_json(self) -> str:
-        return json.dumps(asdict(self), indent=2, ensure_ascii=True)
-
     @classmethod
     def load(cls, *, path: Path) -> "PlanningOutput":
         payload = json.loads(path.read_text(encoding="utf-8"))
@@ -77,10 +74,6 @@ class AgentState:
     planner_output_artifact_path: str | None = None
     planner_summary: str | None = None
     created_at_utc: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
-
-    @property
-    def workspace_path(self) -> str:
-        return self.refiner_workspace_path
 
     def save(self) -> None:
         Path(self.path).parent.mkdir(parents=True, exist_ok=True)

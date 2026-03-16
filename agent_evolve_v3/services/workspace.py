@@ -205,7 +205,7 @@ def stage_remote_bundle(
     staging = Path(tempfile.mkdtemp(prefix="agent-evolve-v3-bundle-"))
     shutil.copytree(src=agent_dir, dst=staging / "agent", symlinks=True)
     shutil.copy2(
-        src=repo_root / "agent_evolve_v3" / "service_remote_runner.py",
+        src=repo_root / "agent_evolve_v3" / "services" / "remote_runner.py",
         dst=staging / "remote_runner.py",
     )
     return staging

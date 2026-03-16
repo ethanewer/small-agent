@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from agent_evolve_v3.state import AgentState, BenchmarkSummary
+from agent_evolve_v3.state.types import AgentState, BenchmarkSummary
 
 PLANNER_NOTES_FILE_NAME = "PLANNER_NOTES.md"
 
@@ -54,18 +54,6 @@ def parent_iteration_for_state(*, state: AgentState) -> int | None:
         return int(suffix)
     except ValueError:
         return None
-
-
-def summarize_result_line(*, state: AgentState, run_root: Path) -> str:
-    status = classify_state_status(state=state, run_root=run_root)
-    result = state.result
-    if result is None or result.reward_mean is None:
-        return f"status={status}"
-    return (
-        f"status={status}, reward={result.reward_mean:.3f}, "
-        f"passed={result.pass_count}, failed={result.failure_count}, "
-        f"errors={result.error_count}"
-    )
 
 
 def summarize_problem_trials(*, state: AgentState) -> str:

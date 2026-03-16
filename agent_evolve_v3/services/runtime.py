@@ -100,7 +100,7 @@ def run_workspace_validation(
             "run",
             "python",
             "-m",
-            "agent_evolve_v3.service_cli",
+            "agent_evolve_v3.services.cli",
             "validate",
             "--workspace",
             str(workspace_path),

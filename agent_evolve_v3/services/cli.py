@@ -8,8 +8,8 @@ import json
 from pathlib import Path
 import sys
 
-from agent_evolve_v3.benchmark import execute_workspace_benchmark
-from agent_evolve_v3.service_runtime import (
+from agent_evolve_v3.services.benchmark import execute_workspace_benchmark
+from agent_evolve_v3.services.workspace import (
     discover_repo_root,
     smoke_test_workspace,
 )

@@ -53,10 +53,7 @@ class TestWorkspaceContract(unittest.TestCase):
             "pyproject.toml",
             "agents/agent.py",
             "benchmark.py",
-            "benchmark_summary.py",
             "workspace_harbor_agent.py",
-            "run_task.py",
-            "validate_workspace.py",
             "model_catalog.json",
             "workspace_agent_types.py",
         ]

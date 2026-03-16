@@ -53,12 +53,7 @@ Every materialized workspace contains:
 - `README.md`
 
 The checked-in seeds under `agent_evolve_v3/start_workdirs/` are the actual
-pre-assembled starting workspaces. Refresh them after support or baseline code
-changes with:
-
-```bash
-uv run python agent_evolve_v3/refresh_start_workdirs.py
-```
+pre-assembled starting workspaces.
 
 The outer loop only coordinates these workspaces. The workspaces themselves are
 intended to be understandable and runnable without referring back to the older

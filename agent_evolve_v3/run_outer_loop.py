@@ -9,12 +9,21 @@ from pathlib import Path
 import shutil
 import sys
 
-from agent_evolve_v3.benchmark import (
+from agent_evolve_v3.config import RunSpec, load_runs_config
+from agent_evolve_v3.prompts import load_implementation_prompt, load_planning_prompt
+from agent_evolve_v3.services.benchmark import (
     load_workspace_benchmark_result,
     run_workspace_benchmark,
 )
-from agent_evolve_v3.config import RunSpec, load_runs_config
-from agent_evolve_v3.planner_context import (
+from agent_evolve_v3.services.runtime import (
+    record_completed_process,
+    run_implementation_agent,
+    run_planner_agent,
+    run_workspace_validation,
+)
+from agent_evolve_v3.state import AgentState, PlanningOutput
+from agent_evolve_v3.state.manager import StateManager
+from agent_evolve_v3.state.planner_context import (
     PLANNER_NOTES_FILE_NAME,
     classify_state_status,
     latest_iteration_header,
@@ -26,17 +35,6 @@ from agent_evolve_v3.planner_context import (
     planner_notes_template,
     summarize_problem_trials,
 )
-from agent_evolve_v3.runtime import (
-    record_completed_process,
-    run_implementation_agent,
-    run_planner_agent,
-    run_workspace_validation,
-)
-from agent_evolve_v3.state import (
-    AgentState,
-    PlanningOutput,
-)
-from agent_evolve_v3.state_manager import StateManager
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
@@ -403,9 +401,7 @@ def _render_planner_prompt(
     candidate_state_count: int,
     iteration_count: int,
 ) -> str:
-    template = (Path(__file__).with_name("headless_planning_prompt.md")).read_text(
-        encoding="utf-8"
-    )
+    template = load_planning_prompt()
     latest_result = latest_state.result if latest_state else None
     latest_artifacts = latest_run_artifact_map(
         state=latest_state,
@@ -468,11 +464,7 @@ def _render_implementation_prompt(
     parent_state: AgentState,
     plan: str,
 ) -> str:
-    template = (
-        Path(__file__)
-        .with_name("headless_implementation_prompt.md")
-        .read_text(encoding="utf-8")
-    )
+    template = load_implementation_prompt()
     parent_result = parent_state.result
     parent_benchmark = parent_state.official_benchmark
     return template.format(

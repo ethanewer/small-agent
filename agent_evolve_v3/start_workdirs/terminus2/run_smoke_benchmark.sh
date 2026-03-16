@@ -19,7 +19,7 @@ if [ -z "$model_key" ]; then
 fi
 
 cd "$repo_root"
-uv run python -m agent_evolve_v3.service_cli benchmark \
+uv run python -m agent_evolve_v3.services.cli benchmark \
   --workspace "$workspace_root" \
   --model-key "$model_key" \
   --benchmark-preset smoke \
