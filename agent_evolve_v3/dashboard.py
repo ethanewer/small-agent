@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import time
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -115,14 +117,13 @@ def _load_trial_results(*, harbor_job_dir: Path) -> dict[str, dict[str, Any]]:
 
 
 def _compute_iteration_metrics(
-    *, trial_results: dict[str, dict[str, Any]], benchmark_tasks: list[str]
+    *, trial_results: dict[str, dict[str, Any]]
 ) -> dict[str, Any]:
     task_outcomes: dict[str, str] = {}
     for trial_name, trial_data in trial_results.items():
         task = _task_name_from_trial_name(trial_name)
         task_outcomes[task] = _classify_trial(trial_data)
 
-    total = len(benchmark_tasks) if benchmark_tasks else max(len(task_outcomes), 1)
     counts = {
         OUTCOME_PASS: 0,
         OUTCOME_FAILURE: 0,
@@ -133,6 +134,9 @@ def _compute_iteration_metrics(
     for outcome in task_outcomes.values():
         if outcome in counts:
             counts[outcome] += 1
+
+    n_classified = sum(counts.values())
+    total = n_classified if n_classified > 0 else 1
 
     return {
         "completion_rate": counts[OUTCOME_PASS] / total,
@@ -193,6 +197,147 @@ def _get_benchmark_progress(*, artifacts_dir: Path) -> dict[str, int] | None:
     n_total = agg.get("n_total_trials", 0)
     n_done = agg.get("stats", {}).get("n_trials", 0)
     return {"completed": n_done, "total": n_total}
+
+
+def _parse_iso_timestamp(ts: str | None) -> float | None:
+    if ts is None:
+        return None
+    try:
+        dt = datetime.fromisoformat(ts)
+        if dt.tzinfo is None:
+            return dt.timestamp()
+        return dt.timestamp()
+    except (ValueError, TypeError):
+        return None
+
+
+def _file_mtime(path: Path) -> float | None:
+    try:
+        return path.stat().st_mtime if path.exists() else None
+    except OSError:
+        return None
+
+
+def _latest_trial_mtime(harbor_job_dir: Path) -> float | None:
+    latest: float | None = None
+    for child in harbor_job_dir.iterdir():
+        if not child.is_dir() or "__" not in child.name:
+            continue
+        rp = child / "result.json"
+        mt = _file_mtime(rp)
+        if mt is not None and (latest is None or mt > latest):
+            latest = mt
+    return latest
+
+
+def _resolve_bench_end(
+    *, agg: dict[str, Any], harbor_job_dir: Path, now: float
+) -> tuple[float, bool]:
+    finished = _parse_iso_timestamp(agg.get("finished_at"))
+    if finished is not None:
+        return finished, False
+
+    n_total = agg.get("n_total_trials", 0)
+    n_done = agg.get("stats", {}).get("n_trials", 0)
+    if n_total > 0 and n_done >= n_total:
+        last_mt = _latest_trial_mtime(harbor_job_dir)
+        if last_mt is not None:
+            return last_mt, False
+
+    return now, True
+
+
+def _compute_stage_times(
+    *,
+    artifacts_dir: Path,
+    is_bootstrap: bool,
+    current_stage: str,
+) -> dict[str, float | None]:
+    now = time.time()
+
+    if is_bootstrap:
+        harbor_dir = _find_harbor_job_dir(artifacts_dir=artifacts_dir)
+        bench_sec: float | None = None
+        bench_live = False
+        if harbor_dir is not None:
+            agg = _load_aggregate_result(harbor_job_dir=harbor_dir)
+            if agg is not None:
+                started = _parse_iso_timestamp(agg.get("started_at"))
+                if started is not None:
+                    end, bench_live = _resolve_bench_end(
+                        agg=agg, harbor_job_dir=harbor_dir, now=now
+                    )
+                    bench_sec = end - started
+
+        return {
+            "plan_time_sec": None,
+            "impl_time_sec": None,
+            "benchmark_time_sec": bench_sec,
+            "plan_start_epoch": None,
+            "impl_start_epoch": None,
+            "benchmark_start_epoch": (now - bench_sec)
+            if bench_live and bench_sec is not None
+            else None,
+        }
+
+    prompt_mtime = _file_mtime(artifacts_dir / "planner_prompt.txt")
+    planner_mtime = _file_mtime(artifacts_dir / "planner_step.json")
+    impl_mtime = _file_mtime(artifacts_dir / "implementation_step.json")
+    validation_mtime = _file_mtime(artifacts_dir / "validation_step.json")
+
+    plan_sec: float | None = None
+    plan_live = False
+    impl_sec: float | None = None
+    impl_live = False
+    bench_sec = None
+    bench_live = False
+
+    if prompt_mtime is not None:
+        if planner_mtime is not None:
+            plan_sec = planner_mtime - prompt_mtime
+        elif current_stage == "planning":
+            plan_sec = now - prompt_mtime
+            plan_live = True
+
+    if planner_mtime is not None:
+        if impl_mtime is not None:
+            impl_sec = impl_mtime - planner_mtime
+        elif current_stage == "implementing":
+            impl_sec = now - planner_mtime
+            impl_live = True
+
+    if validation_mtime is not None:
+        harbor_dir = _find_harbor_job_dir(artifacts_dir=artifacts_dir)
+        if harbor_dir is not None:
+            agg = _load_aggregate_result(harbor_job_dir=harbor_dir)
+            if agg is not None:
+                started = _parse_iso_timestamp(agg.get("started_at"))
+                if started is not None:
+                    end, bench_live = _resolve_bench_end(
+                        agg=agg, harbor_job_dir=harbor_dir, now=now
+                    )
+                    bench_sec = end - started
+                else:
+                    bench_sec = now - validation_mtime
+                    bench_live = current_stage == "benchmarking"
+        elif current_stage == "benchmarking":
+            bench_sec = now - validation_mtime
+            bench_live = True
+
+    return {
+        "plan_time_sec": plan_sec,
+        "impl_time_sec": impl_sec,
+        "benchmark_time_sec": bench_sec,
+        "plan_start_epoch": (now - plan_sec)
+        if plan_live and plan_sec is not None
+        else None,
+        "impl_start_epoch": (now - impl_sec)
+        if impl_live and impl_sec is not None
+        else None,
+        "benchmark_start_epoch": (now - bench_sec)
+        if bench_live and bench_sec is not None
+        else None,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -267,9 +412,23 @@ def _load_single_run(*, run_dir: Path) -> dict[str, Any] | None:
             if trial_results:
                 metrics = _compute_iteration_metrics(
                     trial_results=trial_results,
-                    benchmark_tasks=benchmark_tasks,
                 )
                 iter_data.update(metrics)
+
+        iter_stage = (
+            "completed"
+            if classify_state_status(state=state, run_root=run_dir) == "completed"
+            else _detect_current_stage(
+                artifacts_dir=artifacts_dir,
+                is_bootstrap=(state.iteration == 0),
+            )
+        )
+        stage_times = _compute_stage_times(
+            artifacts_dir=artifacts_dir,
+            is_bootstrap=(state.iteration == 0),
+            current_stage=iter_stage,
+        )
+        iter_data.update(stage_times)
 
         if state.result and state.result.reward_mean is not None:
             iter_data["reward_mean"] = state.result.reward_mean
@@ -467,7 +626,7 @@ _DASHBOARD_HTML = """\
   th { color: var(--text-muted); font-weight: 600; font-size: 11px;
        text-transform: uppercase; letter-spacing: 0.5px; position: sticky; top: 0;
        background: var(--surface); }
-  td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
   .table-scroll { max-height: 400px; overflow-y: auto; border: 1px solid var(--border);
                   border-radius: 6px; }
   .cell-pass { color: var(--green); }
@@ -486,6 +645,16 @@ _DASHBOARD_HTML = """\
   .tab.active { color: var(--accent); border-bottom-color: var(--accent); }
   .tab-content { display: none; }
   .tab-content.active { display: block; }
+  .run-card.minimized .run-body { display: none; }
+  .run-card.minimized { padding: 14px 20px; }
+  .run-card.minimized .run-header { margin-bottom: 0; }
+  .minimize-btn {
+    background: none; border: 1px solid var(--border); border-radius: 6px;
+    color: var(--text-muted); cursor: pointer; padding: 2px 10px; font-size: 12px;
+    transition: color 0.15s, border-color 0.15s;
+  }
+  .minimize-btn:hover { color: var(--text); border-color: var(--text-muted); }
+  .cell-live { color: var(--accent); }
 </style>
 </head>
 <body>
@@ -521,6 +690,44 @@ const METRIC_COLORS = {
 
 let charts = {};
 let currentMetrics = {};
+let minimizedRuns = new Set();
+let initializedMinimized = false;
+let liveTimerInterval = null;
+
+function fmtDuration(sec) {
+  if (sec == null) return '-';
+  const s = Math.round(sec);
+  if (s < 60) return s + 's';
+  const m = Math.floor(s / 60);
+  const rem = s % 60;
+  return m + 'm ' + rem + 's';
+}
+
+function timingCell(sec, startEpoch) {
+  if (startEpoch != null) {
+    const elapsed = (Date.now() / 1000) - startEpoch;
+    return '<td class="num cell-live" data-stage-start="' + startEpoch + '">' + fmtDuration(elapsed) + '</td>';
+  }
+  if (sec != null) return '<td class="num">' + fmtDuration(sec) + '</td>';
+  return '<td class="num cell-muted">-</td>';
+}
+
+function updateLiveTimers() {
+  document.querySelectorAll('td[data-stage-start]').forEach(td => {
+    const start = parseFloat(td.dataset.stageStart);
+    const elapsed = (Date.now() / 1000) - start;
+    td.textContent = fmtDuration(elapsed);
+  });
+}
+
+function toggleMinimize(runDir) {
+  if (minimizedRuns.has(runDir)) {
+    minimizedRuns.delete(runDir);
+  } else {
+    minimizedRuns.add(runDir);
+  }
+  if (lastData) renderAll(lastData);
+}
 
 function destroyAllCharts() {
   for (const [key, chart] of Object.entries(charts)) {
@@ -538,7 +745,8 @@ function stageClass(stage) {
 
 function pct(v) {
   if (v == null) return '-';
-  return (v * 100).toFixed(1) + '%';
+  const p = v * 100;
+  return (p % 1 === 0 ? p.toFixed(0) : p.toFixed(1)) + '%';
 }
 
 function cellClass(val, isGood) {
@@ -549,6 +757,7 @@ function cellClass(val, isGood) {
 
 function renderRun(run, idx) {
   const id = `run-${idx}`;
+  const isMin = minimizedRuns.has(run.run_dir);
   const pctDone = run.max_iterations > 0
     ? ((run.iterations.length - 1) / run.max_iterations * 100).toFixed(0)
     : 0;
@@ -562,45 +771,28 @@ function renderRun(run, idx) {
 
   let iterTableRows = '';
   for (const it of run.iterations) {
-    const rw = it.reward_mean != null ? it.reward_mean.toFixed(3) : '-';
     const parent = it.parent_iteration != null ? it.parent_iteration : 'root';
-    iterTableRows += `<tr>
-      <td class="num">${it.iteration}</td>
-      <td><span class="stage-badge ${stageClass(it.status)}">${it.status}</span></td>
-      <td class="num">${rw}</td>
-      <td class="num ${cellClass(it.completion_rate, true)}">${pct(it.completion_rate)}</td>
-      <td class="num ${cellClass(it.failure_rate, false)}">${pct(it.failure_rate)}</td>
-      <td class="num ${cellClass(it.timeout_or_turn_limit_rate, false)}">${pct(it.timeout_or_turn_limit_rate)}</td>
-      <td class="num ${cellClass(it.other_error_rate, false)}">${pct(it.other_error_rate)}</td>
-      <td class="num">${parent}</td>
-      <td title="${(it.plan_summary||'').replace(/"/g,'&quot;')}">${truncate(it.plan_summary || '-', 60)}</td>
-    </tr>`;
+    iterTableRows += `<tr><td class="num">${it.iteration}</td><td><span class="stage-badge ${stageClass(it.status)}">${it.status}</span></td><td class="num ${cellClass(it.completion_rate, true)}">${pct(it.completion_rate)}</td><td class="num ${cellClass(it.failure_rate, false)}">${pct(it.failure_rate)}</td><td class="num ${cellClass(it.timeout_or_turn_limit_rate, false)}">${pct(it.timeout_or_turn_limit_rate)}</td><td class="num ${cellClass(it.other_error_rate, false)}">${pct(it.other_error_rate)}</td>${timingCell(it.plan_time_sec, it.plan_start_epoch)}${timingCell(it.impl_time_sec, it.impl_start_epoch)}${timingCell(it.benchmark_time_sec, it.benchmark_start_epoch)}<td class="num">${parent}</td></tr>`;
   }
 
   const tasks = Object.entries(run.task_aggregate || {}).sort((a,b) => a[0].localeCompare(b[0]));
   let taskRows = '';
   for (const [name, m] of tasks) {
-    taskRows += `<tr>
-      <td>${name}</td>
-      <td class="num ${cellClass(m.completion_rate, true)}">${pct(m.completion_rate)}</td>
-      <td class="num ${cellClass(m.failure_rate, false)}">${pct(m.failure_rate)}</td>
-      <td class="num ${cellClass(m.timeout_or_turn_limit_rate, false)}">${pct(m.timeout_or_turn_limit_rate)}</td>
-      <td class="num ${cellClass(m.timeout_rate, false)}">${pct(m.timeout_rate)}</td>
-      <td class="num ${cellClass(m.max_iters_rate, false)}">${pct(m.max_iters_rate)}</td>
-      <td class="num ${cellClass(m.other_error_rate, false)}">${pct(m.other_error_rate)}</td>
-      <td class="num">${m.n_iterations}</td>
-    </tr>`;
+    taskRows += `<tr><td>${name}</td><td class="num ${cellClass(m.completion_rate, true)}">${pct(m.completion_rate)}</td><td class="num ${cellClass(m.failure_rate, false)}">${pct(m.failure_rate)}</td><td class="num ${cellClass(m.timeout_or_turn_limit_rate, false)}">${pct(m.timeout_or_turn_limit_rate)}</td><td class="num ${cellClass(m.timeout_rate, false)}">${pct(m.timeout_rate)}</td><td class="num ${cellClass(m.max_iters_rate, false)}">${pct(m.max_iters_rate)}</td><td class="num ${cellClass(m.other_error_rate, false)}">${pct(m.other_error_rate)}</td><td class="num">${m.n_iterations}</td></tr>`;
   }
 
   return `
-  <div class="run-card" id="${id}">
+  <div class="run-card${isMin ? ' minimized' : ''}" id="${id}" data-run-dir="${run.run_dir}">
     <div class="run-header">
-      <div>
-        <div class="run-name">${run.name}</div>
-        <div class="run-meta">
-          <span>Model: ${run.model_key}</span>
-          <span>Planner: ${run.cursor_model}</span>
-          <span>Baseline: ${run.baseline}</span>
+      <div style="display:flex;align-items:center;gap:10px">
+        <button class="minimize-btn" onclick="toggleMinimize('${run.run_dir}')">${isMin ? '+' : '−'}</button>
+        <div>
+          <div class="run-name">${run.name}</div>
+          <div class="run-meta">
+            <span>Model: ${run.model_key}</span>
+            <span>Planner: ${run.cursor_model}</span>
+            <span>Baseline: ${run.baseline}</span>
+          </div>
         </div>
       </div>
       <div style="text-align:right">
@@ -609,6 +801,7 @@ function renderRun(run, idx) {
       </div>
     </div>
 
+    <div class="run-body">
     <div class="progress-section">
       <div style="display:flex;align-items:center;gap:12px;margin-bottom:4px">
         <span class="stage-badge ${stageClass(run.current_stage)}">${run.current_stage}</span>
@@ -624,12 +817,38 @@ function renderRun(run, idx) {
     </div>
 
     <div class="tabs">
-      <button class="tab active" onclick="switchTab('${id}','chart')">Chart</button>
-      <button class="tab" onclick="switchTab('${id}','iterations')">Iterations</button>
+      <button class="tab active" onclick="switchTab('${id}','iterations')">Iterations</button>
       <button class="tab" onclick="switchTab('${id}','tasks')">Tasks</button>
+      <button class="tab" onclick="switchTab('${id}','chart')">Chart</button>
     </div>
 
-    <div class="tab-content active" data-tab="chart" data-run="${id}">
+    <div class="tab-content active" data-tab="iterations" data-run="${id}">
+      <div class="section-title">Iteration History</div>
+      <div class="table-scroll">
+        <table>
+          <thead><tr>
+            <th class="num">Iter</th><th>Status</th><th class="num">Completion</th>
+            <th class="num">Failure</th><th class="num">Timeout / Turn Limit</th><th class="num">Other Error</th><th class="num">Plan Time</th><th class="num">Impl Time</th><th class="num">Bench Time</th><th class="num">Parent</th>
+          </tr></thead>
+          <tbody>${iterTableRows}</tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="tab-content" data-tab="tasks" data-run="${id}">
+      <div class="section-title">Per-Task Aggregate</div>
+      <div class="table-scroll">
+        <table>
+          <thead><tr>
+            <th>Task</th><th class="num">Completion</th><th class="num">Failure</th><th class="num">Timeout / Turn Limit</th>
+            <th class="num">Timeout</th><th class="num">Max Iters</th><th class="num">Other Error</th><th class="num">Iterations</th>
+          </tr></thead>
+          <tbody>${taskRows}</tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="tab-content" data-tab="chart" data-run="${id}">
       <div class="section-title">Metrics Over Iterations</div>
       <div class="chart-controls">
         <select onchange="changeMetric('${id}', this.value)" id="metric-select-${id}">
@@ -642,31 +861,6 @@ function renderRun(run, idx) {
         <canvas id="chart-${id}"></canvas>
       </div>
     </div>
-
-    <div class="tab-content" data-tab="iterations" data-run="${id}">
-      <div class="section-title">Iteration History</div>
-      <div class="table-scroll">
-        <table>
-          <thead><tr>
-            <th>Iter</th><th>Status</th><th>Reward</th><th>Comp%</th>
-            <th>Fail%</th><th>TO/TL%</th><th>Err%</th><th>Parent</th><th>Plan</th>
-          </tr></thead>
-          <tbody>${iterTableRows}</tbody>
-        </table>
-      </div>
-    </div>
-
-    <div class="tab-content" data-tab="tasks" data-run="${id}">
-      <div class="section-title">Per-Task Aggregate</div>
-      <div class="table-scroll">
-        <table>
-          <thead><tr>
-            <th>Task</th><th>Comp%</th><th>Fail%</th><th>TO/TL%</th>
-            <th>TO%</th><th>MaxIter%</th><th>Err%</th><th>N</th>
-          </tr></thead>
-          <tbody>${taskRows}</tbody>
-        </table>
-      </div>
     </div>
   </div>`;
 }
@@ -754,42 +948,59 @@ function changeMetric(runId, metric) {
 
 let lastData = null;
 
+function renderAll(runs) {
+  const container = document.getElementById('runs-container');
+
+  if (!runs.length) {
+    container.innerHTML = '<div class="empty-state">No runs found in outputs/</div>';
+    return;
+  }
+
+  const sorted = [...runs].sort((a, b) => {
+    const aMin = minimizedRuns.has(a.run_dir) ? 1 : 0;
+    const bMin = minimizedRuns.has(b.run_dir) ? 1 : 0;
+    return aMin - bMin;
+  });
+
+  const activeTabs = {};
+  document.querySelectorAll('.run-card').forEach(card => {
+    const activeContent = card.querySelector('.tab-content.active');
+    if (activeContent) activeTabs[card.dataset.runDir] = activeContent.dataset.tab;
+  });
+
+  destroyAllCharts();
+  container.innerHTML = sorted.map((r, i) => renderRun(r, i)).join('');
+
+  for (const card of document.querySelectorAll('.run-card')) {
+    const dir = card.dataset.runDir;
+    if (dir && activeTabs[dir]) switchTab(card.id, activeTabs[dir]);
+  }
+
+  sorted.forEach((run, i) => {
+    if (minimizedRuns.has(run.run_dir)) return;
+    const id = `run-${i}`;
+    const metric = currentMetrics[id] || 'completion_rate';
+    const select = document.getElementById(`metric-select-${id}`);
+    if (select) select.value = metric;
+    buildChart(id, run, metric);
+  });
+
+  if (liveTimerInterval) clearInterval(liveTimerInterval);
+  if (document.querySelectorAll('td[data-stage-start]').length > 0) {
+    liveTimerInterval = setInterval(updateLiveTimers, 1000);
+  }
+}
+
 async function fetchRuns() {
   try {
     const resp = await fetch('/api/runs');
     const runs = await resp.json();
     lastData = runs;
-    const container = document.getElementById('runs-container');
-
-    if (!runs.length) {
-      container.innerHTML = '<div class="empty-state">No runs found in outputs/</div>';
-      return;
+    if (!initializedMinimized) {
+      initializedMinimized = true;
+      runs.forEach(r => minimizedRuns.add(r.run_dir));
     }
-
-    // Preserve active tabs and metrics before destroying DOM
-    const activeTabs = {};
-    document.querySelectorAll('.run-card').forEach(card => {
-      const activeContent = card.querySelector('.tab-content.active');
-      if (activeContent) activeTabs[card.id] = activeContent.dataset.tab;
-    });
-
-    destroyAllCharts();
-    container.innerHTML = runs.map((r, i) => renderRun(r, i)).join('');
-
-    // Restore tabs
-    for (const [cardId, tab] of Object.entries(activeTabs)) {
-      if (document.getElementById(cardId)) switchTab(cardId, tab);
-    }
-
-    // Build/update charts
-    runs.forEach((run, i) => {
-      const id = `run-${i}`;
-      const metric = currentMetrics[id] || 'completion_rate';
-      const select = document.getElementById(`metric-select-${id}`);
-      if (select) select.value = metric;
-      buildChart(id, run, metric);
-    });
-
+    renderAll(runs);
     document.getElementById('last-updated').textContent =
       'Updated ' + new Date().toLocaleTimeString();
   } catch (e) {
