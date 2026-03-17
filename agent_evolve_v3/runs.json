@@ -24,6 +24,54 @@
         "constraints-scheduling",
         "prove-plus-comm"
       ]
+    },
+    "terminus2-gpt5-mini-medium": {
+      "baseline": "terminus2",
+      "model_key": "gpt-5-mini-medium",
+      "cursor_model": "opus-4.6-thinking",
+      "iterations": 25,
+      "random_seed": 0,
+      "benchmark_tasks": [
+        "polyglot-c-py",
+        "polyglot-rust-c",
+        "headless-terminal",
+        "regex-log",
+        "git-multibranch",
+        "vulnerable-secret",
+        "sqlite-with-gcov",
+        "cancel-async-tasks",
+        "pypi-server",
+        "git-leak-recovery",
+        "log-summary-date-ranges",
+        "openssl-selfsigned-cert",
+        "kv-store-grpc",
+        "constraints-scheduling",
+        "prove-plus-comm"
+      ]
+    },
+    "terminus2-gpt5-nano-minimal": {
+      "baseline": "terminus2",
+      "model_key": "gpt-5-nano-minimal",
+      "cursor_model": "opus-4.6-thinking",
+      "iterations": 25,
+      "random_seed": 0,
+      "benchmark_tasks": [
+        "polyglot-c-py",
+        "polyglot-rust-c",
+        "headless-terminal",
+        "regex-log",
+        "git-multibranch",
+        "vulnerable-secret",
+        "sqlite-with-gcov",
+        "cancel-async-tasks",
+        "pypi-server",
+        "git-leak-recovery",
+        "log-summary-date-ranges",
+        "openssl-selfsigned-cert",
+        "kv-store-grpc",
+        "constraints-scheduling",
+        "prove-plus-comm"
+      ]
     }
   }
 }
