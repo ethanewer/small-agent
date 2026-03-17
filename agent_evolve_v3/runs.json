@@ -4,7 +4,7 @@
     "terminus2-gpt5-mini-medium": {
       "baseline": "terminus2",
       "model_key": "gpt-5-mini-medium",
-      "cursor_model": "gpt-5.3-codex-high",
+      "cursor_model": "opus-4.6-thinking",
       "iterations": 50,
       "random_seed": 0,
       "benchmark_tasks": [

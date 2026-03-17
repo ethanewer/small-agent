@@ -24,6 +24,7 @@ SMOKE_BENCHMARK_SCRIPT_RELATIVE_PATH = Path("harbor") / "run_smoke.sh"
 VISIBLE_RUNS_DIR = Path("outputs") / "benchmark_runs"
 LATEST_VISIBLE_RUN_PATH = Path("outputs") / "latest_run.json"
 ARTIFACTS_RUNS_DIR = Path("benchmark-artifacts")
+HARBOR_TASK_CACHE_DIR = Path("~/.cache/harbor/tasks").expanduser()
 
 
 @dataclass(frozen=True)
@@ -31,6 +32,91 @@ class BenchmarkSpec:
     dataset_ref: str
     n_concurrent: int
     task_names: tuple[str, ...]
+
+
+def prepull_task_images(
+    *,
+    task_names: tuple[str, ...],
+    repo_root: Path,
+    benchmark_preset: BenchmarkPreset = "official",
+) -> None:
+    """Pull Docker images for benchmark tasks that are not already cached locally."""
+    effective_tasks = task_names
+    if not effective_tasks:
+        spec = load_benchmark_spec(
+            repo_root=repo_root,
+            benchmark_preset=benchmark_preset,
+        )
+        effective_tasks = spec.task_names
+
+    images = _resolve_task_docker_images(task_names=effective_tasks)
+    if not images:
+        return
+
+    local_images = _list_local_docker_images()
+    missing = [img for img in images if img not in local_images]
+    if not missing:
+        print(f"All {len(images)} task images already cached locally.")
+        return
+
+    print(f"Pre-pulling {len(missing)}/{len(images)} missing Docker images...")
+    for image in missing:
+        print(f"  Pulling {image} ...")
+        result = subprocess.run(
+            ["docker", "pull", image],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode != 0:
+            print(f"  WARNING: failed to pull {image}: {result.stderr.strip()}")
+        else:
+            print(f"  OK: {image}")
+
+    print("Pre-pull complete.")
+
+
+def _resolve_task_docker_images(*, task_names: tuple[str, ...]) -> list[str]:
+    """Read docker_image from task.toml files in the harbor task cache."""
+    images: list[str] = []
+    if not HARBOR_TASK_CACHE_DIR.is_dir():
+        return images
+
+    task_dirs = {
+        path.parent.name: path.parent
+        for path in HARBOR_TASK_CACHE_DIR.rglob("task.toml")
+    }
+    for task_name in task_names:
+        task_dir = task_dirs.get(task_name)
+        if task_dir is None:
+            continue
+        toml_path = task_dir / "task.toml"
+        match = re.search(
+            r'^docker_image\s*=\s*"([^"]+)"',
+            toml_path.read_text(encoding="utf-8"),
+            flags=re.MULTILINE,
+        )
+        if match:
+            images.append(match.group(1))
+
+    return images
+
+
+def _list_local_docker_images() -> set[str]:
+    """Return a set of 'repository:tag' strings for locally available images."""
+    result = subprocess.run(
+        ["docker", "images", "--format", "{{.Repository}}:{{.Tag}}"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        return set()
+    return {
+        line.strip()
+        for line in result.stdout.splitlines()
+        if line.strip() and line.strip() != "<none>:<none>"
+    }
 
 
 def run_workspace_benchmark(

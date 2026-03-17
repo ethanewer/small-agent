@@ -13,6 +13,7 @@ from agent_evolve_v3.config import RunSpec, load_runs_config
 from agent_evolve_v3.prompts import load_implementation_prompt, load_planning_prompt
 from agent_evolve_v3.services.benchmark import (
     load_workspace_benchmark_result,
+    prepull_task_images,
     run_workspace_benchmark,
 )
 from agent_evolve_v3.services.runtime import (
@@ -95,6 +96,10 @@ def main(argv: list[str]) -> int:
         run_spec=run_spec,
     )
     _write_manifest(run_root=run_root, run_spec=run_spec)
+    prepull_task_images(
+        task_names=run_spec.benchmark_tasks,
+        repo_root=repo_root,
+    )
 
     root_state = manager.bootstrap_root_state()
     try:
