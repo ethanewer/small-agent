@@ -244,7 +244,7 @@ class WorkspaceHarborAgent(HarborBaseAgent):
             command=command,
             cwd=None,
             env=env_overrides,
-            timeout_sec=60 * 60,
+            timeout_sec=4 * 60 * 60,
         )
         exit_code, stdout, stderr = _extract_exec_fields(exec_result=exec_result)
         _set_context_metadata(

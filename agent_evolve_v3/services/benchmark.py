@@ -305,6 +305,7 @@ def build_harbor_command(
         value = resolve_env_value(env_name=env_name)
         if value:
             command.extend(["--agent-env", f"{env_name}={value}"])
+    command.extend(["--agent-timeout-multiplier", "4"])
     selected_tasks = task_names or list(benchmark_spec.task_names)
     for task_name in selected_tasks:
         command.extend(["--task-name", task_name])
