@@ -104,6 +104,6 @@
     }
   },
   "verbosity": 0,
-  "max_turns": 250,
+  "max_turns": 100,
   "max_wait_seconds": 120
 }

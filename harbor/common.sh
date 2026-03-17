@@ -195,7 +195,7 @@ build_harbor_dataset_command() {
     --env docker
     --delete
     --no-force-build
-    --agent-timeout-multiplier 4
+    --agent-timeout-multiplier 2
     -d "${dataset_ref}"
     --agent-import-path "${AGENT_IMPORT_PATH}"
   )
@@ -222,7 +222,7 @@ build_harbor_path_command() {
     --env docker
     --delete
     --no-force-build
-    --agent-timeout-multiplier 4
+    --agent-timeout-multiplier 2
     --path "${task_or_dataset_path}"
     --agent-import-path "${AGENT_IMPORT_PATH}"
   )
