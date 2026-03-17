@@ -245,6 +245,50 @@ print_harbor_command() {
   printf '\n'
 }
 
+prepull_task_images() {
+  local cache_root="${HOME}/.cache/harbor/tasks"
+  if [[ ! -d "${cache_root}" ]]; then
+    echo "Harbor task cache not found at ${cache_root}; skipping pre-pull."
+    return 0
+  fi
+
+  local -a images=()
+  local -A seen=()
+  local toml image_line image
+
+  while IFS= read -r -d '' toml; do
+    image_line="$(grep -E '^docker_image\s*=' "${toml}" 2>/dev/null | head -1)" || continue
+    image="$(printf '%s' "${image_line}" | sed 's/^docker_image[[:space:]]*=[[:space:]]*"\(.*\)"/\1/')"
+    if [[ -n "${image}" && -z "${seen[${image}]+_}" ]]; then
+      seen["${image}"]=1
+      images+=("${image}")
+    fi
+  done < <(find "${cache_root}" -name 'task.toml' -print0 2>/dev/null)
+
+  if [[ ${#images[@]} -eq 0 ]]; then
+    echo "No prebuilt images found in task cache; skipping pre-pull."
+    return 0
+  fi
+
+  echo "Pre-pulling ${#images[@]} task image(s) to avoid concurrent pull timeouts..."
+  local failed=0
+  for image in "${images[@]}"; do
+    if docker image inspect "${image}" >/dev/null 2>&1; then
+      echo "  ✓ ${image} (already present)"
+      continue
+    fi
+    echo "  Pulling ${image} ..."
+    if ! docker pull "${image}"; then
+      echo "  ✗ Failed to pull ${image}" >&2
+      failed=$((failed + 1))
+    fi
+  done
+
+  if [[ ${failed} -gt 0 ]]; then
+    echo "Warning: ${failed} image(s) failed to pull. Trials using them may fail." >&2
+  fi
+}
+
 run_or_echo() {
   print_harbor_command
   if [[ "${DRY_RUN}" -eq 1 ]]; then
@@ -253,6 +297,8 @@ run_or_echo() {
 
   echo "Pruning stale Docker networks before benchmark run..."
   docker network prune -f 2>/dev/null || true
+
+  prepull_task_images
 
   (
     cd "${SCRIPT_DIR}"
