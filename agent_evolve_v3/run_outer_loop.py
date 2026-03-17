@@ -1,4 +1,4 @@
-# pyright: reportAny=false, reportUnknownVariableType=false, reportUnknownArgumentType=false, reportUnknownMemberType=false, reportUnusedCallResult=false
+# pyright: reportAny=false, reportUnknownVariableType=false, reportUnknownArgumentType=false, reportUnknownMemberType=false, reportUnusedCallResult=false, reportImplicitStringConcatenation=false
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ import json
 from pathlib import Path
 import shutil
 import sys
+import time
 
 from agent_evolve_v3.config import RunSpec, load_runs_config
 from agent_evolve_v3.prompts import load_implementation_prompt, load_planning_prompt
@@ -36,6 +37,19 @@ from agent_evolve_v3.state.planner_context import (
     planner_notes_template,
     summarize_problem_trials,
 )
+
+
+def _log(msg: str) -> None:
+    timestamp = datetime.now(UTC).strftime("%H:%M:%S")
+    print(f"[{timestamp}] {msg}", flush=True)
+
+
+def _format_elapsed(start: float) -> str:
+    elapsed = time.monotonic() - start
+    minutes, seconds = divmod(int(elapsed), 60)
+    if minutes:
+        return f"{minutes}m {seconds}s"
+    return f"{seconds}s"
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
@@ -75,6 +89,7 @@ def main(argv: list[str]) -> int:
                 str(task_name) for task_name in manifest.get("benchmark_tasks", [])
             ),
         )
+        _log(f"Resuming run '{run_spec.name}' from {run_root.name}")
     else:
         runs_config = load_runs_config(path=(repo_root / args.config).resolve())
         run_spec = runs_config.get_run(run_name=args.run_name)
@@ -89,6 +104,12 @@ def main(argv: list[str]) -> int:
                 benchmark_tasks=run_spec.benchmark_tasks,
             )
         run_root = _create_run_root(outputs_root=outputs_root, run_spec=run_spec)
+        _log(f"Starting new run '{run_spec.name}' at {run_root.name}")
+
+    _log(
+        f"Config: model={run_spec.model_key}, cursor={run_spec.cursor_model}, "
+        f"iterations={run_spec.iterations}, tasks={len(run_spec.benchmark_tasks)}"
+    )
 
     manager = StateManager(
         repo_root=repo_root,
@@ -96,12 +117,24 @@ def main(argv: list[str]) -> int:
         run_spec=run_spec,
     )
     _write_manifest(run_root=run_root, run_spec=run_spec)
+
+    _log("Pre-pulling Docker images...")
+    t0 = time.monotonic()
     prepull_task_images(
         task_names=run_spec.benchmark_tasks,
         repo_root=repo_root,
     )
+    _log(f"Pre-pull finished ({_format_elapsed(t0)})")
 
     root_state = manager.bootstrap_root_state()
+    if root_state.result is None:
+        _log("Iteration 0 (root): running benchmark...")
+    else:
+        _log(
+            f"Iteration 0 (root): already evaluated "
+            f"(reward={root_state.result.reward_mean})"
+        )
+
     try:
         _ensure_state_evaluated(
             manager=manager,
@@ -120,10 +153,26 @@ def main(argv: list[str]) -> int:
     root_state.save()
     _write_scoreboard(run_root=run_root, states=manager.states)
 
-    next_iteration = max((state.iteration for state in manager.states), default=0) + 1
+    existing_states = manager.states
+    _log(f"Loaded {len(existing_states)} existing state(s)")
+
+    next_iteration = max((state.iteration for state in existing_states), default=0) + 1
+    _log(f"Starting from iteration {next_iteration}/{run_spec.iterations}")
+
     while next_iteration <= run_spec.iterations:
+        iter_start = time.monotonic()
+        _log(f"{'=' * 60}")
+        _log(f"Iteration {next_iteration}/{run_spec.iterations}")
+        _log(f"{'=' * 60}")
+
         states = manager.states
         best_completed_state = _select_best_completed_state(states=states)
+        if best_completed_state and best_completed_state.result:
+            _log(
+                f"Best so far: iteration {best_completed_state.iteration} "
+                f"(reward={best_completed_state.result.reward_mean})"
+            )
+
         scoreboard_text = _build_scoreboard(states=states)
         planner_notes_path = _prepare_planner_notes(run_root=run_root, states=states)
         artifacts_dir = run_root / "artifacts" / f"iteration-{next_iteration:04d}"
@@ -141,6 +190,8 @@ def main(argv: list[str]) -> int:
         planner_prompt_path = artifacts_dir / "planner_prompt.txt"
         planner_prompt_path.write_text(planner_prompt_text, encoding="utf-8")
 
+        _log("Running planner agent...")
+        t0 = time.monotonic()
         with manager.planning_environment(
             planner_notes_path=planner_notes_path,
         ) as (planning_workspace, candidate_states):
@@ -158,14 +209,19 @@ def main(argv: list[str]) -> int:
                 completed=planner_completed,
             )
             if planner_completed.returncode != 0:
+                _log(
+                    f"Planner FAILED (rc={planner_completed.returncode}, {_format_elapsed(t0)})"
+                )
                 _sync_planner_notes(
                     run_root=run_root,
                     planning_workspace=planning_workspace,
                     artifacts_dir=artifacts_dir,
                 )
-                print(planner_completed.stdout)
-                print(planner_completed.stderr, file=sys.stderr)
+                print(planner_completed.stdout, flush=True)
+                print(planner_completed.stderr, file=sys.stderr, flush=True)
                 return planner_completed.returncode
+
+            _log(f"Planner completed ({_format_elapsed(t0)})")
 
             planner_output_source = planning_workspace / "output.json"
             planner_output_path = artifacts_dir / "planner_output.json"
@@ -183,6 +239,11 @@ def main(argv: list[str]) -> int:
                 )
             parent_state = candidate_states[planning_output.selected_state_index]
 
+        _log(
+            f"Planner selected parent iteration {parent_state.iteration} "
+            f"(index {planning_output.selected_state_index})"
+        )
+
         state = manager.create_child_state(
             parent_state=parent_state,
             iteration=next_iteration,
@@ -191,6 +252,9 @@ def main(argv: list[str]) -> int:
             planner_prompt_artifact_path=planner_prompt_path,
             planner_output_artifact_path=planner_output_path,
         )
+
+        _log("Running implementation agent...")
+        t0 = time.monotonic()
         implementation_prompt_text = _render_implementation_prompt(
             parent_state=parent_state,
             plan=planning_output.plan,
@@ -210,15 +274,22 @@ def main(argv: list[str]) -> int:
             completed=implementation_completed,
         )
         if implementation_completed.returncode != 0:
+            _log(
+                f"Implementation FAILED (rc={implementation_completed.returncode}, {_format_elapsed(t0)})"
+            )
             _persist_failed_state_context(
                 manager=manager,
                 run_root=run_root,
                 state=state,
             )
-            print(implementation_completed.stdout)
-            print(implementation_completed.stderr, file=sys.stderr)
+            print(implementation_completed.stdout, flush=True)
+            print(implementation_completed.stderr, file=sys.stderr, flush=True)
             return implementation_completed.returncode
 
+        _log(f"Implementation completed ({_format_elapsed(t0)})")
+
+        _log("Running validation...")
+        t0 = time.monotonic()
         validation_completed = run_workspace_validation(
             workspace_path=Path(state.refiner_workspace_path),
             model_key=run_spec.model_key,
@@ -228,15 +299,22 @@ def main(argv: list[str]) -> int:
             completed=validation_completed,
         )
         if validation_completed.returncode != 0:
+            _log(
+                f"Validation FAILED (rc={validation_completed.returncode}, {_format_elapsed(t0)})"
+            )
             _persist_failed_state_context(
                 manager=manager,
                 run_root=run_root,
                 state=state,
             )
-            print(validation_completed.stdout)
-            print(validation_completed.stderr, file=sys.stderr)
+            print(validation_completed.stdout, flush=True)
+            print(validation_completed.stderr, file=sys.stderr, flush=True)
             return validation_completed.returncode
 
+        _log(f"Validation passed ({_format_elapsed(t0)})")
+
+        _log("Running benchmark...")
+        t0 = time.monotonic()
         try:
             _ensure_state_evaluated(
                 manager=manager,
@@ -246,17 +324,31 @@ def main(argv: list[str]) -> int:
                 seed_refiner_outputs=False,
             )
         except SystemExit as exc:
+            _log(f"Benchmark FAILED ({_format_elapsed(t0)})")
             _persist_failed_state_context(
                 manager=manager,
                 run_root=run_root,
                 state=state,
             )
             return _system_exit_code(exc=exc)
+
+        result = state.result
+        reward = result.reward_mean if result else None
+        passed = result.pass_count if result else 0
+        failed = result.failure_count if result else 0
+        errors = result.error_count if result else 0
+        _log(
+            f"Benchmark done ({_format_elapsed(t0)}): "
+            f"reward={reward}, passed={passed}, failed={failed}, errors={errors}"
+        )
+
         state.save()
         _write_scoreboard(run_root=run_root, states=manager.states)
+        _log(f"Iteration {next_iteration} total time: {_format_elapsed(iter_start)}")
         next_iteration += 1
 
     _write_scoreboard(run_root=run_root, states=manager.states)
+    _log("Run complete.")
     return 0
 
 

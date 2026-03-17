@@ -56,12 +56,18 @@ def prepull_task_images(
     local_images = _list_local_docker_images()
     missing = [img for img in images if img not in local_images]
     if not missing:
-        print(f"All {len(images)} task images already cached locally.")
+        print(
+            f"All {len(images)} task images already cached locally.",
+            flush=True,
+        )
         return
 
-    print(f"Pre-pulling {len(missing)}/{len(images)} missing Docker images...")
+    print(
+        f"Pre-pulling {len(missing)}/{len(images)} missing Docker images...",
+        flush=True,
+    )
     for image in missing:
-        print(f"  Pulling {image} ...")
+        print(f"  Pulling {image} ...", flush=True)
         result = subprocess.run(
             ["docker", "pull", image],
             capture_output=True,
@@ -69,11 +75,14 @@ def prepull_task_images(
             check=False,
         )
         if result.returncode != 0:
-            print(f"  WARNING: failed to pull {image}: {result.stderr.strip()}")
+            print(
+                f"  WARNING: failed to pull {image}: {result.stderr.strip()}",
+                flush=True,
+            )
         else:
-            print(f"  OK: {image}")
+            print(f"  OK: {image}", flush=True)
 
-    print("Pre-pull complete.")
+    print("Pre-pull complete.", flush=True)
 
 
 def _resolve_task_docker_images(*, task_names: tuple[str, ...]) -> list[str]:
