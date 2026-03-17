@@ -5,7 +5,7 @@
       "baseline": "terminus2",
       "model_key": "gpt-5-mini-medium",
       "cursor_model": "opus-4.6-thinking",
-      "iterations": 25,
+      "iterations": 50,
       "random_seed": 0,
       "benchmark_tasks": [
         "polyglot-c-py",
@@ -34,7 +34,7 @@
       "baseline": "terminus2",
       "model_key": "gpt-5-mini-minimal",
       "cursor_model": "opus-4.6-thinking",
-      "iterations": 25,
+      "iterations": 50,
       "random_seed": 0,
       "benchmark_tasks": [
         "polyglot-c-py",
@@ -63,7 +63,7 @@
       "baseline": "terminus2",
       "model_key": "gpt-5-nano-minimal",
       "cursor_model": "opus-4.6-thinking",
-      "iterations": 25,
+      "iterations": 50,
       "random_seed": 0,
       "benchmark_tasks": [
         "polyglot-c-py",

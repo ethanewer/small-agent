@@ -5,7 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/common.sh"
 
 DATASET_REF="terminal-bench@2.0"
-N_CONCURRENT=8
+N_CONCURRENT=16
 
 BENCHMARK_TASKS=(
   polyglot-c-py

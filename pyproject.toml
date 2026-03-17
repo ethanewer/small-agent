@@ -3,11 +3,13 @@ name = "test-cli"
 version = "0.1.0"
 requires-python = ">=3.13"
 dependencies = [
+    "fastapi>=0.135.1",
     "httpx",
     "openai",
     "pytest>=9.0.2",
     "rich",
     "truststore",
+    "uvicorn>=0.42.0",
 ]
 
 [project.scripts]

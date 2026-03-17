@@ -58,3 +58,13 @@ pre-assembled starting workspaces.
 The outer loop only coordinates these workspaces. The workspaces themselves are
 intended to be understandable and runnable without referring back to the older
 `agent_evolve` implementation.
+
+## Dashboard
+
+A live-updating web dashboard for monitoring ongoing runs.
+
+```bash
+uv run python -m agent_evolve_v3.dashboard
+```
+
+Then open http://localhost:8000 in a browser.
