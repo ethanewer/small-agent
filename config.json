@@ -1,6 +1,6 @@
 {
   "default_agent": "terminus-2",
-  "default_model": "qwen3.5-9b",
+  "default_model": "gpt-5-mini-minimal",
   "default_cursor_model": "opus-4.6-thinking",
   "agents": {
     "terminus-2": {},
@@ -137,45 +137,9 @@
       "extra_params": {
         "reasoning_effort": "high"
       }
-    },
-    "gpt-5-nano-minimal": {
-      "model": "gpt-5-nano-2025-08-07",
-      "api_base": "https://api.openai.com/v1",
-      "api_key": "OPENAI_API_KEY",
-      "context_length": 400000,
-      "extra_params": {
-        "reasoning_effort": "minimal"
-      }
-    },
-    "gpt-5-nano-low": {
-      "model": "gpt-5-nano-2025-08-07",
-      "api_base": "https://api.openai.com/v1",
-      "api_key": "OPENAI_API_KEY",
-      "context_length": 400000,
-      "extra_params": {
-        "reasoning_effort": "low"
-      }
-    },
-    "gpt-5-nano-medium": {
-      "model": "gpt-5-nano-2025-08-07",
-      "api_base": "https://api.openai.com/v1",
-      "api_key": "OPENAI_API_KEY",
-      "context_length": 400000,
-      "extra_params": {
-        "reasoning_effort": "medium"
-      }
-    },
-    "gpt-5-nano-high": {
-      "model": "gpt-5-nano-2025-08-07",
-      "api_base": "https://api.openai.com/v1",
-      "api_key": "OPENAI_API_KEY",
-      "context_length": 400000,
-      "extra_params": {
-        "reasoning_effort": "high"
-      }
     }
   },
   "verbosity": 0,
-  "max_turns": 100,
+  "max_turns": 250,
   "max_wait_seconds": 120
 }
