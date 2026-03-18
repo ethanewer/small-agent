@@ -36,6 +36,14 @@ OUTCOME_PENDING = "pending"
 
 
 def _classify_trial(trial: dict[str, Any]) -> str:
+    verifier = trial.get("verifier_result")
+    if verifier and isinstance(verifier, dict):
+        rewards = verifier.get("rewards", {})
+        if isinstance(rewards, dict):
+            reward = rewards.get("reward")
+            if reward == 1.0:
+                return OUTCOME_PASS
+
     exc = trial.get("exception_info")
     if exc and isinstance(exc, dict):
         exc_type = exc.get("exception_type", "")
@@ -46,18 +54,12 @@ def _classify_trial(trial: dict[str, Any]) -> str:
             if "exit_code=1" in str(exc_msg):
                 return OUTCOME_MAX_ITERS
             return OUTCOME_OTHER_ERROR
-
         return OUTCOME_OTHER_ERROR
 
-    verifier = trial.get("verifier_result")
     if verifier and isinstance(verifier, dict):
         rewards = verifier.get("rewards", {})
-        if isinstance(rewards, dict):
-            reward = rewards.get("reward")
-            if reward == 1.0:
-                return OUTCOME_PASS
-            if reward is not None:
-                return OUTCOME_FAILURE
+        if isinstance(rewards, dict) and rewards.get("reward") is not None:
+            return OUTCOME_FAILURE
 
     return OUTCOME_PENDING
 
@@ -123,6 +125,70 @@ def _compute_iteration_metrics(
     for trial_name, trial_data in trial_results.items():
         task = _task_name_from_trial_name(trial_name)
         task_outcomes[task] = _classify_trial(trial_data)
+
+    counts = {
+        OUTCOME_PASS: 0,
+        OUTCOME_FAILURE: 0,
+        OUTCOME_TIMEOUT: 0,
+        OUTCOME_MAX_ITERS: 0,
+        OUTCOME_OTHER_ERROR: 0,
+    }
+    for outcome in task_outcomes.values():
+        if outcome in counts:
+            counts[outcome] += 1
+
+    n_classified = sum(counts.values())
+    total = n_classified if n_classified > 0 else 1
+
+    return {
+        "completion_rate": counts[OUTCOME_PASS] / total,
+        "failure_rate": counts[OUTCOME_FAILURE] / total,
+        "timeout_rate": counts[OUTCOME_TIMEOUT] / total,
+        "max_iters_rate": counts[OUTCOME_MAX_ITERS] / total,
+        "other_error_rate": counts[OUTCOME_OTHER_ERROR] / total,
+        "timeout_or_turn_limit_rate": (
+            counts[OUTCOME_TIMEOUT] + counts[OUTCOME_MAX_ITERS]
+        )
+        / total,
+        "tasks": task_outcomes,
+    }
+
+
+def _compute_metrics_from_state(*, state: AgentState) -> dict[str, Any] | None:
+    """Fallback: derive metrics from the state's BenchmarkSummary when harbor
+    artifacts are unavailable.  Deduplicates failed_trials vs exception_types
+    so that counts are mutually exclusive."""
+    result = state.result
+    if result is None or result.reward_mean is None:
+        return None
+
+    passed_set = set(result.passed_trials)
+    all_errored_ids: set[str] = set()
+    for trial_ids in result.exception_types.values():
+        all_errored_ids.update(trial_ids)
+
+    timeout_ids: set[str] = set()
+    other_error_ids: set[str] = set()
+    for exc_type, trial_ids in result.exception_types.items():
+        for tid in trial_ids:
+            if tid in passed_set:
+                continue
+            if exc_type == "AgentTimeoutError":
+                timeout_ids.add(tid)
+            else:
+                other_error_ids.add(tid)
+
+    pure_failed = [t for t in result.failed_trials if t not in all_errored_ids]
+
+    task_outcomes: dict[str, str] = {}
+    for tid in result.passed_trials:
+        task_outcomes[_task_name_from_trial_name(tid)] = OUTCOME_PASS
+    for tid in pure_failed:
+        task_outcomes[_task_name_from_trial_name(tid)] = OUTCOME_FAILURE
+    for tid in timeout_ids:
+        task_outcomes[_task_name_from_trial_name(tid)] = OUTCOME_TIMEOUT
+    for tid in other_error_ids:
+        task_outcomes[_task_name_from_trial_name(tid)] = OUTCOME_OTHER_ERROR
 
     counts = {
         OUTCOME_PASS: 0,
@@ -381,7 +447,7 @@ def _load_single_run(*, run_dir: Path) -> dict[str, Any] | None:
     max_iterations: int = manifest.get("iterations", 25)
 
     iterations: list[dict[str, Any]] = []
-    best_reward: float | None = None
+    best_completion: float | None = None
 
     for state in states:
         status = classify_state_status(state=state, run_root=run_dir)
@@ -394,7 +460,6 @@ def _load_single_run(*, run_dir: Path) -> dict[str, Any] | None:
             "created_at": state.created_at_utc,
             "parent_iteration": parent_iter,
             "plan_summary": ps,
-            "reward_mean": None,
             "completion_rate": None,
             "failure_rate": None,
             "timeout_rate": None,
@@ -407,13 +472,17 @@ def _load_single_run(*, run_dir: Path) -> dict[str, Any] | None:
         artifacts_dir = run_dir / "artifacts" / f"iteration-{state.iteration:04d}"
         harbor_dir = _find_harbor_job_dir(artifacts_dir=artifacts_dir)
 
+        metrics: dict[str, Any] | None = None
         if harbor_dir is not None:
             trial_results = _load_trial_results(harbor_job_dir=harbor_dir)
             if trial_results:
                 metrics = _compute_iteration_metrics(
                     trial_results=trial_results,
                 )
-                iter_data.update(metrics)
+        if metrics is None:
+            metrics = _compute_metrics_from_state(state=state)
+        if metrics is not None:
+            iter_data.update(metrics)
 
         iter_stage = (
             "completed"
@@ -430,10 +499,9 @@ def _load_single_run(*, run_dir: Path) -> dict[str, Any] | None:
         )
         iter_data.update(stage_times)
 
-        if state.result and state.result.reward_mean is not None:
-            iter_data["reward_mean"] = state.result.reward_mean
-            if best_reward is None or state.result.reward_mean > best_reward:
-                best_reward = state.result.reward_mean
+        cr = iter_data.get("completion_rate")
+        if isinstance(cr, float) and (best_completion is None or cr > best_completion):
+            best_completion = cr
 
         iterations.append(iter_data)
 
@@ -477,7 +545,7 @@ def _load_single_run(*, run_dir: Path) -> dict[str, Any] | None:
         "current_iteration": current_iteration,
         "current_stage": current_stage,
         "benchmark_progress": benchmark_progress,
-        "best_reward": best_reward,
+        "best_completion": best_completion,
         "iterations": iterations,
         "task_aggregate": task_aggregate,
     }
@@ -624,11 +692,9 @@ _DASHBOARD_HTML = """\
   table { width: 100%; border-collapse: collapse; font-size: 13px; }
   th, td { padding: 8px 12px; text-align: left; border-bottom: 1px solid var(--border); }
   th { color: var(--text-muted); font-weight: 600; font-size: 11px;
-       text-transform: uppercase; letter-spacing: 0.5px; position: sticky; top: 0;
-       background: var(--surface); }
+       text-transform: uppercase; letter-spacing: 0.5px; background: var(--surface); }
   td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
-  .table-scroll { max-height: 400px; overflow-y: auto; border: 1px solid var(--border);
-                  border-radius: 6px; }
+  .table-scroll { border: 1px solid var(--border); border-radius: 6px; }
   .cell-pass { color: var(--green); }
   .cell-fail { color: var(--red); }
   .cell-warn { color: var(--yellow); }
@@ -796,8 +862,8 @@ function renderRun(run, idx) {
         </div>
       </div>
       <div style="text-align:right">
-        <div class="best-reward-label">Best Reward</div>
-        <div class="best-reward">${run.best_reward != null ? run.best_reward.toFixed(3) : '-'}</div>
+        <div class="best-reward-label">Best Completion</div>
+        <div class="best-reward">${run.best_completion != null ? pct(run.best_completion) : '-'}</div>
       </div>
     </div>
 
