@@ -1,5 +1,5 @@
 {
-  "default_run": "terminus2-gpt5-mini-minimal",
+  "default_run": "terminus2-gpt54-nano-nonreasoning",
   "runs": {
     "terminus2-gpt5-mini-medium": {
       "baseline": "terminus2",
