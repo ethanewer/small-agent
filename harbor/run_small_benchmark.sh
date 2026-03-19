@@ -8,24 +8,19 @@ DATASET_REF="terminal-bench@2.0"
 N_CONCURRENT=16
 
 BENCHMARK_TASKS=(
-  bn-fit-modify
   cancel-async-tasks
   configure-git-webserver
-  count-dataset-tokens
   feal-differential-cryptanalysis
   fix-git
   gcode-to-text
   git-multibranch
-  gpt2-codegolf
   headless-terminal
   kv-store-grpc
   log-summary-date-ranges
   model-extraction-relu-logits
   nginx-request-logging
   openssl-selfsigned-cert
-  overfull-hbox
   pypi-server
-  pytorch-model-cli
   regex-chess
   regex-log
   reshard-c4-data
@@ -39,7 +34,7 @@ main() {
   if ! parse_common_args "$@"; then
     cat <<'EOF'
 Usage: ./harbor/run_short_benchmark.sh [--model <key>] [--agent <key>] [--dry-run]
-Runs 25 tasks from terminal-bench@2.0.
+Runs 20 tasks from terminal-bench@2.0.
 EOF
     usage_common
     exit 0

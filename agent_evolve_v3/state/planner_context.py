@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import re
 
+from agent_evolve_v3.services.benchmark import TrialLogSummary, load_trial_summaries
 from agent_evolve_v3.state.types import AgentState, BenchmarkSummary
 
 PLANNER_NOTES_FILE_NAME = "PLANNER_NOTES.md"
@@ -159,6 +161,8 @@ def latest_run_artifact_map(
             "validation_step_path": "N/A",
             "benchmark_step_path": "N/A",
             "benchmark_result_path": "N/A",
+            "trial_summaries_path": "N/A",
+            "trial_logs_dir": "N/A",
         }
     benchmark = state.official_benchmark
     iteration_artifacts = _iteration_artifacts_dir(
@@ -198,7 +202,130 @@ def latest_run_artifact_map(
             path=iteration_artifacts / "benchmark_result.json",
         )
         or "N/A",
+        "trial_summaries_path": _existing_path(
+            path=(
+                Path(benchmark.trial_summaries_path)
+                if benchmark and benchmark.trial_summaries_path
+                else None
+            ),
+        )
+        or "N/A",
+        "trial_logs_dir": _existing_path(
+            path=(
+                Path(benchmark.trial_logs_dir)
+                if benchmark and benchmark.trial_logs_dir
+                else None
+            ),
+        )
+        or "N/A",
     }
+
+
+_MAX_INLINE_TRIALS = 10
+_INLINE_STDOUT_LIMIT = 500
+_INLINE_VERIFIER_LIMIT = 300
+
+
+def summarize_problem_trials_detail(*, state: AgentState | None) -> str:
+    if state is None:
+        return "No benchmark data available."
+    benchmark = state.official_benchmark
+    if benchmark is None:
+        return "No benchmark data available."
+    result = state.result
+    if result is None:
+        return "No benchmark result available."
+
+    trial_summaries_path = benchmark.trial_summaries_path
+    if not trial_summaries_path:
+        return _fallback_problem_summary(result=result)
+
+    summaries = load_trial_summaries(path=Path(trial_summaries_path))
+    if not summaries:
+        return _fallback_problem_summary(result=result)
+
+    problem_ids = set(_problem_trial_ids(result=result))
+    if not problem_ids:
+        return "All trials passed."
+
+    problem_summaries = [s for s in summaries if s.trial_name in problem_ids]
+    if not problem_summaries:
+        return _fallback_problem_summary(result=result)
+
+    trial_logs_dir = benchmark.trial_logs_dir
+    lines: list[str] = []
+    shown = problem_summaries[:_MAX_INLINE_TRIALS]
+    for summary in shown:
+        lines.append(
+            _format_trial_detail(
+                summary=summary,
+                trial_logs_dir=trial_logs_dir,
+            )
+        )
+
+    remaining = len(problem_summaries) - len(shown)
+    if remaining > 0:
+        lines.append(
+            f"... and {remaining} more problem trial(s)."
+            + f" See `{trial_summaries_path}` for full details."
+        )
+
+    return "\n\n".join(lines)
+
+
+def _format_trial_detail(
+    *,
+    summary: TrialLogSummary,
+    trial_logs_dir: str | None = None,
+) -> str:
+    reward_str = f"{summary.reward:.1f}" if summary.reward is not None else "N/A"
+    exit_str = (
+        str(summary.agent_exit_code) if summary.agent_exit_code is not None else "N/A"
+    )
+
+    header = f"### {summary.task_name} (reward={reward_str})"
+    status_parts = [f"Agent exit: {exit_str}"]
+    if summary.exception_type:
+        status_parts.append(f"Exception: {summary.exception_type}")
+    status_line = " | ".join(status_parts)
+
+    sections = [header, status_line]
+
+    if trial_logs_dir:
+        safe_name = re.sub(r"[^\w\-.]", "_", summary.task_name)
+        sections.append(f"Full agent log: `{trial_logs_dir}/{safe_name}.txt`")
+    elif summary.agent_stdout_tail:
+        tail = _truncate_text(
+            text=summary.agent_stdout_tail,
+            limit=_INLINE_STDOUT_LIMIT,
+        )
+        sections.append(f"Agent log tail:\n```\n{tail}\n```")
+
+    if summary.verifier_summary:
+        verifier = _truncate_text(
+            text=summary.verifier_summary,
+            limit=_INLINE_VERIFIER_LIMIT,
+        )
+        sections.append(f"Verifier output:\n```\n{verifier}\n```")
+
+    return "\n".join(sections)
+
+
+def _truncate_text(*, text: str, limit: int) -> str:
+    encoded = text.encode("utf-8")
+    if len(encoded) <= limit:
+        return text.strip()
+    return "..." + encoded[-limit:].decode("utf-8", errors="ignore").strip()
+
+
+def _fallback_problem_summary(*, result: BenchmarkSummary) -> str:
+    trial_ids = _problem_trial_ids(result=result)
+    if not trial_ids:
+        return "No failed or erroring tasks recorded."
+    preview = ", ".join(trial_ids[:5])
+    if len(trial_ids) > 5:
+        preview += ", ..."
+    return f"Problem trials (IDs only, no detailed logs available): {preview}"
 
 
 def _iteration_artifacts_dir(*, run_root: Path, iteration: int) -> Path:

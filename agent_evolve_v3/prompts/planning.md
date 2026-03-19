@@ -37,6 +37,12 @@ Artifact pointers:
 - validation step: `{latest_validation_step_path}`
 - benchmark step: `{latest_benchmark_step_path}`
 - benchmark result manifest: `{latest_benchmark_result_path}`
+- trial summaries: `{latest_trial_summaries_path}`
+- trial logs dir: `{latest_trial_logs_dir}`
+
+## Latest failed/errored trial details
+
+{latest_problem_trial_details}
 
 ## Current best completed state
 

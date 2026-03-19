@@ -1,6 +1,6 @@
 {
   "default_agent": "terminus-2",
-  "default_model": "gpt-5.4-nano-nonreasoning",
+  "default_model": "gpt-5.4-nano-medium",
   "default_cursor_model": "opus-4.6-thinking",
   "agents": {
     "terminus-2": {},
@@ -101,78 +101,6 @@
       "api_base": "https://openrouter.ai/api/v1",
       "api_key": "OPENROUTER_API_KEY",
       "context_length": 262144
-    },
-    "gpt-5-nano-minimal": {
-      "model": "gpt-5-nano-2025-08-07",
-      "api_base": "https://api.openai.com/v1",
-      "api_key": "OPENAI_API_KEY",
-      "context_length": 400000,
-      "extra_params": {
-        "reasoning_effort": "minimal"
-      }
-    },
-    "gpt-5-nano-low": {
-      "model": "gpt-5-nano-2025-08-07",
-      "api_base": "https://api.openai.com/v1",
-      "api_key": "OPENAI_API_KEY",
-      "context_length": 400000,
-      "extra_params": {
-        "reasoning_effort": "low"
-      }
-    },
-    "gpt-5-nano-medium": {
-      "model": "gpt-5-nano-2025-08-07",
-      "api_base": "https://api.openai.com/v1",
-      "api_key": "OPENAI_API_KEY",
-      "context_length": 400000,
-      "extra_params": {
-        "reasoning_effort": "medium"
-      }
-    },
-    "gpt-5-nano-high": {
-      "model": "gpt-5-nano-2025-08-07",
-      "api_base": "https://api.openai.com/v1",
-      "api_key": "OPENAI_API_KEY",
-      "context_length": 400000,
-      "extra_params": {
-        "reasoning_effort": "high"
-      }
-    },
-    "gpt-5-mini-minimal": {
-      "model": "gpt-5-mini-2025-08-07",
-      "api_base": "https://api.openai.com/v1",
-      "api_key": "OPENAI_API_KEY",
-      "context_length": 400000,
-      "extra_params": {
-        "reasoning_effort": "minimal"
-      }
-    },
-    "gpt-5-mini-low": {
-      "model": "gpt-5-mini-2025-08-07",
-      "api_base": "https://api.openai.com/v1",
-      "api_key": "OPENAI_API_KEY",
-      "context_length": 400000,
-      "extra_params": {
-        "reasoning_effort": "low"
-      }
-    },
-    "gpt-5-mini-medium": {
-      "model": "gpt-5-mini-2025-08-07",
-      "api_base": "https://api.openai.com/v1",
-      "api_key": "OPENAI_API_KEY",
-      "context_length": 400000,
-      "extra_params": {
-        "reasoning_effort": "medium"
-      }
-    },
-    "gpt-5-mini-high": {
-      "model": "gpt-5-mini-2025-08-07",
-      "api_base": "https://api.openai.com/v1",
-      "api_key": "OPENAI_API_KEY",
-      "context_length": 400000,
-      "extra_params": {
-        "reasoning_effort": "high"
-      }
     },
     "gpt-5.4-nano-nonreasoning": {
       "model": "gpt-5.4-nano-2026-03-17",

@@ -33,6 +33,8 @@ class OfficialBenchmarkRun:
     benchmark_stdout_path: str
     benchmark_stderr_path: str
     created_at_utc: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
+    trial_summaries_path: str | None = None
+    trial_logs_dir: str | None = None
 
 
 @dataclass

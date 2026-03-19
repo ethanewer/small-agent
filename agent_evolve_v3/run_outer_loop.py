@@ -36,6 +36,7 @@ from agent_evolve_v3.state.planner_context import (
     plan_summary,
     planner_notes_template,
     summarize_problem_trials,
+    summarize_problem_trials_detail,
 )
 
 
@@ -543,6 +544,11 @@ def _render_planner_prompt(
         latest_validation_step_path=latest_artifacts["validation_step_path"],
         latest_benchmark_step_path=latest_artifacts["benchmark_step_path"],
         latest_benchmark_result_path=latest_artifacts["benchmark_result_path"],
+        latest_trial_summaries_path=latest_artifacts["trial_summaries_path"],
+        latest_trial_logs_dir=latest_artifacts["trial_logs_dir"],
+        latest_problem_trial_details=summarize_problem_trials_detail(
+            state=latest_state,
+        ),
         best_iteration=best_state.iteration if best_state else "N/A",
         best_reward=(
             f"{best_result.reward_mean:.3f}"

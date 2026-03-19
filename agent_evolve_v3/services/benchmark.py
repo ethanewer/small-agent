@@ -176,6 +176,8 @@ def load_workspace_benchmark_result(
     result_json_path: Path,
 ) -> tuple[OfficialBenchmarkRun, BenchmarkSummary]:
     payload = json.loads(result_json_path.read_text(encoding="utf-8"))
+    raw_trial_summaries_path = payload.get("trial_summaries_path")
+    raw_trial_logs_dir = payload.get("trial_logs_dir")
     official_run = OfficialBenchmarkRun(
         model_key=str(payload["model_key"]),
         aggregate_result_path=str(payload["aggregate_result_path"]),
@@ -184,6 +186,10 @@ def load_workspace_benchmark_result(
         benchmark_stdout_path=str(payload["benchmark_stdout_path"]),
         benchmark_stderr_path=str(payload["benchmark_stderr_path"]),
         created_at_utc=str(payload["created_at_utc"]),
+        trial_summaries_path=(
+            str(raw_trial_summaries_path) if raw_trial_summaries_path else None
+        ),
+        trial_logs_dir=str(raw_trial_logs_dir) if raw_trial_logs_dir else None,
     )
     summary = load_benchmark_summary(
         summary_path=Path(official_run.benchmark_summary_path),
@@ -259,6 +265,18 @@ def execute_workspace_benchmark(
         encoding="utf-8",
     )
 
+    trial_summaries = summarize_trial_logs(harbor_job_dir=harbor_job_dir)
+    trial_summaries_path = artifact_root / "trial_summaries.json"
+    write_trial_summaries(
+        summaries=trial_summaries,
+        output_path=trial_summaries_path,
+    )
+
+    trial_logs_dir = extract_trial_log_files(
+        harbor_job_dir=harbor_job_dir,
+        output_dir=artifact_root / "trial_logs",
+    )
+
     official_run = OfficialBenchmarkRun(
         model_key=model_key,
         aggregate_result_path=str(aggregate_result_path),
@@ -267,6 +285,8 @@ def execute_workspace_benchmark(
         benchmark_stdout_path=str(stdout_path),
         benchmark_stderr_path=str(stderr_path),
         created_at_utc=created_at_utc,
+        trial_summaries_path=str(trial_summaries_path),
+        trial_logs_dir=str(trial_logs_dir),
     )
     if visible_run_dir is not None:
         _write_visible_run_manifest(
@@ -282,6 +302,8 @@ def execute_workspace_benchmark(
         "benchmark_summary_path": official_run.benchmark_summary_path,
         "benchmark_stdout_path": official_run.benchmark_stdout_path,
         "benchmark_stderr_path": official_run.benchmark_stderr_path,
+        "trial_summaries_path": official_run.trial_summaries_path,
+        "trial_logs_dir": official_run.trial_logs_dir,
         "visible_run_dir": str(visible_run_dir) if visible_run_dir else None,
         "created_at_utc": official_run.created_at_utc,
     }
@@ -511,7 +533,7 @@ def _copy_benchmark_artifacts(
     benchmark: OfficialBenchmarkRun,
     destination_root: Path,
 ) -> None:
-    copies = {
+    copies: dict[Path, Path] = {
         Path(benchmark.benchmark_summary_path): destination_root
         / "benchmark_summary.json",
         Path(benchmark.benchmark_stdout_path): destination_root
@@ -519,6 +541,19 @@ def _copy_benchmark_artifacts(
         Path(benchmark.benchmark_stderr_path): destination_root
         / "benchmark_stderr.log",
     }
+    if benchmark.trial_summaries_path:
+        copies[Path(benchmark.trial_summaries_path)] = (
+            destination_root / "trial_summaries.json"
+        )
+    if benchmark.trial_logs_dir:
+        trial_logs_src = Path(benchmark.trial_logs_dir)
+        if trial_logs_src.is_dir():
+            trial_logs_dst = destination_root / "trial_logs"
+            shutil.copytree(
+                src=trial_logs_src,
+                dst=trial_logs_dst,
+                dirs_exist_ok=True,
+            )
     aggregate_result_path = Path(benchmark.aggregate_result_path)
     if aggregate_result_path.exists():
         copies[aggregate_result_path] = destination_root / "aggregate_result.json"
@@ -694,3 +729,237 @@ def _coerce_int(*, value: object) -> int:
     if isinstance(value, str):
         return int(value)
     return 0
+
+
+_STDOUT_TAIL_LIMIT = 2000
+_VERIFIER_TAIL_LIMIT = 1500
+
+
+@dataclass(frozen=True)
+class TrialLogSummary:
+    task_name: str
+    trial_name: str
+    reward: float | None
+    agent_exit_code: int | None
+    exception_type: str | None
+    agent_stdout_tail: str
+    verifier_summary: str
+
+
+def summarize_trial_logs(*, harbor_job_dir: Path) -> list[TrialLogSummary]:
+    summaries: list[TrialLogSummary] = []
+    if not harbor_job_dir.is_dir():
+        return summaries
+
+    for trial_dir in sorted(harbor_job_dir.iterdir()):
+        if not trial_dir.is_dir():
+            continue
+        if "__" not in trial_dir.name:
+            continue
+
+        trial_result = _load_harbor_json(path=trial_dir / "result.json")
+        if not trial_result:
+            continue
+
+        task_name = str(trial_result.get("task_name", ""))
+        trial_name = str(trial_result.get("trial_name", trial_dir.name))
+
+        reward = _extract_trial_reward(trial_result=trial_result)
+        agent_exit_code = _extract_agent_exit_code(trial_result=trial_result)
+        exception_type = _extract_exception_type(trial_result=trial_result)
+        agent_stdout_tail = _extract_agent_stdout_tail(
+            trial_result=trial_result,
+            limit=_STDOUT_TAIL_LIMIT,
+        )
+        verifier_summary = _extract_verifier_summary(
+            trial_dir=trial_dir,
+            limit=_VERIFIER_TAIL_LIMIT,
+        )
+
+        summaries.append(
+            TrialLogSummary(
+                task_name=task_name,
+                trial_name=trial_name,
+                reward=reward,
+                agent_exit_code=agent_exit_code,
+                exception_type=exception_type,
+                agent_stdout_tail=agent_stdout_tail,
+                verifier_summary=verifier_summary,
+            )
+        )
+
+    return summaries
+
+
+def write_trial_summaries(
+    *,
+    summaries: list[TrialLogSummary],
+    output_path: Path,
+) -> None:
+    payload = [asdict(s) for s in summaries]
+    output_path.write_text(
+        json.dumps(payload, indent=2, ensure_ascii=True) + "\n",
+        encoding="utf-8",
+    )
+
+
+def load_trial_summaries(*, path: Path) -> list[TrialLogSummary]:
+    if not path.exists():
+        return []
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return []
+    if not isinstance(data, list):
+        return []
+    summaries: list[TrialLogSummary] = []
+    for item in data:
+        if not isinstance(item, dict):
+            continue
+        summaries.append(
+            TrialLogSummary(
+                task_name=str(item.get("task_name", "")),
+                trial_name=str(item.get("trial_name", "")),
+                reward=_optional_float(value=item.get("reward")),
+                agent_exit_code=_optional_int_field(value=item.get("agent_exit_code")),
+                exception_type=item.get("exception_type"),
+                agent_stdout_tail=str(item.get("agent_stdout_tail", "")),
+                verifier_summary=str(item.get("verifier_summary", "")),
+            )
+        )
+    return summaries
+
+
+def _extract_trial_reward(*, trial_result: dict[str, object]) -> float | None:
+    verifier = _as_dict(value=trial_result.get("verifier_result"))
+    rewards = _as_dict(value=verifier.get("rewards"))
+    raw = rewards.get("reward")
+    if isinstance(raw, (int, float)):
+        return float(raw)
+    return None
+
+
+def _extract_agent_exit_code(*, trial_result: dict[str, object]) -> int | None:
+    agent_result = _as_dict(value=trial_result.get("agent_result"))
+    metadata = _as_dict(value=agent_result.get("metadata"))
+    workspace_agent = _as_dict(value=metadata.get("workspace_agent"))
+    raw = workspace_agent.get("exit_code")
+    if raw is None:
+        raw = metadata.get("exit_code")
+    if isinstance(raw, (int, float)):
+        return int(raw)
+    return None
+
+
+def _extract_exception_type(*, trial_result: dict[str, object]) -> str | None:
+    exc_info = trial_result.get("exception_info")
+    if not isinstance(exc_info, dict):
+        return None
+    exc_type = exc_info.get("type") or exc_info.get("exception_type")
+    if exc_type:
+        return str(exc_type)
+    return None
+
+
+def _extract_agent_stdout_tail(
+    *,
+    trial_result: dict[str, object],
+    limit: int,
+) -> str:
+    agent_result = _as_dict(value=trial_result.get("agent_result"))
+    metadata = _as_dict(value=agent_result.get("metadata"))
+    workspace_agent = _as_dict(value=metadata.get("workspace_agent"))
+    stdout = str(workspace_agent.get("stdout", ""))
+    if not stdout:
+        stdout = str(metadata.get("stdout", ""))
+    if not stdout:
+        return ""
+    encoded = stdout.encode("utf-8")
+    if len(encoded) <= limit:
+        return stdout
+    return encoded[-limit:].decode("utf-8", errors="ignore")
+
+
+def _extract_verifier_summary(*, trial_dir: Path, limit: int) -> str:
+    test_stdout_path = trial_dir / "verifier" / "test-stdout.txt"
+    if not test_stdout_path.exists():
+        return ""
+    try:
+        content = test_stdout_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+    if not content.strip():
+        return ""
+    relevant = _extract_pytest_failure_section(content=content)
+    encoded = relevant.encode("utf-8")
+    if len(encoded) <= limit:
+        return relevant
+    return encoded[-limit:].decode("utf-8", errors="ignore")
+
+
+def _extract_pytest_failure_section(*, content: str) -> str:
+    lines = content.splitlines()
+    failure_start = None
+    summary_start = None
+    for i, line in enumerate(lines):
+        if "FAILURES" in line and line.strip().startswith("="):
+            failure_start = i
+        if "short test summary" in line.lower():
+            summary_start = i
+
+    if failure_start is not None:
+        return "\n".join(lines[failure_start:])
+    if summary_start is not None:
+        return "\n".join(lines[summary_start:])
+    return content
+
+
+def _optional_float(*, value: object) -> float | None:
+    if value is None:
+        return None
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value)
+    return None
+
+
+def _optional_int_field(*, value: object) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return int(value)
+    return None
+
+
+def extract_trial_log_files(
+    *,
+    harbor_job_dir: Path,
+    output_dir: Path,
+) -> Path:
+    """Extract full agent stdout from each trial into individual .txt files."""
+    output_dir.mkdir(parents=True, exist_ok=True)
+    if not harbor_job_dir.is_dir():
+        return output_dir
+
+    for trial_dir in sorted(harbor_job_dir.iterdir()):
+        if not trial_dir.is_dir():
+            continue
+        if "__" not in trial_dir.name:
+            continue
+
+        trial_result = _load_harbor_json(path=trial_dir / "result.json")
+        if not trial_result:
+            continue
+
+        task_name = str(trial_result.get("task_name", trial_dir.name.split("__")[0]))
+        agent_result = _as_dict(value=trial_result.get("agent_result"))
+        metadata = _as_dict(value=agent_result.get("metadata"))
+        workspace_agent = _as_dict(value=metadata.get("workspace_agent"))
+        stdout = str(workspace_agent.get("stdout", ""))
+        if not stdout:
+            stdout = str(metadata.get("stdout", ""))
+
+        safe_name = re.sub(r"[^\w\-.]", "_", task_name)
+        log_path = output_dir / f"{safe_name}.txt"
+        log_path.write_text(stdout, encoding="utf-8")
+
+    return output_dir
