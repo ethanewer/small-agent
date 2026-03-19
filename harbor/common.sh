@@ -293,6 +293,8 @@ run_or_echo() {
     return 0
   fi
 
+  prepull_task_images
+
   echo "Pruning stale Docker networks before benchmark run..."
   docker network prune -f 2>/dev/null || true
 
