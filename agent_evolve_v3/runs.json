@@ -1,5 +1,5 @@
 {
-  "default_run": "terminus2-gpt5-mini-minimal",
+  "default_run": "terminus2-gpt54-nano-nonreasoning",
   "runs": {
     "terminus2-gpt5-mini-medium": {
       "baseline": "terminus2",
@@ -86,6 +86,74 @@
         "constraints-scheduling",
         "nginx-request-logging",
         "prove-plus-comm"
+      ]
+    },
+    "terminus2-gpt54-nano-nonreasoning": {
+      "baseline": "terminus2",
+      "model_key": "gpt-5.4-nano-nonreasoning",
+      "cursor_model": "opus-4.6-thinking",
+      "iterations": 50,
+      "random_seed": 0,
+      "benchmark_tasks": [
+        "bn-fit-modify",
+        "cancel-async-tasks",
+        "configure-git-webserver",
+        "count-dataset-tokens",
+        "feal-differential-cryptanalysis",
+        "fix-git",
+        "gcode-to-text",
+        "git-multibranch",
+        "gpt2-codegolf",
+        "headless-terminal",
+        "kv-store-grpc",
+        "log-summary-date-ranges",
+        "model-extraction-relu-logits",
+        "nginx-request-logging",
+        "openssl-selfsigned-cert",
+        "overfull-hbox",
+        "pypi-server",
+        "pytorch-model-cli",
+        "regex-chess",
+        "regex-log",
+        "reshard-c4-data",
+        "sanitize-git-repo",
+        "sqlite-db-truncate",
+        "sqlite-with-gcov",
+        "vulnerable-secret"
+      ]
+    },
+    "terminus2-gpt54-mini-medium": {
+      "baseline": "terminus2",
+      "model_key": "gpt-5.4-mini-medium",
+      "cursor_model": "opus-4.6-thinking",
+      "iterations": 50,
+      "random_seed": 0,
+      "benchmark_tasks": [
+        "bn-fit-modify",
+        "cancel-async-tasks",
+        "configure-git-webserver",
+        "count-dataset-tokens",
+        "feal-differential-cryptanalysis",
+        "fix-git",
+        "gcode-to-text",
+        "git-multibranch",
+        "gpt2-codegolf",
+        "headless-terminal",
+        "kv-store-grpc",
+        "log-summary-date-ranges",
+        "model-extraction-relu-logits",
+        "nginx-request-logging",
+        "openssl-selfsigned-cert",
+        "overfull-hbox",
+        "pypi-server",
+        "pytorch-model-cli",
+        "regex-chess",
+        "regex-log",
+        "reshard-c4-data",
+        "sanitize-git-repo",
+        "sqlite-db-truncate",
+        "sqlite-with-gcov",
+        "vulnerable-secret"
       ]
     }
   }
