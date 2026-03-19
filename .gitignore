@@ -48,3 +48,6 @@ agent_evolve_v2/start_workdirs/terminus2/outputs/*
 agent_evolve_v3/outputs*
 backup*
 *.DS_store
+*.DS_Store
+.DS_store
+.DS_Store

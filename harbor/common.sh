@@ -193,7 +193,7 @@ build_harbor_dataset_command() {
     --jobs-dir "${RESOLVED_JOBS_DIR}"
     --n-concurrent "${n_concurrent}"
     --env docker
-    --delete
+    --no-delete
     --no-force-build
     -d "${dataset_ref}"
     --agent-import-path "${AGENT_IMPORT_PATH}"
@@ -219,7 +219,7 @@ build_harbor_path_command() {
     --jobs-dir "${RESOLVED_JOBS_DIR}"
     --n-concurrent "${n_concurrent}"
     --env docker
-    --delete
+    --no-delete
     --no-force-build
     --path "${task_or_dataset_path}"
     --agent-import-path "${AGENT_IMPORT_PATH}"

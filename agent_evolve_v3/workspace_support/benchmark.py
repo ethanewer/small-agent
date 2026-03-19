@@ -217,7 +217,7 @@ def build_harbor_command(
         str(benchmark_spec.n_concurrent),
         "--env",
         "docker",
-        "--delete",
+        "--no-delete",
         "--no-force-build",
         "-d",
         benchmark_spec.dataset_ref,
