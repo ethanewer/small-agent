@@ -294,13 +294,13 @@ class WorkspaceHarborAgent(HarborBaseAgent):
             "if python3 -m pip install --help 2>/dev/null | grep -q -- --break-system-packages; then "
             'PIP_BREAK_FLAG="--break-system-packages"; '
             "fi; "
-            'if ! python3 -c "import anthropic, rich, openai, httpx, truststore" >/dev/null 2>&1; then '
+            'if ! python3 -c "import anthropic, rich, litellm, tenacity, truststore" >/dev/null 2>&1; then '
             "python3 -m pip install --disable-pip-version-check --no-input "
-            "$PIP_BREAK_FLAG anthropic rich openai httpx truststore || "
+            "$PIP_BREAK_FLAG anthropic rich litellm tenacity truststore || "
             "python3 -m pip install --disable-pip-version-check --no-input "
             "$PIP_BREAK_FLAG "
             "--trusted-host pypi.org --trusted-host files.pythonhosted.org "
-            "anthropic rich openai httpx truststore; "
+            "anthropic rich litellm tenacity truststore; "
             "fi"
         )
         bootstrap_result = await _environment_exec(

@@ -339,54 +339,6 @@ class TestExecutionAndLoop(unittest.TestCase):
         self.assertTrue(session.closed)
 
 
-class TestTlsHandling(unittest.TestCase):
-    def test_is_tls_certificate_error_detects_common_marker(self) -> None:
-        self.assertTrue(
-            core_agent._is_tls_certificate_error(
-                message=(
-                    "APIError: [SSL: CERTIFICATE_VERIFY_FAILED] certificate verify "
-                    "failed: self-signed certificate in certificate chain"
-                )
-            )
-        )
-
-    def test_call_model_tls_error_raises_actionable_message(self) -> None:
-        cfg = core_agent.Config(
-            active_model_key="test",
-            active_model=core_agent.ModelConfig(
-                model="qwen3-coder-next",
-                api_base="https://openrouter.ai/api/v1",
-            ),
-        )
-        tls_error = Exception(
-            "OpenrouterException - [SSL: CERTIFICATE_VERIFY_FAILED] "
-            "certificate verify failed: self-signed certificate in certificate chain"
-        )
-
-        class _FakeCompletions:
-            def create(self, **_kwargs: Any) -> None:
-                raise tls_error
-
-        class _FakeChat:
-            completions = _FakeCompletions()
-
-        class _FakeClient:
-            chat = _FakeChat()
-
-        with patch.object(
-            core_agent,
-            "_make_openai_client",
-            return_value=_FakeClient(),
-        ):
-            with self.assertRaisesRegex(RuntimeError, "SMALL_AGENT_CA_BUNDLE"):
-                core_agent.call_model(
-                    cfg=cfg,
-                    prompt="ping",
-                    history=[],
-                    api_key="dummy-key",
-                )
-
-
 class TestFinalSummaryNormalization(unittest.TestCase):
     def test_normalize_summary_response_prefers_final_message_from_json(self) -> None:
         normalized = final_summary.normalize_summary_response(

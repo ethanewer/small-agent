@@ -251,14 +251,14 @@ prepull_task_images() {
   fi
 
   local -a images=()
-  local -A seen=()
+  local seen_list=""
   local toml image_line image
 
   while IFS= read -r -d '' toml; do
     image_line="$(grep -E '^docker_image\s*=' "${toml}" 2>/dev/null | head -1)" || continue
     image="$(printf '%s' "${image_line}" | sed 's/^docker_image[[:space:]]*=[[:space:]]*"\(.*\)"/\1/')"
-    if [[ -n "${image}" && -z "${seen[${image}]+_}" ]]; then
-      seen["${image}"]=1
+    if [[ -n "${image}" ]] && ! printf '%s\n' "${seen_list}" | grep -qxF "${image}"; then
+      seen_list="${seen_list}${image}"$'\n'
       images+=("${image}")
     fi
   done < <(find "${cache_root}" -name 'task.toml' -print0 2>/dev/null)
@@ -295,8 +295,6 @@ run_or_echo() {
 
   echo "Pruning stale Docker networks before benchmark run..."
   docker network prune -f 2>/dev/null || true
-
-  prepull_task_images
 
   (
     cd "${SCRIPT_DIR}"

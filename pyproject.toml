@@ -5,9 +5,11 @@ requires-python = ">=3.13"
 dependencies = [
     "fastapi>=0.135.1",
     "httpx",
+    "litellm>=1.82.4",
     "openai",
     "pytest>=9.0.2",
     "rich",
+    "tenacity>=9.1.4",
     "truststore",
     "uvicorn>=0.42.0",
 ]

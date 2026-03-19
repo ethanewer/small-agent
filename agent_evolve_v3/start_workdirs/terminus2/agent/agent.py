@@ -180,7 +180,7 @@ class WorkspaceAgent:
         if console is None:
             console = Console()
 
-        verbosity = int(cfg.agent_config.get("verbosity", 1))
+        verbosity = int(cfg.agent_config.get("verbosity", 2))
         max_turns = int(cfg.agent_config.get("max_turns", 50))
         max_wait_seconds = float(cfg.agent_config.get("max_wait_seconds", 60.0))
         core_cfg = CoreConfig(

@@ -248,6 +248,6 @@
     }
   },
   "verbosity": 0,
-  "max_turns": 250,
+  "max_turns": 1000000,
   "max_wait_seconds": 120
 }

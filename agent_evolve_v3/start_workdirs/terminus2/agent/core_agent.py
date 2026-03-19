@@ -3,30 +3,18 @@
 from __future__ import annotations
 
 import json
-import os
 import re
-import ssl
 import time
-import warnings
 from dataclasses import dataclass
 from typing import Any, Callable
 
-import httpx
-import openai
+import litellm
+from litellm.utils import get_max_tokens, token_counter
+from tenacity import retry, stop_after_attempt
+
 from tmux_session import TmuxSession, start_session
 
-warnings.filterwarnings(
-    action="ignore",
-    message=".*certificate verify failed.*",
-)
-
-_TLS_CERT_ERROR_MARKERS = (
-    "certificate verify failed",
-    "certificate_verify_failed",
-    "self-signed certificate",
-    "unable to get local issuer certificate",
-)
-_tls_configured = False
+litellm.suppress_debug_info = True
 
 
 class OutputLengthExceededError(Exception):
@@ -35,71 +23,6 @@ class OutputLengthExceededError(Exception):
     def __init__(self, message: str, truncated_response: str | None = None) -> None:
         super().__init__(message)
         self.truncated_response = truncated_response
-
-
-def _configure_tls_trust() -> None:
-    global _tls_configured
-    if _tls_configured:
-        return
-
-    ca_bundle = (
-        os.getenv("SMALL_AGENT_CA_BUNDLE")
-        or os.getenv("REQUESTS_CA_BUNDLE")
-        or os.getenv("SSL_CERT_FILE")
-        or ""
-    ).strip()
-    if ca_bundle:
-        resolved_bundle = os.path.expanduser(ca_bundle)
-        os.environ.setdefault("REQUESTS_CA_BUNDLE", resolved_bundle)
-        os.environ.setdefault("SSL_CERT_FILE", resolved_bundle)
-        _tls_configured = True
-        return
-
-    try:
-        import truststore  # type: ignore
-
-        truststore.inject_into_ssl()
-    except Exception:  # noqa: BLE001
-        pass
-
-    _tls_configured = True
-
-
-def _is_tls_certificate_error(message: str) -> bool:
-    lowered = message.lower()
-    return any(marker in lowered for marker in _TLS_CERT_ERROR_MARKERS)
-
-
-def _tls_error_help_message(api_base: str) -> str:
-    return (
-        "TLS certificate verification failed while connecting to the model provider.\n"
-        f"api_base: {api_base}\n"
-        "If your network uses a custom/intercepting CA, set "
-        "SMALL_AGENT_CA_BUNDLE=/path/to/ca-bundle.pem (or REQUESTS_CA_BUNDLE / "
-        "SSL_CERT_FILE) and rerun the command."
-    )
-
-
-def _make_openai_client(
-    *,
-    api_base: str,
-    api_key: str,
-    verify_ssl: bool = True,
-) -> openai.OpenAI:
-    http_client: httpx.Client | None = None
-    if not verify_ssl:
-        http_client = httpx.Client(verify=False)  # noqa: S501
-    else:
-        ca_bundle = os.getenv("REQUESTS_CA_BUNDLE") or os.getenv("SSL_CERT_FILE")
-        if ca_bundle:
-            ctx = ssl.create_default_context(cafile=ca_bundle)
-            http_client = httpx.Client(verify=ctx)
-
-    return openai.OpenAI(
-        base_url=api_base,
-        api_key=api_key,
-        http_client=http_client,
-    )
 
 
 MAX_OUTPUT_BYTES = 10_000
@@ -158,6 +81,20 @@ Task Description:
 Current terminal state:
 {terminal_state}
 """
+
+_TIMEOUT_TEMPLATE = """\
+Previous command:
+{command}
+
+The previous command timed out after {timeout_sec} seconds
+
+It is possible that the command is not yet finished executing. If that is the case, \
+then do nothing. It is also possible that you have entered an interactive shell and \
+should continue sending keystrokes as normal.
+
+Here is the current state of the terminal:
+
+{terminal_state}"""
 
 
 @dataclass
@@ -510,84 +447,67 @@ def build_prompt(instruction: str, terminal_state: str, max_wait_seconds: float)
     return SYSTEM_PROMPT.format(instruction=instruction, terminal_state=terminal_state)
 
 
+def _litellm_model_name(model: str, api_base: str) -> str:
+    if "/" in model:
+        return model
+
+    if "openai.com" in api_base:
+        return f"openai/{model}"
+
+    if "openrouter.ai" in api_base:
+        return f"openrouter/{model}"
+
+    return f"openai/{model}"
+
+
+@retry(stop=stop_after_attempt(3))
 def call_model(
     cfg: Config,
     prompt: str,
     history: list[dict[str, str]],
     api_key: str,
 ) -> ModelResult:
-    _configure_tls_trust()
-    model_name = cfg.active_model.model
-    completion_kwargs: dict[str, Any] = {}
+    model_name = _litellm_model_name(
+        model=cfg.active_model.model, api_base=cfg.active_model.api_base
+    )
+    completion_kwargs: dict[str, Any] = {
+        "model": model_name,
+        "messages": [*history, {"role": "user", "content": prompt}],
+        "api_base": cfg.active_model.api_base,
+        "api_key": api_key,
+    }
 
     if cfg.active_model.temperature is not None:
         completion_kwargs["temperature"] = cfg.active_model.temperature
 
     if cfg.active_model.extra_params:
-        completion_kwargs["extra_body"] = cfg.active_model.extra_params
+        for k, v in cfg.active_model.extra_params.items():
+            completion_kwargs[k] = v
 
-    messages: list[dict[str, str]] = [*history, {"role": "user", "content": prompt}]
-    last_error: Exception | None = None
-    allow_insecure_tls_retry = True
-    verify_ssl = True
-
-    for attempt in range(3):
-        try:
-            client = _make_openai_client(
-                api_base=cfg.active_model.api_base,
-                api_key=api_key,
-                verify_ssl=verify_ssl,
+    try:
+        result = litellm.completion(**completion_kwargs)
+        content = result.choices[0].message.content or ""  # pyright: ignore[reportAttributeAccessIssue]
+        if result.choices[0].finish_reason == "length":  # pyright: ignore[reportAttributeAccessIssue]
+            raise OutputLengthExceededError(
+                f"Model {model_name} hit max_tokens limit. Response was truncated.",
+                truncated_response=content,
             )
-            result = client.chat.completions.create(  # pyright: ignore[reportCallIssue]
-                model=model_name,
-                messages=messages,  # pyright: ignore[reportArgumentType]
-                **completion_kwargs,
-            )
-            content = result.choices[0].message.content or ""
-            if result.choices[0].finish_reason == "length":
-                raise OutputLengthExceededError(
-                    f"Model {model_name} hit max_tokens limit. Response was truncated.",
-                    truncated_response=content,
-                )
 
-            usage = result.usage
-            prompt_tokens = usage.prompt_tokens if usage else 0
-            completion_tokens = usage.completion_tokens if usage else 0
+        usage = result.usage  # pyright: ignore[reportAttributeAccessIssue]
+        prompt_tokens = usage.prompt_tokens if usage else 0
+        completion_tokens = usage.completion_tokens if usage else 0
 
-            return ModelResult(
-                content=content,
-                prompt_tokens=prompt_tokens,
-                completion_tokens=completion_tokens,
-            )
-        except OutputLengthExceededError:
-            raise
-        except Exception as err:  # noqa: BLE001
-            last_error = err
-            err_msg = str(err)
-            if _is_tls_certificate_error(err_msg):
-                if allow_insecure_tls_retry:
-                    verify_ssl = False
-                    allow_insecure_tls_retry = False
-                    continue
-
-                raise RuntimeError(
-                    _tls_error_help_message(api_base=cfg.active_model.api_base)
-                ) from err
-
-            lowered = err_msg.lower()
-            if (
-                any(
-                    token in lowered
-                    for token in ("429", "rate", "timeout", "temporarily")
-                )
-                and attempt < 2
-            ):
-                time.sleep(2 * (attempt + 1))
-                continue
-
-            break
-
-    raise RuntimeError(f"Model request failed: {last_error}")
+        return ModelResult(
+            content=content,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+        )
+    except OutputLengthExceededError:
+        raise
+    except litellm.ContextWindowExceededError as err:  # pyright: ignore[reportPrivateImportUsage]
+        raise RuntimeError(
+            f"Context length exceeded for model {model_name}: {err}"
+        ) from err
 
 
 _OUTPUT_LENGTH_ERROR_MSG = (
@@ -722,14 +642,26 @@ _PROACTIVE_FREE_TOKEN_THRESHOLD = 8_000
 _UNWIND_TARGET_FREE_TOKENS = 4_000
 
 
-def _estimate_total_tokens(messages: list[dict[str, str]]) -> int:
-    """Rough per-message estimate used only during iterative history unwinding."""
-    return sum(len(m.get("content", "")) // 4 for m in messages)
+def _count_total_tokens(model: str, messages: list[dict[str, str]]) -> int:
+    return token_counter(model=model, messages=messages)
+
+
+def _litellm_model_for_cfg(cfg: Config) -> str:
+    return _litellm_model_name(
+        model=cfg.active_model.model, api_base=cfg.active_model.api_base
+    )
 
 
 def _get_model_context_limit(cfg: Config) -> int:
     if cfg.active_model.context_length and cfg.active_model.context_length > 0:
         return cfg.active_model.context_length
+
+    try:
+        limit = get_max_tokens(_litellm_model_for_cfg(cfg))
+        if limit and limit > 0:
+            return limit
+    except Exception:  # noqa: BLE001
+        pass
 
     return _FALLBACK_CONTEXT_LIMIT
 
@@ -740,7 +672,9 @@ def _unwind_messages(
 ) -> None:
     context_limit = _get_model_context_limit(cfg)
     while len(history) > 1:
-        current_tokens = _estimate_total_tokens(history)
+        current_tokens = _count_total_tokens(
+            model=_litellm_model_for_cfg(cfg), messages=history
+        )
         if context_limit - current_tokens >= _UNWIND_TARGET_FREE_TOKENS:
             break
 
@@ -842,9 +776,11 @@ def _check_proactive_summarization(
     api_key: str,
     original_instruction: str,
     terminal_state: str,
-    current_tokens: int,
 ) -> str | None:
     context_limit = _get_model_context_limit(cfg)
+    current_tokens = _count_total_tokens(
+        model=_litellm_model_for_cfg(cfg), messages=history
+    )
     free_tokens = context_limit - current_tokens
 
     if free_tokens < _PROACTIVE_FREE_TOKEN_THRESHOLD:
@@ -872,17 +808,33 @@ def _execute_turn_commands(
             keystrokes=cmd.keystrokes,
             duration=normalized_duration,
         )
-        execute_command(
-            session=session,
-            cmd=command,
-            max_wait_seconds=max_wait_seconds,
-        )
-        terminal_output = session.get_incremental_output()
-        if callbacks.on_command_output:
-            callbacks.on_command_output(command, terminal_output)
+        try:
+            execute_command(
+                session=session,
+                cmd=command,
+                max_wait_seconds=max_wait_seconds,
+            )
+        except TimeoutError:
+            terminal_output = limit_output_length(session.get_incremental_output())
+            timeout_msg = _TIMEOUT_TEMPLATE.format(
+                timeout_sec=command.duration,
+                command=command.keystrokes,
+                terminal_state=terminal_output,
+            )
+            if callbacks.on_command_output:
+                callbacks.on_command_output(command, timeout_msg)
+            return timeout_msg
 
-    if not parsed.commands:
-        terminal_output = session.get_incremental_output()
+    terminal_output = session.get_incremental_output()
+    if callbacks.on_command_output and parsed.commands:
+        last_cmd = parsed.commands[-1]
+        callbacks.on_command_output(
+            Command(
+                keystrokes=last_cmd.keystrokes,
+                duration=min(max(last_cmd.duration, 0.0), 60.0),
+            ),
+            terminal_output,
+        )
 
     return limit_output_length(terminal_output)
 
@@ -898,7 +850,6 @@ def run_agent(
     history: list[dict[str, str]] = []
     pending_completion = False
     terminal_state = session.get_incremental_output()
-    last_prompt_tokens = 0
     prompt = build_prompt(
         instruction=instruction,
         terminal_state=terminal_state,
@@ -917,7 +868,6 @@ def run_agent(
                 api_key=api_key,
                 original_instruction=instruction,
                 terminal_state=terminal_state,
-                current_tokens=last_prompt_tokens,
             )
             if summarized is not None:
                 prompt = summarized
@@ -939,10 +889,6 @@ def run_agent(
                     callbacks.on_issue("model", str(err))
 
                 return 1
-
-            last_prompt_tokens = (
-                model_result.prompt_tokens + model_result.completion_tokens
-            )
 
             result = parse_response(model_result.content)
 
