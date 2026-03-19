@@ -46,3 +46,4 @@ plans*
 agent_evolve_v2/start_workdirs/liteforge/outputs/*
 agent_evolve_v2/start_workdirs/terminus2/outputs/*
 agent_evolve_v3/outputs*
+*.DS_store

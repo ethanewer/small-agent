@@ -1,0 +1,41 @@
+{
+    "id": "d9ea23c8-25c6-4b47-bd4b-fabf6297e087",
+    "started_at": "2026-03-18T16:43:47.519562",
+    "finished_at": "2026-03-18T17:45:01.031553",
+    "n_total_trials": 7,
+    "stats": {
+        "n_trials": 7,
+        "n_errors": 7,
+        "evals": {
+            "agent-evolve-v3-workspace__terminal-bench": {
+                "n_trials": 1,
+                "n_errors": 7,
+                "metrics": [
+                    {
+                        "mean": 0.0
+                    }
+                ],
+                "reward_stats": {
+                    "reward": {
+                        "0.0": [
+                            "llm-inference-batching-scheduler__8UyiqZo"
+                        ]
+                    }
+                },
+                "exception_stats": {
+                    "AgentTimeoutError": [
+                        "llm-inference-batching-scheduler__8UyiqZo"
+                    ],
+                    "RuntimeError": [
+                        "winning-avg-corewars__zHMXAwm",
+                        "qemu-startup__S2B5Fty",
+                        "qemu-alpine-ssh__ksB9HYJ",
+                        "install-windows-3.11__a86ahCz",
+                        "mailman__XYE7fSs",
+                        "build-pmars__Zcez5N7"
+                    ]
+                }
+            }
+        }
+    }
+}
