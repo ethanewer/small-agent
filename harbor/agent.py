@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import importlib
 import inspect
 import json
@@ -244,25 +245,35 @@ def _raise_for_exec_failure(*, exec_result: Any, action: str) -> None:
     raise RuntimeError(f"{action} failed with exit_code={exit_code}: {details}")
 
 
-async def _environment_is_dir(*, environment: Any, path: str) -> bool:
-    checker = getattr(environment, "is_dir", None)
-    if callable(checker):
+async def _environment_is_dir(
+    *, environment: Any, path: str, max_retries: int = 5
+) -> bool:
+    for attempt in range(max_retries + 1):
         try:
-            result = await _maybe_await(checker(path=path))
-            return bool(result)
-        except TypeError:
-            result = await _maybe_await(checker(path))
-            return bool(result)
+            checker = getattr(environment, "is_dir", None)
+            if callable(checker):
+                try:
+                    result = await _maybe_await(checker(path=path))
+                    return bool(result)
+                except TypeError:
+                    result = await _maybe_await(checker(path))
+                    return bool(result)
 
-    probe = await _environment_exec(
-        environment=environment,
-        command=f"test -d {shlex.quote(path)}",
-        cwd=None,
-        env=None,
-        timeout_sec=5,
-    )
-    exit_code, _, _ = _extract_exec_fields(exec_result=probe)
-    return exit_code == 0
+            probe = await _environment_exec(
+                environment=environment,
+                command=f"test -d {shlex.quote(path)}",
+                cwd=None,
+                env=None,
+                timeout_sec=5,
+            )
+            exit_code, _, _ = _extract_exec_fields(exec_result=probe)
+            return exit_code == 0
+        except (ProcessLookupError, TimeoutError, OSError):
+            if attempt >= max_retries:
+                raise
+            await asyncio.sleep(float(2**attempt))
+
+    raise AssertionError("unreachable")
 
 
 _UPLOAD_EXCLUDE_DIRS: set[str] = {
@@ -476,8 +487,10 @@ class SmallAgentHarborAgent(HarborBaseAgent):
             'if ! python3 -c "import rich, litellm, tenacity" '
             ">/dev/null 2>&1; then "
             "python3 -m pip install --disable-pip-version-check --no-input "
+            "--ignore-installed "
             "$PIP_BREAK_FLAG rich litellm tenacity || "
             "python3 -m pip install --disable-pip-version-check --no-input "
+            "--ignore-installed "
             "$PIP_BREAK_FLAG "
             "--trusted-host pypi.org --trusted-host files.pythonhosted.org "
             "rich litellm tenacity; "
@@ -506,10 +519,18 @@ class SmallAgentHarborAgent(HarborBaseAgent):
         )
 
     async def setup(self, environment: Any) -> None:
-        await self._ensure_cli_available(
-            environment=environment,
-            context=None,
-        )
+        max_retries = 3
+        for attempt in range(max_retries + 1):
+            try:
+                await self._ensure_cli_available(
+                    environment=environment,
+                    context=None,
+                )
+                break
+            except (ProcessLookupError, TimeoutError, OSError):
+                if attempt >= max_retries:
+                    raise
+                await asyncio.sleep(float(2**attempt))
 
     async def run(
         self,
