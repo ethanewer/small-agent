@@ -8,31 +8,31 @@ DATASET_REF="terminal-bench@2.0"
 N_CONCURRENT=16
 
 BENCHMARK_TASKS=(
-  bn-fit-modify
-  cancel-async-tasks
-  configure-git-webserver
-  count-dataset-tokens
+  circuit-fibsqrt
+  portfolio-optimization
+  winning-avg-corewars
   feal-differential-cryptanalysis
-  fix-git
-  gcode-to-text
-  git-multibranch
+  rstan-to-pystan
+  path-tracing
+  feal-linear-cryptanalysis
+  caffe-cifar-10
+  financial-document-processor
+  code-from-image
   gpt2-codegolf
-  headless-terminal
-  kv-store-grpc
-  log-summary-date-ranges
-  model-extraction-relu-logits
-  nginx-request-logging
-  openssl-selfsigned-cert
-  overfull-hbox
-  pypi-server
-  pytorch-model-cli
-  regex-chess
-  regex-log
-  reshard-c4-data
-  sanitize-git-repo
-  sqlite-db-truncate
+  build-cython-ext
+  torch-tensor-parallelism
+  crack-7z-hash
   sqlite-with-gcov
-  vulnerable-secret
+  write-compressor
+  regex-log
+  nginx-request-logging
+  configure-git-webserver
+  sanitize-git-repo
+  fix-git
+  cancel-async-tasks
+  gcode-to-text
+  kv-store-grpc
+  overfull-hbox
 )
 
 main() {
