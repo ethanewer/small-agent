@@ -4,7 +4,7 @@
     "terminus2-gpt54-nano-medium": {
       "baseline": "terminus2",
       "model_key": "gpt-5.4-nano-medium",
-      "cursor_model": "opus-4.6-thinking",
+      "cursor_model": "claude-4.6-opus-max-thinking",
       "iterations": 50,
       "random_seed": 0,
       "benchmark_tasks": [

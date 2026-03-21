@@ -296,8 +296,10 @@ class WorkspaceHarborAgent(HarborBaseAgent):
             "fi; "
             'if ! python3 -c "import anthropic, rich, litellm, tenacity, truststore" >/dev/null 2>&1; then '
             "python3 -m pip install --disable-pip-version-check --no-input "
+            "--ignore-installed "
             "$PIP_BREAK_FLAG anthropic rich litellm tenacity truststore || "
             "python3 -m pip install --disable-pip-version-check --no-input "
+            "--ignore-installed "
             "$PIP_BREAK_FLAG "
             "--trusted-host pypi.org --trusted-host files.pythonhosted.org "
             "anthropic rich litellm tenacity truststore; "
