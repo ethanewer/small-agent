@@ -27,7 +27,6 @@ sft/logs*
 .local/
 harbor/jobs/
 log*
-!agents/liteforge/logging_utils.py
 *.log
 
 # Generated harness reports
@@ -43,7 +42,6 @@ agent_evolve_v2/outputs*
 *.tar
 plans*
 
-agent_evolve_v2/start_workdirs/liteforge/outputs/*
 agent_evolve_v2/start_workdirs/terminus2/outputs/*
 agent_evolve_v3/outputs*
 backup*

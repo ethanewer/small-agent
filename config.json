@@ -4,8 +4,7 @@
   "default_cursor_model": "opus-4.6-thinking",
   "agents": {
     "terminus-2": {},
-    "qwen": {},
-    "liteforge": {}
+    "qwen": {}
   },
   "models": {
     "qwen3.5-9b": {
