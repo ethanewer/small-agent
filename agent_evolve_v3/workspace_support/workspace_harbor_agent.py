@@ -317,6 +317,46 @@ class WorkspaceHarborAgent(HarborBaseAgent):
                 + (stderr.strip() or stdout.strip() or "no output")
             )
 
+        needs_opencode = (workspace_root / "agent" / "orchestrator.ts").exists()
+        if needs_opencode:
+            opencode_bootstrap = (
+                "set -e; "
+                "export DEBIAN_FRONTEND=noninteractive; "
+                "if ! command -v curl >/dev/null 2>&1 || ! command -v unzip >/dev/null 2>&1; then "
+                "apt-get update && apt-get install -y --no-install-recommends curl ca-certificates unzip; "
+                "fi; "
+                "if ! command -v bun >/dev/null 2>&1; then "
+                "curl -fsSL https://bun.sh/install | bash; "
+                "fi; "
+                'export BUN_INSTALL="${BUN_INSTALL:-$HOME/.bun}"; '
+                'export PATH="$BUN_INSTALL/bin:$PATH"; '
+                "if ! command -v opencode >/dev/null 2>&1; then "
+                'mkdir -p "$HOME/.opencode/bin" && '
+                "curl -fsSL -L "
+                "https://github.com/anomalyco/opencode/releases/latest/download/opencode-linux-x64.tar.gz "
+                '| tar -xz -C "$HOME/.opencode/bin"; '
+                'chmod 755 "$HOME/.opencode/bin/opencode"; '
+                "fi; "
+                'export PATH="$HOME/.opencode/bin:$PATH"; '
+                f"cd {REMOTE_WORKSPACE_ROOT}/agent && "
+                "if [ ! -d node_modules/@opencode-ai/sdk ]; then "
+                "bun install @opencode-ai/sdk; "
+                "fi"
+            )
+            oc_result = await _environment_exec(
+                environment=environment,
+                command=opencode_bootstrap,
+                cwd=REMOTE_WORKSPACE_ROOT,
+                env=None,
+                timeout_sec=300,
+            )
+            oc_exit, oc_stdout, oc_stderr = _extract_exec_fields(exec_result=oc_result)
+            if oc_exit != 0:
+                raise RuntimeError(
+                    "Opencode bootstrap failed: "
+                    + (oc_stderr.strip() or oc_stdout.strip() or "no output")
+                )
+
 
 def _require_env_path(*, env_name: str) -> Path:
     raw = os.environ.get(env_name, "").strip()

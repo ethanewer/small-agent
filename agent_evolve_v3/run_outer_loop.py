@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 import json
 from pathlib import Path
 import shutil
+import subprocess
 import sys
 import time
 
@@ -43,6 +44,23 @@ from agent_evolve_v3.state.planner_context import (
 def _log(msg: str) -> None:
     timestamp = datetime.now(UTC).strftime("%H:%M:%S")
     print(f"[{timestamp}] {msg}", flush=True)
+
+
+def _cleanup_docker_resources() -> None:
+    """Stop leftover containers and prune unused networks to avoid address pool exhaustion."""
+    try:
+        subprocess.run(
+            ["docker", "container", "prune", "-f"],
+            capture_output=True,
+            check=False,
+        )
+        subprocess.run(
+            ["docker", "network", "prune", "-f"],
+            capture_output=True,
+            check=False,
+        )
+    except FileNotFoundError:
+        pass
 
 
 def _format_elapsed(start: float) -> str:
@@ -151,6 +169,7 @@ def main(argv: list[str]) -> int:
             state=root_state,
         )
         return _system_exit_code(exc=exc)
+    _cleanup_docker_resources()
     root_state.save()
     _write_scoreboard(run_root=run_root, states=manager.states)
 
@@ -343,6 +362,7 @@ def main(argv: list[str]) -> int:
             f"reward={reward}, passed={passed}, failed={failed}, errors={errors}"
         )
 
+        _cleanup_docker_resources()
         state.save()
         _write_scoreboard(run_root=run_root, states=manager.states)
         _log(f"Iteration {next_iteration} total time: {_format_elapsed(iter_start)}")

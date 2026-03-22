@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-SUPPORTED_BASELINES = ("terminus2",)
+SUPPORTED_BASELINES = ("terminus2", "opencode")
 
 
 @dataclass(frozen=True)

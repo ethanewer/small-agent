@@ -287,6 +287,7 @@ _UPLOAD_EXCLUDE_DIRS: set[str] = {
     "node_modules",
     "config",
     "agent_evolve",
+    "agent_evolve_v3",
 }
 
 _UPLOAD_EXCLUDE_FILES: set[str] = {
@@ -518,6 +519,60 @@ class SmallAgentHarborAgent(HarborBaseAgent):
             status="ok",
         )
 
+    async def _ensure_opencode_runtime(
+        self,
+        *,
+        environment: Any,
+        context: Any | None = None,
+    ) -> None:
+        _record_setup_stage(
+            context=context,
+            stage="bootstrap_opencode_runtime",
+            status="started",
+        )
+        opencode_bootstrap = (
+            "set -e; "
+            "export DEBIAN_FRONTEND=noninteractive; "
+            "if ! command -v curl >/dev/null 2>&1 || ! command -v unzip >/dev/null 2>&1; then "
+            "apt-get update && apt-get install -y --no-install-recommends "
+            "curl ca-certificates unzip; "
+            "fi; "
+            "if ! command -v bun >/dev/null 2>&1; then "
+            "curl -fsSL https://bun.sh/install | bash; "
+            "fi; "
+            'export BUN_INSTALL="${BUN_INSTALL:-$HOME/.bun}"; '
+            'export PATH="$BUN_INSTALL/bin:$PATH"; '
+            "if ! command -v opencode >/dev/null 2>&1; then "
+            'mkdir -p "$HOME/.opencode/bin" && '
+            "curl -fsSL -L "
+            "https://github.com/anomalyco/opencode/releases/latest/download/"
+            "opencode-linux-x64.tar.gz "
+            '| tar -xz -C "$HOME/.opencode/bin"; '
+            'chmod 755 "$HOME/.opencode/bin/opencode"; '
+            "fi; "
+            'export PATH="$HOME/.opencode/bin:$PATH"; '
+            f"cd {shlex.quote(_REMOTE_CLI_ROOT + '/agents/opencode')} && "
+            "if [ ! -d node_modules/@opencode-ai/sdk ]; then "
+            "bun install @opencode-ai/sdk; "
+            "fi"
+        )
+        oc_result = await _environment_exec(
+            environment=environment,
+            command=opencode_bootstrap,
+            cwd=_REMOTE_CLI_ROOT,
+            env=None,
+            timeout_sec=300,
+        )
+        _raise_for_exec_failure(
+            exec_result=oc_result,
+            action="Opencode runtime bootstrap",
+        )
+        _record_setup_stage(
+            context=context,
+            stage="bootstrap_opencode_runtime",
+            status="ok",
+        )
+
     async def setup(self, environment: Any) -> None:
         max_retries = 3
         for attempt in range(max_retries + 1):
@@ -558,6 +613,12 @@ class SmallAgentHarborAgent(HarborBaseAgent):
         selected_agent, selected_model = self._select_keys()
         active_agent_key = selected_agent or loaded_config.default_agent
         active_model_key = selected_model or loaded_config.default_model
+
+        if active_agent_key == "opencode":
+            await self._ensure_opencode_runtime(
+                environment=environment,
+                context=context,
+            )
 
         if active_agent_key not in loaded_config.agents:
             known = ", ".join(sorted(loaded_config.agents.keys()))

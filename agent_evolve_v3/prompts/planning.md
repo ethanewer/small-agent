@@ -78,4 +78,5 @@ Artifact pointers:
 - Do not suggest multiple independent changes in one plan.
 - All proposed changes must be general-purpose. Do not plan task-name-specific hacks or hardcoded special cases. Results are validated against a separate holdout benchmark with different tasks, so only broadly applicable improvements will score well.
 - Prefer plans that reuse strengths from a strong parent while directly addressing its failure evidence.
+- If the workspace has an `AGENTS.md` file, your plan must respect its architecture constraints. Do not propose changes that would violate them (e.g. do not propose replacing the agent's core framework or orchestrator).
 - In `PLANNER_NOTES.md`, always close out the previous iteration's `Result`/`Reflection` before recording the new `Plan`. Never delete older iteration sections. Use the notes to avoid repeating failed or low-signal ideas.

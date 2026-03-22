@@ -101,6 +101,64 @@ install_qwen_cli() {
   install_local_npm_cli "qwen" "@qwen-code/qwen-code"
 }
 
+ensure_bun() {
+  if have_cmd bun; then
+    log "bun already installed: $(command -v bun)"
+    return
+  fi
+
+  log "Installing bun..."
+  curl -fsSL https://bun.sh/install | bash
+  export BUN_INSTALL="${HOME}/.bun"
+  export PATH="${BUN_INSTALL}/bin:${PATH}"
+
+  if ! have_cmd bun; then
+    warn "bun installation failed."
+    exit 1
+  fi
+
+  log "bun installed: $(command -v bun)"
+}
+
+install_opencode() {
+  if have_cmd opencode; then
+    log "opencode already installed: $(command -v opencode)"
+    return
+  fi
+
+  ensure_bun
+
+  log "Installing opencode globally via bun..."
+  bun install -g opencode
+
+  if ! have_cmd opencode; then
+    warn "opencode installation failed."
+    exit 1
+  fi
+
+  log "opencode installed: $(command -v opencode)"
+}
+
+install_opencode_sdk() {
+  local sdk_marker="${LOCAL_NPM_PREFIX}/node_modules/@opencode-ai/sdk"
+  if [ -d "${sdk_marker}" ]; then
+    log "@opencode-ai/sdk already installed at ${sdk_marker}"
+    return
+  fi
+
+  ensure_bun
+
+  log "Installing @opencode-ai/sdk locally..."
+  (cd "${LOCAL_NPM_PREFIX}" && bun install @opencode-ai/sdk)
+
+  if [ ! -d "${sdk_marker}" ]; then
+    warn "@opencode-ai/sdk installation failed."
+    exit 1
+  fi
+
+  log "@opencode-ai/sdk installed at ${sdk_marker}"
+}
+
 ensure_local_venv() {
   if [ -x "${LOCAL_VENV_DIR}/bin/python" ]; then
     return
@@ -174,6 +232,15 @@ verify_clis() {
     fi
   done
 
+  for cmd in bun opencode; do
+    if have_cmd "${cmd}"; then
+      log "Found global command: ${cmd} ($(command -v "${cmd}"))"
+    else
+      warn "Missing global command after setup: ${cmd}"
+      missing=1
+    fi
+  done
+
   if [ "${missing}" -ne 0 ]; then
     exit 1
   fi
@@ -197,6 +264,7 @@ print_next_steps() {
 [setup] Quick checks:
   ${LOCAL_BIN_DIR}/terminus2-cli --help
   ${LOCAL_BIN_DIR}/qwen --help
+  opencode --help
 EOF
 }
 
@@ -206,6 +274,9 @@ main() {
   install_project_python_deps
   install_terminus2_wrapper
   install_qwen_cli
+  ensure_bun
+  install_opencode
+  install_opencode_sdk
   verify_clis
   print_next_steps
 }

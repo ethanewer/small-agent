@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from agents.interface import Agent
+from agents.opencode import OpencodeAgent
 from agents.qwen import QwenHeadlessAgent
 from agents.terminus2.agent import Terminus2Agent
 
@@ -9,6 +10,7 @@ def available_agents() -> dict[str, Agent]:
     return {
         "terminus-2": Terminus2Agent(),
         "qwen": QwenHeadlessAgent(),
+        "opencode": OpencodeAgent(),
     }
 
 

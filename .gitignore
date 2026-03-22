@@ -49,3 +49,8 @@ backup*
 *.DS_Store
 .DS_store
 .DS_Store
+
+# JS/TS dependencies (installed at root for LSP only)
+node_modules/
+bun.lock
+package.json
