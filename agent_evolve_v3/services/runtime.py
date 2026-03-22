@@ -1,10 +1,11 @@
-# pyright: reportUnusedCallResult=false
+# pyright: reportUnusedCallResult=false, reportAny=false, reportUnknownVariableType=false, reportUnknownArgumentType=false
 
 from __future__ import annotations
 
 import json
 from pathlib import Path
 import subprocess
+import tempfile
 
 
 def run_command(
@@ -109,3 +110,49 @@ def run_workspace_validation(
         ],
         cwd=repo_root,
     )
+
+
+def run_failure_investigation_agent(
+    *,
+    prompt_text: str,
+    cursor_model: str,
+    run_0_agent_log: str,
+    run_1_agent_log: str,
+    run_0_verifier: str,
+    run_1_verifier: str,
+    run_0_exception: str = "",
+    run_1_exception: str = "",
+    core_agent_source: str,
+) -> dict[str, str]:
+    with tempfile.TemporaryDirectory(prefix="agent-evolve-v3-failure-inv-") as tmpdir:
+        work_dir = Path(tmpdir)
+        (work_dir / "run_0_agent_log.txt").write_text(run_0_agent_log, encoding="utf-8")
+        (work_dir / "run_1_agent_log.txt").write_text(run_1_agent_log, encoding="utf-8")
+        (work_dir / "run_0_verifier.txt").write_text(run_0_verifier, encoding="utf-8")
+        (work_dir / "run_1_verifier.txt").write_text(run_1_verifier, encoding="utf-8")
+        (work_dir / "run_0_exception.txt").write_text(run_0_exception, encoding="utf-8")
+        (work_dir / "run_1_exception.txt").write_text(run_1_exception, encoding="utf-8")
+        (work_dir / "core_agent.py").write_text(core_agent_source, encoding="utf-8")
+
+        completed = run_cursor_agent(
+            workspace_path=work_dir,
+            prompt_text=prompt_text,
+            cursor_model=cursor_model,
+        )
+
+        output_path = work_dir / "output.json"
+        if output_path.exists():
+            try:
+                data = json.loads(output_path.read_text(encoding="utf-8"))
+                if isinstance(data, dict):
+                    return {str(k): str(v) for k, v in data.items()}
+            except (json.JSONDecodeError, OSError):
+                pass
+
+        return {
+            "task_name": "",
+            "general_failure_reason": "infrastructure_error",
+            "task_specific_explanation": f"Investigation agent failed (rc={completed.returncode})",
+            "consistency": "both_same_failure",
+            "suggested_fix_category": "not_fixable_by_agent",
+        }
