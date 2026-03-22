@@ -1,4 +1,4 @@
-# pyright: reportAny=false, reportUnknownVariableType=false, reportUnknownArgumentType=false, reportUnknownMemberType=false, reportExplicitAny=false, reportUnusedCallResult=false, reportCallIssue=false
+# pyright: reportAny=false, reportUnknownVariableType=false, reportUnknownArgumentType=false, reportUnknownMemberType=false, reportExplicitAny=false, reportUnusedCallResult=false, reportCallIssue=false, reportUnusedFunction=false
 
 from __future__ import annotations
 
@@ -70,16 +70,42 @@ def _task_name_from_trial_name(trial_name: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Harbor job dir scanning
+# Harbor job dir scanning (two-tier aware)
 # ---------------------------------------------------------------------------
 
 
+def _find_all_harbor_job_dirs(*, artifacts_dir: Path) -> list[Path]:
+    """Find all harbor job dirs across train_small, train_remaining, train_full,
+    and the legacy official_benchmark layout."""
+    dirs: list[Path] = []
+
+    for phase in ("train_small", "train_remaining", "train_full"):
+        phase_dir = artifacts_dir / phase
+        if not phase_dir.is_dir():
+            continue
+        for sample_dir in sorted(phase_dir.iterdir()):
+            if not sample_dir.is_dir() or not sample_dir.name.startswith("sample_"):
+                continue
+            jobs_dir = sample_dir / "harbor_jobs"
+            if not jobs_dir.is_dir():
+                continue
+            for job_dir in sorted(jobs_dir.iterdir()):
+                if job_dir.is_dir() and (job_dir / "result.json").exists():
+                    dirs.append(job_dir)
+
+    legacy = artifacts_dir / "official_benchmark" / "harbor_jobs"
+    if legacy.is_dir():
+        for job_dir in sorted(legacy.iterdir()):
+            if job_dir.is_dir() and (job_dir / "result.json").exists():
+                dirs.append(job_dir)
+
+    return dirs
+
+
 def _find_harbor_job_dir(*, artifacts_dir: Path) -> Path | None:
-    official = artifacts_dir / "official_benchmark" / "harbor_jobs"
-    if not official.is_dir():
-        return None
-    subdirs = sorted(official.iterdir())
-    return subdirs[-1] if subdirs else None
+    """Return the latest harbor job dir (for backward compat)."""
+    dirs = _find_all_harbor_job_dirs(artifacts_dir=artifacts_dir)
+    return dirs[-1] if dirs else None
 
 
 def _load_aggregate_result(*, harbor_job_dir: Path) -> dict[str, Any] | None:
@@ -111,6 +137,77 @@ def _load_trial_results(*, harbor_job_dir: Path) -> dict[str, dict[str, Any]]:
             results[child.name] = data
 
     return results
+
+
+def _load_all_trial_results(*, artifacts_dir: Path) -> dict[str, dict[str, Any]]:
+    """Load trial results from all harbor job dirs in the artifacts."""
+    combined: dict[str, dict[str, Any]] = {}
+    for job_dir in _find_all_harbor_job_dirs(artifacts_dir=artifacts_dir):
+        combined.update(_load_trial_results(harbor_job_dir=job_dir))
+    return combined
+
+
+# ---------------------------------------------------------------------------
+# Benchmark progress for two-tier flow
+# ---------------------------------------------------------------------------
+
+
+def _get_two_tier_benchmark_progress(*, artifacts_dir: Path) -> dict[str, Any] | None:
+    """Return progress info for the current benchmark phase."""
+    progress: dict[str, Any] = {"phases": []}
+
+    for phase in ("train_small", "train_remaining", "train_full"):
+        phase_dir = artifacts_dir / phase
+        if not phase_dir.is_dir():
+            continue
+
+        sample_dirs = sorted(
+            d
+            for d in phase_dir.iterdir()
+            if d.is_dir() and d.name.startswith("sample_")
+        )
+        for sample_dir in sample_dirs:
+            summary_path = sample_dir / "benchmark_summary.json"
+            if summary_path.exists():
+                try:
+                    s = json.loads(summary_path.read_text(encoding="utf-8"))
+                    progress["phases"].append(
+                        {
+                            "phase": phase,
+                            "sample": sample_dir.name,
+                            "status": "done",
+                            "completed": s.get("n_trials", 0),
+                            "total": s.get("n_trials", 0),
+                        }
+                    )
+                except (json.JSONDecodeError, OSError):
+                    pass
+                continue
+
+            jobs_dir = sample_dir / "harbor_jobs"
+            if not jobs_dir.is_dir():
+                continue
+            for job_dir in sorted(jobs_dir.iterdir()):
+                if not job_dir.is_dir():
+                    continue
+                agg = _load_aggregate_result(harbor_job_dir=job_dir)
+                if agg is None:
+                    continue
+                n_total = agg.get("n_total_trials", 0)
+                n_done = agg.get("stats", {}).get("n_trials", 0)
+                progress["phases"].append(
+                    {
+                        "phase": phase,
+                        "sample": sample_dir.name,
+                        "status": "running" if n_done < n_total else "done",
+                        "completed": n_done,
+                        "total": n_total,
+                    }
+                )
+
+    if not progress["phases"]:
+        return None
+    return progress
 
 
 # ---------------------------------------------------------------------------
@@ -155,40 +252,30 @@ def _compute_iteration_metrics(
 
 
 def _compute_metrics_from_state(*, state: AgentState) -> dict[str, Any] | None:
-    """Fallback: derive metrics from the state's BenchmarkSummary when harbor
-    artifacts are unavailable.  Deduplicates failed_trials vs exception_types
-    so that counts are mutually exclusive."""
+    """Classify each trial and compute per-trial outcome rates."""
     result = state.result
     if result is None or result.reward_mean is None:
         return None
 
     passed_set = set(result.passed_trials)
-    all_errored_ids: set[str] = set()
-    for trial_ids in result.exception_types.values():
-        all_errored_ids.update(trial_ids)
-
-    timeout_ids: set[str] = set()
-    other_error_ids: set[str] = set()
+    error_map: dict[str, str] = {}
     for exc_type, trial_ids in result.exception_types.items():
         for tid in trial_ids:
-            if tid in passed_set:
-                continue
-            if exc_type == "AgentTimeoutError":
-                timeout_ids.add(tid)
+            error_map[tid] = exc_type
+
+    trial_outcomes: dict[str, str] = {}
+    all_trial_ids = set(result.passed_trials) | set(result.failed_trials)
+    for tid in all_trial_ids:
+        if tid in passed_set:
+            trial_outcomes[tid] = OUTCOME_PASS
+        elif tid in error_map:
+            exc = error_map[tid]
+            if exc == "AgentTimeoutError":
+                trial_outcomes[tid] = OUTCOME_TIMEOUT
             else:
-                other_error_ids.add(tid)
-
-    pure_failed = [t for t in result.failed_trials if t not in all_errored_ids]
-
-    task_outcomes: dict[str, str] = {}
-    for tid in result.passed_trials:
-        task_outcomes[_task_name_from_trial_name(tid)] = OUTCOME_PASS
-    for tid in pure_failed:
-        task_outcomes[_task_name_from_trial_name(tid)] = OUTCOME_FAILURE
-    for tid in timeout_ids:
-        task_outcomes[_task_name_from_trial_name(tid)] = OUTCOME_TIMEOUT
-    for tid in other_error_ids:
-        task_outcomes[_task_name_from_trial_name(tid)] = OUTCOME_OTHER_ERROR
+                trial_outcomes[tid] = OUTCOME_OTHER_ERROR
+        else:
+            trial_outcomes[tid] = OUTCOME_FAILURE
 
     counts = {
         OUTCOME_PASS: 0,
@@ -197,12 +284,15 @@ def _compute_metrics_from_state(*, state: AgentState) -> dict[str, Any] | None:
         OUTCOME_MAX_ITERS: 0,
         OUTCOME_OTHER_ERROR: 0,
     }
-    for outcome in task_outcomes.values():
+    for outcome in trial_outcomes.values():
         if outcome in counts:
             counts[outcome] += 1
 
-    n_classified = sum(counts.values())
-    total = n_classified if n_classified > 0 else 1
+    total = sum(counts.values()) or 1
+
+    task_outcomes: dict[str, str] = {}
+    for tid, outcome in trial_outcomes.items():
+        task_outcomes[_task_name_from_trial_name(tid)] = outcome
 
     return {
         "completion_rate": counts[OUTCOME_PASS] / total,
@@ -219,14 +309,13 @@ def _compute_metrics_from_state(*, state: AgentState) -> dict[str, Any] | None:
 
 
 # ---------------------------------------------------------------------------
-# Stage detection and timing
+# Stage detection and timing (two-tier aware)
 # ---------------------------------------------------------------------------
 
 _STAGE_FILES = [
     ("planner_step.json", "planning"),
     ("implementation_step.json", "implementing"),
     ("validation_step.json", "validating"),
-    ("benchmark_step.json", "benchmarking"),
 ]
 
 
@@ -235,34 +324,61 @@ def _detect_current_stage(*, artifacts_dir: Path, is_bootstrap: bool = False) ->
         return "waiting"
 
     if is_bootstrap:
-        harbor_dir = _find_harbor_job_dir(artifacts_dir=artifacts_dir)
-        if harbor_dir is not None:
-            agg = _load_aggregate_result(harbor_job_dir=harbor_dir)
-            if agg is not None and agg.get("finished_at") is not None:
-                return "completed"
+        has_result = _has_benchmark_results(artifacts_dir=artifacts_dir)
+        if has_result:
+            return "completed"
+        has_harbor = bool(_find_all_harbor_job_dirs(artifacts_dir=artifacts_dir))
+        if has_harbor or any(
+            (artifacts_dir / p).is_dir()
+            for p in ("train_small", "train_remaining", "train_full")
+        ):
             return "benchmarking"
         return "waiting"
 
-    last_completed = "waiting"
     for filename, stage_name in _STAGE_FILES:
-        if (artifacts_dir / filename).exists():
-            last_completed = stage_name
-        else:
+        if not (artifacts_dir / filename).exists():
             return stage_name
 
-    return "completed" if last_completed == "benchmarking" else last_completed
+    has_result = _has_benchmark_results(artifacts_dir=artifacts_dir)
+    if has_result:
+        return "completed"
+
+    if any(
+        (artifacts_dir / p).is_dir()
+        for p in ("train_small", "train_remaining", "train_full")
+    ):
+        return "benchmarking"
+
+    return "benchmarking"
+
+
+def _has_benchmark_results(*, artifacts_dir: Path) -> bool:
+    """Check if any benchmark phase has completed summary files."""
+    for phase in ("train_small", "train_remaining", "train_full"):
+        phase_dir = artifacts_dir / phase
+        if not phase_dir.is_dir():
+            continue
+        for sample_dir in phase_dir.iterdir():
+            if sample_dir.is_dir() and (sample_dir / "benchmark_summary.json").exists():
+                return True
+
+    legacy = artifacts_dir / "official_benchmark" / "harbor_jobs"
+    if legacy.is_dir():
+        for job_dir in legacy.iterdir():
+            if job_dir.is_dir() and (job_dir / "result.json").exists():
+                return True
+    return False
 
 
 def _get_benchmark_progress(*, artifacts_dir: Path) -> dict[str, int] | None:
-    harbor_dir = _find_harbor_job_dir(artifacts_dir=artifacts_dir)
-    if harbor_dir is None:
+    """Legacy single-number progress for backward compat."""
+    progress = _get_two_tier_benchmark_progress(artifacts_dir=artifacts_dir)
+    if progress is None:
         return None
-    agg = _load_aggregate_result(harbor_job_dir=harbor_dir)
-    if agg is None:
-        return None
-    n_total = agg.get("n_total_trials", 0)
-    n_done = agg.get("stats", {}).get("n_trials", 0)
-    return {"completed": n_done, "total": n_total}
+    phases = progress.get("phases", [])
+    total_done = sum(p.get("completed", 0) for p in phases)
+    total_all = sum(p.get("total", 0) for p in phases)
+    return {"completed": total_done, "total": total_all}
 
 
 def _parse_iso_timestamp(ts: str | None) -> float | None:
@@ -284,35 +400,6 @@ def _file_mtime(path: Path) -> float | None:
         return None
 
 
-def _latest_trial_mtime(harbor_job_dir: Path) -> float | None:
-    latest: float | None = None
-    for child in harbor_job_dir.iterdir():
-        if not child.is_dir() or "__" not in child.name:
-            continue
-        rp = child / "result.json"
-        mt = _file_mtime(rp)
-        if mt is not None and (latest is None or mt > latest):
-            latest = mt
-    return latest
-
-
-def _resolve_bench_end(
-    *, agg: dict[str, Any], harbor_job_dir: Path, now: float
-) -> tuple[float, bool]:
-    finished = _parse_iso_timestamp(agg.get("finished_at"))
-    if finished is not None:
-        return finished, False
-
-    n_total = agg.get("n_total_trials", 0)
-    n_done = agg.get("stats", {}).get("n_trials", 0)
-    if n_total > 0 and n_done >= n_total:
-        last_mt = _latest_trial_mtime(harbor_job_dir)
-        if last_mt is not None:
-            return last_mt, False
-
-    return now, True
-
-
 def _compute_stage_times(
     *,
     artifacts_dir: Path,
@@ -322,18 +409,16 @@ def _compute_stage_times(
     now = time.time()
 
     if is_bootstrap:
-        harbor_dir = _find_harbor_job_dir(artifacts_dir=artifacts_dir)
         bench_sec: float | None = None
         bench_live = False
-        if harbor_dir is not None:
-            agg = _load_aggregate_result(harbor_job_dir=harbor_dir)
-            if agg is not None:
-                started = _parse_iso_timestamp(agg.get("started_at"))
-                if started is not None:
-                    end, bench_live = _resolve_bench_end(
-                        agg=agg, harbor_job_dir=harbor_dir, now=now
-                    )
-                    bench_sec = end - started
+        first_harbor = _find_first_harbor_start(artifacts_dir=artifacts_dir)
+        if first_harbor is not None:
+            last_summary = _find_latest_summary_mtime(artifacts_dir=artifacts_dir)
+            if last_summary is not None and current_stage == "completed":
+                bench_sec = last_summary - first_harbor
+            else:
+                bench_sec = now - first_harbor
+                bench_live = current_stage == "benchmarking"
 
         return {
             "plan_time_sec": None,
@@ -373,22 +458,24 @@ def _compute_stage_times(
             impl_live = True
 
     if validation_mtime is not None:
-        harbor_dir = _find_harbor_job_dir(artifacts_dir=artifacts_dir)
-        if harbor_dir is not None:
-            agg = _load_aggregate_result(harbor_job_dir=harbor_dir)
-            if agg is not None:
-                started = _parse_iso_timestamp(agg.get("started_at"))
-                if started is not None:
-                    end, bench_live = _resolve_bench_end(
-                        agg=agg, harbor_job_dir=harbor_dir, now=now
-                    )
-                    bench_sec = end - started
-                else:
-                    bench_sec = now - validation_mtime
-                    bench_live = current_stage == "benchmarking"
-        elif current_stage == "benchmarking":
+        last_summary = _find_latest_summary_mtime(artifacts_dir=artifacts_dir)
+        if last_summary is not None and current_stage == "completed":
+            bench_sec = last_summary - validation_mtime
+        else:
             bench_sec = now - validation_mtime
-            bench_live = True
+            bench_live = current_stage == "benchmarking"
+
+    if plan_sec is not None and plan_sec < 0:
+        plan_sec = None
+        plan_live = False
+
+    if impl_sec is not None and impl_sec < 0:
+        impl_sec = None
+        impl_live = False
+
+    if bench_sec is not None and bench_sec < 0:
+        bench_sec = None
+        bench_live = False
 
     return {
         "plan_time_sec": plan_sec,
@@ -404,6 +491,62 @@ def _compute_stage_times(
         if bench_live and bench_sec is not None
         else None,
     }
+
+
+def _find_first_harbor_start(*, artifacts_dir: Path) -> float | None:
+    """Find the earliest harbor job start time across all phases."""
+    earliest: float | None = None
+    for job_dir in _find_all_harbor_job_dirs(artifacts_dir=artifacts_dir):
+        agg = _load_aggregate_result(harbor_job_dir=job_dir)
+        if agg is None:
+            continue
+        started = _parse_iso_timestamp(agg.get("started_at"))
+        if started is not None and (earliest is None or started < earliest):
+            earliest = started
+
+    for phase in ("train_small", "train_remaining", "train_full"):
+        phase_dir = artifacts_dir / phase
+        if not phase_dir.is_dir():
+            continue
+        for sample_dir in sorted(phase_dir.iterdir()):
+            if not sample_dir.is_dir():
+                continue
+            jobs_dir = sample_dir / "harbor_jobs"
+            if not jobs_dir.is_dir():
+                continue
+            for job_dir in sorted(jobs_dir.iterdir()):
+                if not job_dir.is_dir():
+                    continue
+                agg = _load_aggregate_result(harbor_job_dir=job_dir)
+                if agg is None:
+                    continue
+                started = _parse_iso_timestamp(agg.get("started_at"))
+                if started is not None and (earliest is None or started < earliest):
+                    earliest = started
+
+    if earliest is None:
+        for phase in ("train_small", "train_remaining", "train_full"):
+            mt = _file_mtime(artifacts_dir / phase)
+            if mt is not None and (earliest is None or mt < earliest):
+                earliest = mt
+
+    return earliest
+
+
+def _find_latest_summary_mtime(*, artifacts_dir: Path) -> float | None:
+    """Find the latest benchmark_summary.json mtime across all phases."""
+    latest: float | None = None
+    for phase in ("train_small", "train_remaining", "train_full"):
+        phase_dir = artifacts_dir / phase
+        if not phase_dir.is_dir():
+            continue
+        for sample_dir in phase_dir.iterdir():
+            if not sample_dir.is_dir():
+                continue
+            mt = _file_mtime(sample_dir / "benchmark_summary.json")
+            if mt is not None and (latest is None or mt > latest):
+                latest = mt
+    return latest
 
 
 # ---------------------------------------------------------------------------
@@ -444,15 +587,35 @@ def _load_single_run(*, run_dir: Path) -> dict[str, Any] | None:
 
     states = _load_states(run_dir=run_dir)
     benchmark_tasks: list[str] = manifest.get("benchmark_tasks", [])
+    train_small_tasks: list[str] = manifest.get("train_small_tasks", [])
+    n_samples: int = manifest.get("n_samples", 1)
+    failure_inv_model: str = manifest.get("failure_investigation_model", "")
     max_iterations: int = manifest.get("iterations", 25)
 
     iterations: list[dict[str, Any]] = []
-    best_completion: float | None = None
+    best_reward: float | None = None
 
     for state in states:
         status = classify_state_status(state=state, run_root=run_dir)
         parent_iter = parent_iteration_for_state(state=state)
         ps = plan_summary(plan=state.plan)
+
+        result = state.result
+        train_small_reward = result.train_small_reward_mean if result else None
+        train_full_reward = result.train_full_reward_mean if result else None
+        reward_mean = result.reward_mean if result else None
+        promoted = train_full_reward is not None
+
+        failure_analyses = [
+            {
+                "task_name": fa.task_name,
+                "general_failure_reason": fa.general_failure_reason,
+                "task_specific_explanation": fa.task_specific_explanation,
+                "consistency": fa.consistency,
+                "suggested_fix_category": fa.suggested_fix_category,
+            }
+            for fa in state.failure_analyses
+        ]
 
         iter_data: dict[str, Any] = {
             "iteration": state.iteration,
@@ -467,31 +630,33 @@ def _load_single_run(*, run_dir: Path) -> dict[str, Any] | None:
             "other_error_rate": None,
             "timeout_or_turn_limit_rate": None,
             "tasks": {},
+            "train_small_reward": train_small_reward,
+            "train_full_reward": train_full_reward,
+            "reward_mean": reward_mean,
+            "promoted": promoted,
+            "failure_analyses": failure_analyses,
+            "n_failure_analyses": len(failure_analyses),
         }
 
         artifacts_dir = run_dir / "artifacts" / f"iteration-{state.iteration:04d}"
-        harbor_dir = _find_harbor_job_dir(artifacts_dir=artifacts_dir)
 
-        metrics: dict[str, Any] | None = None
-        if harbor_dir is not None:
-            trial_results = _load_trial_results(harbor_job_dir=harbor_dir)
-            if trial_results:
-                metrics = _compute_iteration_metrics(
-                    trial_results=trial_results,
-                )
-        if metrics is None:
+        has_result = result is not None and result.reward_mean is not None
+        if has_result:
             metrics = _compute_metrics_from_state(state=state)
-        if metrics is not None:
-            iter_data.update(metrics)
+            if metrics is not None:
+                iter_data.update(metrics)
 
-        iter_stage = (
-            "completed"
-            if classify_state_status(state=state, run_root=run_dir) == "completed"
-            else _detect_current_stage(
+        if has_result:
+            iter_stage = "completed"
+        else:
+            iter_stage = _detect_current_stage(
                 artifacts_dir=artifacts_dir,
                 is_bootstrap=(state.iteration == 0),
             )
-        )
+            if iter_stage == "completed":
+                iter_stage = "benchmarking"
+
+        iter_data["status"] = iter_stage
         stage_times = _compute_stage_times(
             artifacts_dir=artifacts_dir,
             is_bootstrap=(state.iteration == 0),
@@ -499,34 +664,50 @@ def _load_single_run(*, run_dir: Path) -> dict[str, Any] | None:
         )
         iter_data.update(stage_times)
 
-        cr = iter_data.get("completion_rate")
-        if isinstance(cr, float) and (best_completion is None or cr > best_completion):
-            best_completion = cr
+        best_candidate = (
+            train_full_reward if train_full_reward is not None else train_small_reward
+        )
+        if isinstance(best_candidate, float) and (
+            best_reward is None or best_candidate > best_reward
+        ):
+            best_reward = best_candidate
 
         iterations.append(iter_data)
 
-    current_iteration = states[-1].iteration if states else 0
-    latest_artifacts = run_dir / "artifacts" / f"iteration-{current_iteration:04d}"
-    current_stage = _detect_current_stage(
-        artifacts_dir=latest_artifacts,
-        is_bootstrap=(current_iteration == 0),
-    )
+    if iterations:
+        current_iteration = iterations[-1]["iteration"]
+        current_stage = iterations[-1]["status"]
+    else:
+        current_iteration = 0
+        current_stage = "waiting"
 
-    current_artifacts = latest_artifacts
+    current_artifacts = run_dir / "artifacts" / f"iteration-{current_iteration:04d}"
     if current_stage == "completed" and current_iteration < max_iterations:
-        next_artifacts = (
-            run_dir / "artifacts" / f"iteration-{current_iteration + 1:04d}"
-        )
+        next_iter = current_iteration + 1
+        next_artifacts = run_dir / "artifacts" / f"iteration-{next_iter:04d}"
         if next_artifacts.exists():
             current_stage = _detect_current_stage(artifacts_dir=next_artifacts)
-            current_iteration = current_iteration + 1
+            if current_stage == "completed":
+                next_state_path = run_dir / "states" / f"iteration-{next_iter:04d}.json"
+                if next_state_path.exists():
+                    try:
+                        ns = json.loads(next_state_path.read_text(encoding="utf-8"))
+                        if ns.get("result") is None:
+                            current_stage = "benchmarking"
+                    except (json.JSONDecodeError, OSError):
+                        pass
+            current_iteration = next_iter
             current_artifacts = next_artifacts
         else:
             current_stage = "planning"
 
     benchmark_progress = None
+    two_tier_progress = None
     if current_stage == "benchmarking":
         benchmark_progress = _get_benchmark_progress(
+            artifacts_dir=current_artifacts,
+        )
+        two_tier_progress = _get_two_tier_benchmark_progress(
             artifacts_dir=current_artifacts,
         )
 
@@ -541,11 +722,15 @@ def _load_single_run(*, run_dir: Path) -> dict[str, Any] | None:
         "model_key": manifest.get("model_key", ""),
         "cursor_model": manifest.get("cursor_model", ""),
         "baseline": manifest.get("baseline", ""),
+        "failure_investigation_model": failure_inv_model,
+        "n_samples": n_samples,
+        "train_small_tasks": train_small_tasks,
         "max_iterations": max_iterations,
         "current_iteration": current_iteration,
         "current_stage": current_stage,
         "benchmark_progress": benchmark_progress,
-        "best_completion": best_completion,
+        "two_tier_progress": two_tier_progress,
+        "best_completion": best_reward,
         "iterations": iterations,
         "task_aggregate": task_aggregate,
     }
@@ -694,7 +879,7 @@ _DASHBOARD_HTML = """\
   th { color: var(--text-muted); font-weight: 600; font-size: 11px;
        text-transform: uppercase; letter-spacing: 0.5px; background: var(--surface); }
   td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
-  .table-scroll { border: 1px solid var(--border); border-radius: 6px; }
+  .table-scroll { border: 1px solid var(--border); border-radius: 6px; overflow-x: auto; }
   .cell-pass { color: var(--green); }
   .cell-fail { color: var(--red); }
   .cell-warn { color: var(--yellow); }
@@ -721,6 +906,43 @@ _DASHBOARD_HTML = """\
   }
   .minimize-btn:hover { color: var(--text); border-color: var(--text-muted); }
   .cell-live { color: var(--accent); }
+  .promoted-badge {
+    display: inline-block; padding: 1px 6px; border-radius: 8px;
+    font-size: 10px; font-weight: 600; text-transform: uppercase;
+  }
+  .promoted-yes { background: #1a2f1a; color: var(--green); }
+  .promoted-no { background: #2a1a1a; color: var(--text-muted); }
+  .phase-progress {
+    display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
+    font-size: 12px; color: var(--text-muted); margin-top: 6px;
+  }
+  .phase-chip {
+    display: inline-flex; align-items: center; gap: 4px;
+    padding: 2px 8px; border-radius: 8px; font-size: 11px;
+    border: 1px solid var(--border);
+  }
+  .phase-chip.done { border-color: var(--green); color: var(--green); }
+  .phase-chip.running { border-color: var(--orange); color: var(--orange); }
+  .fa-table { margin-top: 8px; }
+  .fa-table td { font-size: 12px; vertical-align: top; }
+  .fa-reason { font-weight: 600; }
+  .fa-explanation { color: var(--text-muted); max-width: 500px; }
+  .fa-category {
+    display: inline-block; padding: 1px 6px; border-radius: 8px;
+    font-size: 10px; border: 1px solid var(--border); color: var(--text-muted);
+  }
+  .fa-consistency {
+    display: inline-block; padding: 1px 6px; border-radius: 8px;
+    font-size: 10px;
+  }
+  .fa-both-fail { background: #2a1a1a; color: var(--red); }
+  .fa-different { background: #2d2a0f; color: var(--yellow); }
+  .fa-one-pass { background: #1a2f1a; color: var(--green); }
+  .iter-select { margin-bottom: 12px; }
+  .iter-select select {
+    background: var(--bg); color: var(--text); border: 1px solid var(--border);
+    padding: 6px 12px; border-radius: 6px; font-size: 13px; cursor: pointer;
+  }
 </style>
 </head>
 <body>
@@ -738,7 +960,9 @@ _DASHBOARD_HTML = """\
 
 <script>
 const METRIC_LABELS = {
-  completion_rate: 'Completion Rate',
+  train_small_reward: 'Train Small Reward',
+  train_full_reward: 'Train Full Reward',
+  reward_mean: 'Overall Reward',
   failure_rate: 'Failure Rate',
   timeout_or_turn_limit_rate: 'Timeout / Turn Limit Rate',
   timeout_rate: 'Timeout Rate',
@@ -746,7 +970,9 @@ const METRIC_LABELS = {
   other_error_rate: 'Other Runtime Error Rate',
 };
 const METRIC_COLORS = {
-  completion_rate: '#3fb950',
+  train_small_reward: '#58a6ff',
+  train_full_reward: '#bc8cff',
+  reward_mean: '#3fb950',
   failure_rate: '#f85149',
   timeout_or_turn_limit_rate: '#d29922',
   timeout_rate: '#db6d28',
@@ -759,6 +985,7 @@ let currentMetrics = {};
 let minimizedRuns = new Set();
 let initializedMinimized = false;
 let liveTimerInterval = null;
+let selectedFaIter = {};
 
 function fmtDuration(sec) {
   if (sec == null) return '-';
@@ -787,18 +1014,13 @@ function updateLiveTimers() {
 }
 
 function toggleMinimize(runDir) {
-  if (minimizedRuns.has(runDir)) {
-    minimizedRuns.delete(runDir);
-  } else {
-    minimizedRuns.add(runDir);
-  }
+  if (minimizedRuns.has(runDir)) minimizedRuns.delete(runDir);
+  else minimizedRuns.add(runDir);
   if (lastData) renderAll(lastData);
 }
 
 function destroyAllCharts() {
-  for (const [key, chart] of Object.entries(charts)) {
-    chart.destroy();
-  }
+  for (const [key, chart] of Object.entries(charts)) chart.destroy();
   charts = {};
 }
 
@@ -815,124 +1037,233 @@ function pct(v) {
   return (p % 1 === 0 ? p.toFixed(0) : p.toFixed(1)) + '%';
 }
 
+function fmtReward(v) {
+  if (v == null) return '-';
+  return v.toFixed(3);
+}
+
 function cellClass(val, isGood) {
   if (val == null) return 'cell-muted';
   if (isGood) return val >= 0.7 ? 'cell-pass' : val >= 0.3 ? 'cell-warn' : 'cell-fail';
   return val <= 0.05 ? 'cell-pass' : val <= 0.2 ? 'cell-warn' : 'cell-fail';
 }
 
+function rewardClass(val) {
+  if (val == null) return 'cell-muted';
+  return val >= 0.5 ? 'cell-pass' : val >= 0.25 ? 'cell-warn' : 'cell-fail';
+}
+
+function consistencyClass(c) {
+  if (c === 'both_same_failure') return 'fa-both-fail';
+  if (c === 'different_failures') return 'fa-different';
+  if (c === 'one_passed_one_failed') return 'fa-one-pass';
+  return '';
+}
+
+function consistencyLabel(c) {
+  if (c === 'both_same_failure') return 'both fail';
+  if (c === 'different_failures') return 'different';
+  if (c === 'one_passed_one_failed') return '1 pass / 1 fail';
+  return c;
+}
+
+function renderPhaseProgress(run) {
+  if (!run.two_tier_progress || !run.two_tier_progress.phases.length) return '';
+  const phases = run.two_tier_progress.phases;
+  let chips = phases.map(p => {
+    const label = p.phase.replace('train_', '') + '/' + p.sample;
+    const cls = p.status === 'done' ? 'done' : 'running';
+    const info = p.status === 'done' ? 'done' : p.completed + '/' + p.total;
+    return '<span class="phase-chip ' + cls + '">' + label + ': ' + info + '</span>';
+  }).join('');
+  return '<div class="phase-progress">' + chips + '</div>';
+}
+
+function renderFailureAnalyses(run, id) {
+  const itersWithFa = run.iterations.filter(i => i.failure_analyses && i.failure_analyses.length > 0);
+  if (!itersWithFa.length) return '<div class="cell-muted" style="padding:20px">No failure analyses yet.</div>';
+
+  const selKey = id;
+  const selIter = selectedFaIter[selKey] != null ? selectedFaIter[selKey] : itersWithFa[itersWithFa.length - 1].iteration;
+  const iter = itersWithFa.find(i => i.iteration === selIter) || itersWithFa[itersWithFa.length - 1];
+
+  let options = itersWithFa.map(i =>
+    '<option value="' + i.iteration + '"' + (i.iteration === iter.iteration ? ' selected' : '') + '>Iteration ' + i.iteration + ' (' + i.failure_analyses.length + ' reports)</option>'
+  ).join('');
+
+  let rows = '';
+  for (const fa of iter.failure_analyses) {
+    rows += '<tr>' +
+      '<td>' + fa.task_name + '</td>' +
+      '<td class="fa-reason">' + fa.general_failure_reason + '</td>' +
+      '<td class="fa-explanation">' + fa.task_specific_explanation + '</td>' +
+      '<td><span class="fa-consistency ' + consistencyClass(fa.consistency) + '">' + consistencyLabel(fa.consistency) + '</span></td>' +
+      '<td><span class="fa-category">' + fa.suggested_fix_category + '</span></td>' +
+      '</tr>';
+  }
+
+  return '<div class="iter-select"><select onchange="changeFaIter(\\''+id+'\\', parseInt(this.value))">' + options + '</select></div>' +
+    '<div class="table-scroll"><table class="fa-table"><thead><tr>' +
+    '<th>Task</th><th>Failure Reason</th><th>Explanation</th><th>Consistency</th><th>Fix Category</th>' +
+    '</tr></thead><tbody>' + rows + '</tbody></table></div>';
+}
+
+function changeFaIter(id, iter) {
+  selectedFaIter[id] = iter;
+  if (lastData) renderAll(lastData);
+}
+
 function renderRun(run, idx) {
-  const id = `run-${idx}`;
+  const id = 'run-' + idx;
   const isMin = minimizedRuns.has(run.run_dir);
+  const completedIters = run.iterations.filter(i => i.status === 'completed' && (i.train_small_reward != null || i.train_full_reward != null)).length;
   const pctDone = run.max_iterations > 0
-    ? ((run.iterations.length - 1) / run.max_iterations * 100).toFixed(0)
+    ? (completedIters / run.max_iterations * 100).toFixed(0)
     : 0;
-  const completedIters = run.iterations.filter(i => i.status === 'completed').length;
 
   let benchHtml = '';
   if (run.current_stage === 'benchmarking' && run.benchmark_progress) {
     const bp = run.benchmark_progress;
-    benchHtml = `<div class="benchmark-progress">${bp.completed}/${bp.total} tasks completed</div>`;
+    benchHtml = '<div class="benchmark-progress">' + bp.completed + '/' + bp.total + ' trials</div>';
   }
+  const phaseHtml = run.current_stage === 'benchmarking' ? renderPhaseProgress(run) : '';
 
   let iterTableRows = '';
   for (const it of run.iterations) {
     const parent = it.parent_iteration != null ? it.parent_iteration : 'root';
-    iterTableRows += `<tr><td class="num">${it.iteration}</td><td><span class="stage-badge ${stageClass(it.status)}">${it.status}</span></td><td class="num ${cellClass(it.completion_rate, true)}">${pct(it.completion_rate)}</td><td class="num ${cellClass(it.failure_rate, false)}">${pct(it.failure_rate)}</td><td class="num ${cellClass(it.timeout_or_turn_limit_rate, false)}">${pct(it.timeout_or_turn_limit_rate)}</td><td class="num ${cellClass(it.other_error_rate, false)}">${pct(it.other_error_rate)}</td>${timingCell(it.plan_time_sec, it.plan_start_epoch)}${timingCell(it.impl_time_sec, it.impl_start_epoch)}${timingCell(it.benchmark_time_sec, it.benchmark_start_epoch)}<td class="num">${parent}</td></tr>`;
+    const promotedBadge = it.iteration === 0 ? '<span class="promoted-badge promoted-yes">ROOT</span>'
+      : it.promoted ? '<span class="promoted-badge promoted-yes">YES</span>'
+      : '<span class="promoted-badge promoted-no">NO</span>';
+    const faCount = it.n_failure_analyses || 0;
+    const faSuffix = faCount > 0 ? ' <span style="font-size:9px;opacity:0.7" title="' + faCount + ' failure analyses">' + faCount + 'fa</span>' : '';
+    iterTableRows += '<tr>' +
+      '<td class="num">' + it.iteration + '</td>' +
+      '<td><span class="stage-badge ' + stageClass(it.status) + '">' + it.status + '</span>' + faSuffix + '</td>' +
+      '<td class="num ' + rewardClass(it.train_small_reward) + '">' + fmtReward(it.train_small_reward) + '</td>' +
+      '<td class="num ' + rewardClass(it.train_full_reward) + '">' + fmtReward(it.train_full_reward) + '</td>' +
+      '<td>' + promotedBadge + '</td>' +
+      '<td class="num ' + cellClass(it.failure_rate, false) + '">' + pct(it.failure_rate) + '</td>' +
+      '<td class="num ' + cellClass(it.timeout_or_turn_limit_rate, false) + '">' + pct(it.timeout_or_turn_limit_rate) + '</td>' +
+      '<td class="num ' + cellClass(it.other_error_rate, false) + '">' + pct(it.other_error_rate) + '</td>' +
+      timingCell(it.plan_time_sec, it.plan_start_epoch) +
+      timingCell(it.impl_time_sec, it.impl_start_epoch) +
+      timingCell(it.benchmark_time_sec, it.benchmark_start_epoch) +
+      '<td class="num">' + parent + '</td>' +
+      '</tr>';
   }
 
   const tasks = Object.entries(run.task_aggregate || {}).sort((a,b) => a[0].localeCompare(b[0]));
   let taskRows = '';
   for (const [name, m] of tasks) {
-    taskRows += `<tr><td>${name}</td><td class="num ${cellClass(m.completion_rate, true)}">${pct(m.completion_rate)}</td><td class="num ${cellClass(m.failure_rate, false)}">${pct(m.failure_rate)}</td><td class="num ${cellClass(m.timeout_or_turn_limit_rate, false)}">${pct(m.timeout_or_turn_limit_rate)}</td><td class="num ${cellClass(m.timeout_rate, false)}">${pct(m.timeout_rate)}</td><td class="num ${cellClass(m.max_iters_rate, false)}">${pct(m.max_iters_rate)}</td><td class="num ${cellClass(m.other_error_rate, false)}">${pct(m.other_error_rate)}</td><td class="num">${m.n_iterations}</td></tr>`;
+    const inSmall = (run.train_small_tasks || []).includes(name);
+    const splitBadge = inSmall ? '<span style="color:var(--accent);font-size:10px"> S</span>' : '';
+    taskRows += '<tr><td>' + name + splitBadge + '</td>' +
+      '<td class="num ' + cellClass(m.completion_rate, true) + '">' + pct(m.completion_rate) + '</td>' +
+      '<td class="num ' + cellClass(m.failure_rate, false) + '">' + pct(m.failure_rate) + '</td>' +
+      '<td class="num ' + cellClass(m.timeout_or_turn_limit_rate, false) + '">' + pct(m.timeout_or_turn_limit_rate) + '</td>' +
+      '<td class="num ' + cellClass(m.timeout_rate, false) + '">' + pct(m.timeout_rate) + '</td>' +
+      '<td class="num ' + cellClass(m.max_iters_rate, false) + '">' + pct(m.max_iters_rate) + '</td>' +
+      '<td class="num ' + cellClass(m.other_error_rate, false) + '">' + pct(m.other_error_rate) + '</td>' +
+      '<td class="num">' + m.n_iterations + '</td></tr>';
   }
 
-  return `
-  <div class="run-card${isMin ? ' minimized' : ''}" id="${id}" data-run-dir="${run.run_dir}">
-    <div class="run-header">
-      <div style="display:flex;align-items:center;gap:10px">
-        <button class="minimize-btn" onclick="toggleMinimize('${run.run_dir}')">${isMin ? '+' : '−'}</button>
-        <div>
-          <div class="run-name">${run.name}</div>
-          <div class="run-meta">
-            <span>Model: ${run.model_key}</span>
-            <span>Planner: ${run.cursor_model}</span>
-            <span>Baseline: ${run.baseline}</span>
-          </div>
-        </div>
-      </div>
-      <div style="text-align:right">
-        <div class="best-reward-label">Best Completion</div>
-        <div class="best-reward">${run.best_completion != null ? pct(run.best_completion) : '-'}</div>
-      </div>
-    </div>
+  const nSamples = run.n_samples || 1;
+  const fiModel = run.failure_investigation_model || '';
+  const metaExtra = nSamples > 1 ? '<span>N=' + nSamples + '</span>' : '';
+  const metaFi = fiModel ? '<span>FI: ' + fiModel + '</span>' : '';
 
-    <div class="run-body">
-    <div class="progress-section">
-      <div style="display:flex;align-items:center;gap:12px;margin-bottom:4px">
-        <span class="stage-badge ${stageClass(run.current_stage)}">${run.current_stage}</span>
-        ${benchHtml}
-      </div>
-      <div class="progress-bar-container">
-        <div class="progress-bar-fill" style="width:${pctDone}%"></div>
-      </div>
-      <div class="progress-text">
-        <span>Iteration ${run.iterations.length - 1} of ${run.max_iterations}</span>
-        <span>${completedIters} completed</span>
-      </div>
-    </div>
+  return '' +
+  '<div class="run-card' + (isMin ? ' minimized' : '') + '" id="' + id + '" data-run-dir="' + run.run_dir + '">' +
+    '<div class="run-header">' +
+      '<div style="display:flex;align-items:center;gap:10px">' +
+        '<button class="minimize-btn" onclick="toggleMinimize(\\''+run.run_dir+'\\')">'+  (isMin ? '+' : '\\u2212') + '</button>' +
+        '<div>' +
+          '<div class="run-name">' + run.name + '</div>' +
+          '<div class="run-meta">' +
+            '<span>Model: ' + run.model_key + '</span>' +
+            '<span>Planner: ' + run.cursor_model + '</span>' +
+            '<span>Baseline: ' + run.baseline + '</span>' +
+            metaExtra + metaFi +
+          '</div>' +
+        '</div>' +
+      '</div>' +
+      '<div style="text-align:right">' +
+        '<div class="best-reward-label">Best Reward</div>' +
+        '<div class="best-reward">' + (run.best_completion != null ? fmtReward(run.best_completion) : '-') + '</div>' +
+      '</div>' +
+    '</div>' +
 
-    <div class="tabs">
-      <button class="tab active" onclick="switchTab('${id}','iterations')">Iterations</button>
-      <button class="tab" onclick="switchTab('${id}','tasks')">Tasks</button>
-      <button class="tab" onclick="switchTab('${id}','chart')">Chart</button>
-    </div>
+    '<div class="run-body">' +
+    '<div class="progress-section">' +
+      '<div style="display:flex;align-items:center;gap:12px;margin-bottom:4px">' +
+        '<span class="stage-badge ' + stageClass(run.current_stage) + '">' + run.current_stage + '</span>' +
+        benchHtml +
+      '</div>' +
+      phaseHtml +
+      '<div class="progress-bar-container">' +
+        '<div class="progress-bar-fill" style="width:' + pctDone + '%"></div>' +
+      '</div>' +
+      '<div class="progress-text">' +
+        '<span>Iteration ' + run.current_iteration + ' of ' + run.max_iterations + '</span>' +
+        '<span>' + completedIters + ' completed</span>' +
+      '</div>' +
+    '</div>' +
 
-    <div class="tab-content active" data-tab="iterations" data-run="${id}">
-      <div class="section-title">Iteration History</div>
-      <div class="table-scroll">
-        <table>
-          <thead><tr>
-            <th class="num">Iter</th><th>Status</th><th class="num">Completion</th>
-            <th class="num">Failure</th><th class="num">Timeout / Turn Limit</th><th class="num">Other Error</th><th class="num">Plan Time</th><th class="num">Impl Time</th><th class="num">Bench Time</th><th class="num">Parent</th>
-          </tr></thead>
-          <tbody>${iterTableRows}</tbody>
-        </table>
-      </div>
-    </div>
+    '<div class="tabs">' +
+      '<button class="tab active" onclick="switchTab(\\''+id+'\\',\\'iterations\\')">Iterations</button>' +
+      '<button class="tab" onclick="switchTab(\\''+id+'\\',\\'tasks\\')">Tasks</button>' +
+      '<button class="tab" onclick="switchTab(\\''+id+'\\',\\'failures\\')">Failure Analysis</button>' +
+      '<button class="tab" onclick="switchTab(\\''+id+'\\',\\'chart\\')">Chart</button>' +
+    '</div>' +
 
-    <div class="tab-content" data-tab="tasks" data-run="${id}">
-      <div class="section-title">Per-Task Aggregate</div>
-      <div class="table-scroll">
-        <table>
-          <thead><tr>
-            <th>Task</th><th class="num">Completion</th><th class="num">Failure</th><th class="num">Timeout / Turn Limit</th>
-            <th class="num">Timeout</th><th class="num">Max Iters</th><th class="num">Other Error</th><th class="num">Iterations</th>
-          </tr></thead>
-          <tbody>${taskRows}</tbody>
-        </table>
-      </div>
-    </div>
+    '<div class="tab-content active" data-tab="iterations" data-run="' + id + '">' +
+      '<div class="section-title">Iteration History</div>' +
+      '<div class="table-scroll">' +
+        '<table>' +
+          '<thead><tr>' +
+            '<th class="num">Iter</th><th>Status</th>' +
+            '<th class="num">Small</th><th class="num">Full</th><th>Promoted</th>' +
+            '<th class="num">Failure</th><th class="num">Timeout/TL</th><th class="num">Other Err</th>' +
+            '<th class="num">Plan</th><th class="num">Impl</th><th class="num">Bench</th><th class="num">Parent</th>' +
+          '</tr></thead>' +
+          '<tbody>' + iterTableRows + '</tbody>' +
+        '</table>' +
+      '</div>' +
+    '</div>' +
 
-    <div class="tab-content" data-tab="chart" data-run="${id}">
-      <div class="section-title">Metrics Over Iterations</div>
-      <div class="chart-controls">
-        <select onchange="changeMetric('${id}', this.value)" id="metric-select-${id}">
-          ${Object.entries(METRIC_LABELS).map(([k,v]) =>
-            `<option value="${k}" ${k === 'completion_rate' ? 'selected' : ''}>${v}</option>`
-          ).join('')}
-        </select>
-      </div>
-      <div class="chart-container">
-        <canvas id="chart-${id}"></canvas>
-      </div>
-    </div>
-    </div>
-  </div>`;
-}
+    '<div class="tab-content" data-tab="tasks" data-run="' + id + '">' +
+      '<div class="section-title">Per-Task Aggregate <span style="font-size:11px;color:var(--accent)">S = train/small</span></div>' +
+      '<div class="table-scroll">' +
+        '<table>' +
+          '<thead><tr>' +
+            '<th>Task</th><th class="num">Completion</th><th class="num">Failure</th><th class="num">Timeout / TL</th>' +
+            '<th class="num">Timeout</th><th class="num">Max Iters</th><th class="num">Other Error</th><th class="num">Iters</th>' +
+          '</tr></thead>' +
+          '<tbody>' + taskRows + '</tbody>' +
+        '</table>' +
+      '</div>' +
+    '</div>' +
 
-function truncate(s, n) {
-  return s.length > n ? s.slice(0, n) + '...' : s;
+    '<div class="tab-content" data-tab="failures" data-run="' + id + '">' +
+      '<div class="section-title">Failure Analysis Reports</div>' +
+      renderFailureAnalyses(run, id) +
+    '</div>' +
+
+    '<div class="tab-content" data-tab="chart" data-run="' + id + '">' +
+      '<div class="section-title">Metrics Over Iterations</div>' +
+      '<div class="chart-controls">' +
+        '<select onchange="changeMetric(\\''+id+'\\', this.value)" id="metric-select-' + id + '">' +
+          Object.entries(METRIC_LABELS).map(function(e) {
+            return '<option value="' + e[0] + '"' + (e[0] === 'train_small_reward' ? ' selected' : '') + '>' + e[1] + '</option>';
+          }).join('') +
+        '</select>' +
+      '</div>' +
+      '<div class="chart-container">' +
+        '<canvas id="chart-' + id + '"></canvas>' +
+      '</div>' +
+    '</div>' +
+    '</div>' +
+  '</div>';
 }
 
 function switchTab(runId, tabName) {
@@ -950,7 +1281,7 @@ function switchTab(runId, tabName) {
 }
 
 function buildChart(runId, run, metric) {
-  const canvas = document.getElementById(`chart-${runId}`);
+  const canvas = document.getElementById('chart-' + runId);
   if (!canvas) return;
 
   if (charts[runId]) {
@@ -958,16 +1289,22 @@ function buildChart(runId, run, metric) {
     delete charts[runId];
   }
 
-  const iters = run.iterations.filter(i => i.status === 'completed' && i[metric] != null);
+  const isRewardMetric = metric === 'train_small_reward' || metric === 'train_full_reward' || metric === 'reward_mean';
+  const iters = run.iterations.filter(function(i) {
+    return i.status === 'completed' && i[metric] != null;
+  });
+
+  const color = METRIC_COLORS[metric] || '#8b949e';
+  const label = METRIC_LABELS[metric] || metric;
 
   charts[runId] = new Chart(canvas, {
     type: 'scatter',
     data: {
       datasets: [{
-        label: METRIC_LABELS[metric],
-        data: iters.map(i => ({x: i.iteration, y: i[metric]})),
-        backgroundColor: METRIC_COLORS[metric] + '99',
-        borderColor: METRIC_COLORS[metric],
+        label: label,
+        data: iters.map(function(i) { return {x: i.iteration, y: i[metric]}; }),
+        backgroundColor: color + '99',
+        borderColor: color,
         pointRadius: 6,
         pointHoverRadius: 8,
         showLine: true,
@@ -982,7 +1319,10 @@ function buildChart(runId, run, metric) {
         legend: {display: false},
         tooltip: {
           callbacks: {
-            label: (pt) => `Iter ${pt.raw.x}: ${(pt.raw.y * 100).toFixed(1)}%`
+            label: function(pt) {
+              if (isRewardMetric) return 'Iter ' + pt.raw.x + ': ' + pt.raw.y.toFixed(3);
+              return 'Iter ' + pt.raw.x + ': ' + (pt.raw.y * 100).toFixed(1) + '%';
+            }
           }
         }
       },
@@ -993,8 +1333,14 @@ function buildChart(runId, run, metric) {
           grid: {color: '#30363d44'},
         },
         y: {
-          title: {display: true, text: METRIC_LABELS[metric], color: '#8b949e'},
-          ticks: {color: '#8b949e', callback: v => (v*100).toFixed(0)+'%'},
+          title: {display: true, text: label, color: '#8b949e'},
+          ticks: {
+            color: '#8b949e',
+            callback: function(v) {
+              if (isRewardMetric) return v.toFixed(2);
+              return (v*100).toFixed(0)+'%';
+            }
+          },
           grid: {color: '#30363d44'},
           min: 0, max: 1,
         }
@@ -1022,31 +1368,31 @@ function renderAll(runs) {
     return;
   }
 
-  const sorted = [...runs].sort((a, b) => {
+  const sorted = runs.slice().sort(function(a, b) {
     const aMin = minimizedRuns.has(a.run_dir) ? 1 : 0;
     const bMin = minimizedRuns.has(b.run_dir) ? 1 : 0;
     return aMin - bMin;
   });
 
   const activeTabs = {};
-  document.querySelectorAll('.run-card').forEach(card => {
+  document.querySelectorAll('.run-card').forEach(function(card) {
     const activeContent = card.querySelector('.tab-content.active');
     if (activeContent) activeTabs[card.dataset.runDir] = activeContent.dataset.tab;
   });
 
   destroyAllCharts();
-  container.innerHTML = sorted.map((r, i) => renderRun(r, i)).join('');
+  container.innerHTML = sorted.map(function(r, i) { return renderRun(r, i); }).join('');
 
-  for (const card of document.querySelectorAll('.run-card')) {
+  document.querySelectorAll('.run-card').forEach(function(card) {
     const dir = card.dataset.runDir;
     if (dir && activeTabs[dir]) switchTab(card.id, activeTabs[dir]);
-  }
+  });
 
-  sorted.forEach((run, i) => {
+  sorted.forEach(function(run, i) {
     if (minimizedRuns.has(run.run_dir)) return;
-    const id = `run-${i}`;
-    const metric = currentMetrics[id] || 'completion_rate';
-    const select = document.getElementById(`metric-select-${id}`);
+    var id = 'run-' + i;
+    var metric = currentMetrics[id] || 'train_small_reward';
+    var select = document.getElementById('metric-select-' + id);
     if (select) select.value = metric;
     buildChart(id, run, metric);
   });
@@ -1064,7 +1410,7 @@ async function fetchRuns() {
     lastData = runs;
     if (!initializedMinimized) {
       initializedMinimized = true;
-      runs.forEach(r => minimizedRuns.add(r.run_dir));
+      runs.forEach(function(r) { minimizedRuns.add(r.run_dir); });
     }
     renderAll(runs);
     document.getElementById('last-updated').textContent =

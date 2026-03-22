@@ -22,6 +22,20 @@ class BenchmarkSummary:
     passed_trials: list[str] = field(default_factory=list)
     failed_trials: list[str] = field(default_factory=list)
     exception_types: dict[str, list[str]] = field(default_factory=dict)
+    train_small_reward_mean: float | None = None
+    train_small_n_samples: int = 0
+    train_full_reward_mean: float | None = None
+    train_full_n_samples: int = 0
+    sample_results: list["BenchmarkSummary"] = field(default_factory=list)
+
+
+@dataclass
+class FailureAnalysis:
+    task_name: str
+    general_failure_reason: str
+    task_specific_explanation: str
+    consistency: str
+    suggested_fix_category: str
 
 
 @dataclass
@@ -75,6 +89,7 @@ class AgentState:
     planner_prompt_artifact_path: str | None = None
     planner_output_artifact_path: str | None = None
     planner_summary: str | None = None
+    failure_analyses: list[FailureAnalysis] = field(default_factory=list)
     created_at_utc: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
 
     def save(self) -> None:
@@ -101,9 +116,7 @@ class AgentState:
     def from_dict(cls, *, data: dict[str, Any]) -> "AgentState":
         raw_result = data.get("result")
         raw_official_benchmark = data.get("official_benchmark")
-        result = (
-            BenchmarkSummary(**raw_result) if isinstance(raw_result, dict) else None
-        )
+        result = _parse_benchmark_summary(raw=raw_result)
         official_benchmark = None
         if isinstance(raw_official_benchmark, dict):
             official_benchmark = OfficialBenchmarkRun(**raw_official_benchmark)
@@ -132,6 +145,9 @@ class AgentState:
                 value=data.get("planner_output_artifact_path")
             ),
             planner_summary=_optional_text(value=data.get("planner_summary")),
+            failure_analyses=_parse_failure_analyses(
+                raw=data.get("failure_analyses"),
+            ),
             created_at_utc=str(
                 data.get("created_at_utc", datetime.now(UTC).isoformat())
             ),
@@ -199,3 +215,55 @@ def _optional_int(*, value: object) -> int | None:
             return None
         return int(text)
     return None
+
+
+def _parse_benchmark_summary(*, raw: object) -> BenchmarkSummary | None:
+    if not isinstance(raw, dict):
+        return None
+    nested = raw.get("sample_results", [])
+    parsed_samples: list[BenchmarkSummary] = []
+    if isinstance(nested, list):
+        for item in nested:
+            child = _parse_benchmark_summary(raw=item)
+            if child is not None:
+                parsed_samples.append(child)
+
+    return BenchmarkSummary(
+        created_at_utc=str(raw.get("created_at_utc", "")),
+        aggregate_result_path=str(raw.get("aggregate_result_path", "")),
+        harbor_job_dir=str(raw.get("harbor_job_dir", "")),
+        reward_mean=raw.get("reward_mean"),
+        n_trials=int(raw.get("n_trials", 0)),
+        pass_count=int(raw.get("pass_count", 0)),
+        failure_count=int(raw.get("failure_count", 0)),
+        error_count=int(raw.get("error_count", 0)),
+        passed_trials=raw.get("passed_trials", []),
+        failed_trials=raw.get("failed_trials", []),
+        exception_types=raw.get("exception_types", {}),
+        train_small_reward_mean=raw.get("train_small_reward_mean"),
+        train_small_n_samples=int(raw.get("train_small_n_samples", 0)),
+        train_full_reward_mean=raw.get("train_full_reward_mean"),
+        train_full_n_samples=int(raw.get("train_full_n_samples", 0)),
+        sample_results=parsed_samples,
+    )
+
+
+def _parse_failure_analyses(*, raw: object) -> list[FailureAnalysis]:
+    if not isinstance(raw, list):
+        return []
+    analyses: list[FailureAnalysis] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        analyses.append(
+            FailureAnalysis(
+                task_name=str(item.get("task_name", "")),
+                general_failure_reason=str(item.get("general_failure_reason", "")),
+                task_specific_explanation=str(
+                    item.get("task_specific_explanation", "")
+                ),
+                consistency=str(item.get("consistency", "")),
+                suggested_fix_category=str(item.get("suggested_fix_category", "")),
+            )
+        )
+    return analyses

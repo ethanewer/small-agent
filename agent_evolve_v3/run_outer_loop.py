@@ -11,23 +11,32 @@ import sys
 import time
 
 from agent_evolve_v3.config import RunSpec, load_runs_config
-from agent_evolve_v3.prompts import load_implementation_prompt, load_planning_prompt
+from agent_evolve_v3.prompts import (
+    load_failure_investigation_prompt,
+    load_implementation_prompt,
+    load_planning_prompt,
+)
 from agent_evolve_v3.services.benchmark import (
-    load_workspace_benchmark_result,
+    merge_sample_results,
     prepull_task_images,
-    run_workspace_benchmark,
+    run_n_sample_benchmarks,
 )
 from agent_evolve_v3.services.runtime import (
     record_completed_process,
+    run_failure_investigation_agent,
     run_implementation_agent,
     run_planner_agent,
     run_workspace_validation,
 )
 from agent_evolve_v3.state import AgentState, PlanningOutput
+from agent_evolve_v3.state.types import BenchmarkSummary, FailureAnalysis
 from agent_evolve_v3.state.manager import StateManager
 from agent_evolve_v3.state.planner_context import (
     PLANNER_NOTES_FILE_NAME,
+    build_task_pass_rate_table,
     classify_state_status,
+    compute_noise_stats,
+    format_failure_analyses,
     latest_iteration_header,
     latest_iteration_section,
     latest_run_artifact_map,
@@ -89,6 +98,13 @@ def main(argv: list[str]) -> int:
             benchmark_tasks=tuple(
                 str(task_name) for task_name in manifest.get("benchmark_tasks", [])
             ),
+            train_small_tasks=tuple(
+                str(task_name) for task_name in manifest.get("train_small_tasks", [])
+            ),
+            n_samples=int(manifest.get("n_samples", 2)),
+            failure_investigation_model=str(
+                manifest.get("failure_investigation_model", "gemini-3-flash")
+            ),
         )
         _log(f"Resuming run '{run_spec.name}' from {run_root.name}")
     else:
@@ -103,13 +119,18 @@ def main(argv: list[str]) -> int:
                 iterations=max(1, args.iterations),
                 random_seed=run_spec.random_seed,
                 benchmark_tasks=run_spec.benchmark_tasks,
+                train_small_tasks=run_spec.train_small_tasks,
+                n_samples=run_spec.n_samples,
+                failure_investigation_model=run_spec.failure_investigation_model,
             )
         run_root = _create_run_root(outputs_root=outputs_root, run_spec=run_spec)
         _log(f"Starting new run '{run_spec.name}' at {run_root.name}")
 
     _log(
         f"Config: model={run_spec.model_key}, cursor={run_spec.cursor_model}, "
-        f"iterations={run_spec.iterations}, tasks={len(run_spec.benchmark_tasks)}"
+        f"iterations={run_spec.iterations}, tasks={len(run_spec.benchmark_tasks)}, "
+        f"train_small={len(run_spec.train_small_tasks)}, n_samples={run_spec.n_samples}, "
+        f"failure_inv_model={run_spec.failure_investigation_model}"
     )
 
     manager = StateManager(
@@ -141,7 +162,7 @@ def main(argv: list[str]) -> int:
             manager=manager,
             run_root=run_root,
             state=root_state,
-            model_key=run_spec.model_key,
+            run_spec=run_spec,
             seed_refiner_outputs=True,
         )
     except SystemExit as exc:
@@ -151,6 +172,21 @@ def main(argv: list[str]) -> int:
             state=root_state,
         )
         return _system_exit_code(exc=exc)
+
+    root_result = root_state.result
+    if root_result and root_result.sample_results and not root_state.failure_analyses:
+        _log("Running failure investigations for root state...")
+        t0 = time.monotonic()
+        root_state.failure_analyses = _run_failure_investigations(
+            state=root_state,
+            run_spec=run_spec,
+            sample_summaries=root_result.sample_results,
+        )
+        _log(
+            f"Failure investigation done ({_format_elapsed(t0)}): "
+            f"{len(root_state.failure_analyses)} reports"
+        )
+
     root_state.save()
     _write_scoreboard(run_root=run_root, states=manager.states)
 
@@ -187,6 +223,7 @@ def main(argv: list[str]) -> int:
             benchmark_model_key=run_spec.model_key,
             candidate_state_count=len(manager.completed_states),
             iteration_count=len(states),
+            completed_states=manager.completed_states,
         )
         planner_prompt_path = artifacts_dir / "planner_prompt.txt"
         planner_prompt_path.write_text(planner_prompt_text, encoding="utf-8")
@@ -321,7 +358,7 @@ def main(argv: list[str]) -> int:
                 manager=manager,
                 run_root=run_root,
                 state=state,
-                model_key=run_spec.model_key,
+                run_spec=run_spec,
                 seed_refiner_outputs=False,
             )
         except SystemExit as exc:
@@ -342,6 +379,19 @@ def main(argv: list[str]) -> int:
             f"Benchmark done ({_format_elapsed(t0)}): "
             f"reward={reward}, passed={passed}, failed={failed}, errors={errors}"
         )
+
+        if result and result.sample_results:
+            _log("Running failure investigations...")
+            t0 = time.monotonic()
+            state.failure_analyses = _run_failure_investigations(
+                state=state,
+                run_spec=run_spec,
+                sample_summaries=result.sample_results,
+            )
+            _log(
+                f"Failure investigation done ({_format_elapsed(t0)}): "
+                f"{len(state.failure_analyses)} reports"
+            )
 
         state.save()
         _write_scoreboard(run_root=run_root, states=manager.states)
@@ -373,6 +423,9 @@ def _write_manifest(*, run_root: Path, run_spec: RunSpec) -> None:
         "iterations": run_spec.iterations,
         "random_seed": run_spec.random_seed,
         "benchmark_tasks": list(run_spec.benchmark_tasks),
+        "train_small_tasks": list(run_spec.train_small_tasks),
+        "n_samples": run_spec.n_samples,
+        "failure_investigation_model": run_spec.failure_investigation_model,
     }
     (run_root / "run_manifest.json").write_text(
         json.dumps(payload, indent=2, ensure_ascii=True) + "\n",
@@ -385,73 +438,414 @@ def _ensure_state_evaluated(
     manager: StateManager,
     run_root: Path,
     state: AgentState,
-    model_key: str,
+    run_spec: RunSpec,
     seed_refiner_outputs: bool,
 ) -> None:
     if state.result is None or state.official_benchmark is None:
-        _benchmark_state(
+        _benchmark_state_two_tier(
             run_root=run_root,
             state=state,
-            model_key=model_key,
+            run_spec=run_spec,
+            completed_states=manager.completed_states,
         )
     if seed_refiner_outputs:
         manager.seed_refiner_outputs(state=state)
 
 
-def _benchmark_state(
+def _benchmark_state_two_tier(
     *,
     run_root: Path,
     state: AgentState,
-    model_key: str,
+    run_spec: RunSpec,
+    completed_states: list[AgentState],
 ) -> None:
     iteration_artifacts = run_root / "artifacts" / f"iteration-{state.iteration:04d}"
     iteration_artifacts.mkdir(parents=True, exist_ok=True)
-    benchmark_artifacts_dir = iteration_artifacts / "official_benchmark"
-    benchmark_result_path = iteration_artifacts / "benchmark_result.json"
-    benchmark_completed = run_workspace_benchmark(
+
+    is_root = state.iteration == 0
+    all_tasks = list(run_spec.benchmark_tasks)
+    small_tasks = list(run_spec.train_small_tasks)
+    remaining_tasks = [t for t in all_tasks if t not in set(small_tasks)]
+    n_samples = run_spec.n_samples
+
+    if is_root:
+        _log("  Running train/full benchmark (iteration 0 baseline)...")
+        _run_full_benchmark(
+            state=state,
+            iteration_artifacts=iteration_artifacts,
+            run_spec=run_spec,
+            all_tasks=all_tasks,
+            small_tasks=small_tasks,
+            n_samples=n_samples,
+        )
+    else:
+        _log(
+            f"  Running train/small benchmark ({len(small_tasks)} tasks, N={n_samples})..."
+        )
+        small_results = run_n_sample_benchmarks(
+            workspace_path=Path(state.refiner_workspace_path),
+            model_key=run_spec.model_key,
+            task_names=small_tasks,
+            artifacts_base_dir=iteration_artifacts / "train_small",
+            n_samples=n_samples,
+        )
+        small_summaries = [s for _, s in small_results]
+        small_reward, _sample_list = merge_sample_results(
+            sample_summaries=small_summaries,
+            n_tasks=len(small_tasks),
+        )
+        _log(f"  train/small reward: {small_reward:.3f}")
+
+        last_official_run = small_results[-1][0] if small_results else None
+
+        best_small_reward = _best_train_small_reward(states=completed_states)
+        noise_margin = 0.08
+        promoted = small_reward >= best_small_reward - noise_margin
+        _log(
+            f"  Promotion check: {small_reward:.3f} >= "
+            f"{best_small_reward:.3f} - {noise_margin} = "
+            f"{best_small_reward - noise_margin:.3f} -> "
+            f"{'PROMOTED' if promoted else 'not promoted'}"
+        )
+
+        if promoted:
+            _log(f"  Running remaining {len(remaining_tasks)} tasks (N={n_samples})...")
+            remaining_results = run_n_sample_benchmarks(
+                workspace_path=Path(state.refiner_workspace_path),
+                model_key=run_spec.model_key,
+                task_names=remaining_tasks,
+                artifacts_base_dir=iteration_artifacts / "train_remaining",
+                n_samples=n_samples,
+            )
+            remaining_summaries = [s for _, s in remaining_results]
+            total_small_passes = sum(s.pass_count for s in small_summaries)
+            total_remaining_passes = sum(s.pass_count for s in remaining_summaries)
+            full_reward = (total_small_passes + total_remaining_passes) / (
+                n_samples * len(all_tasks)
+            )
+            _log(f"  train/full reward: {full_reward:.3f}")
+
+            all_passed = []
+            all_failed = []
+            for s in small_summaries + remaining_summaries:
+                all_passed.extend(s.passed_trials)
+                all_failed.extend(s.failed_trials)
+
+            if remaining_results:
+                last_official_run = remaining_results[-1][0]
+
+            state.result = BenchmarkSummary(
+                created_at_utc=last_official_run.created_at_utc
+                if last_official_run
+                else "",
+                aggregate_result_path=last_official_run.aggregate_result_path
+                if last_official_run
+                else "",
+                harbor_job_dir=last_official_run.harbor_job_dir
+                if last_official_run
+                else "",
+                reward_mean=full_reward,
+                n_trials=len(all_tasks) * n_samples,
+                pass_count=total_small_passes + total_remaining_passes,
+                failure_count=sum(
+                    s.failure_count for s in small_summaries + remaining_summaries
+                ),
+                error_count=sum(
+                    s.error_count for s in small_summaries + remaining_summaries
+                ),
+                passed_trials=all_passed,
+                failed_trials=all_failed,
+                train_small_reward_mean=small_reward,
+                train_small_n_samples=n_samples,
+                train_full_reward_mean=full_reward,
+                train_full_n_samples=n_samples,
+                sample_results=small_summaries + remaining_summaries,
+            )
+        else:
+            all_passed = []
+            all_failed = []
+            for s in small_summaries:
+                all_passed.extend(s.passed_trials)
+                all_failed.extend(s.failed_trials)
+
+            state.result = BenchmarkSummary(
+                created_at_utc=last_official_run.created_at_utc
+                if last_official_run
+                else "",
+                aggregate_result_path=last_official_run.aggregate_result_path
+                if last_official_run
+                else "",
+                harbor_job_dir=last_official_run.harbor_job_dir
+                if last_official_run
+                else "",
+                reward_mean=small_reward,
+                n_trials=len(small_tasks) * n_samples,
+                pass_count=sum(s.pass_count for s in small_summaries),
+                failure_count=sum(s.failure_count for s in small_summaries),
+                error_count=sum(s.error_count for s in small_summaries),
+                passed_trials=all_passed,
+                failed_trials=all_failed,
+                train_small_reward_mean=small_reward,
+                train_small_n_samples=n_samples,
+                sample_results=small_summaries,
+            )
+
+        if last_official_run:
+            state.official_benchmark = last_official_run
+
+
+def _run_full_benchmark(
+    *,
+    state: AgentState,
+    iteration_artifacts: Path,
+    run_spec: RunSpec,
+    all_tasks: list[str],
+    small_tasks: list[str],
+    n_samples: int,
+) -> None:
+    full_results = run_n_sample_benchmarks(
         workspace_path=Path(state.refiner_workspace_path),
-        model_key=model_key,
-        result_json_out=benchmark_result_path,
-        record_visible=False,
-        request_label="official",
-        artifacts_dir=benchmark_artifacts_dir,
+        model_key=run_spec.model_key,
+        task_names=all_tasks,
+        artifacts_base_dir=iteration_artifacts / "train_full",
+        n_samples=n_samples,
     )
-    record_completed_process(
-        output_path=iteration_artifacts / "benchmark_step.json",
-        completed=benchmark_completed,
+    full_summaries = [s for _, s in full_results]
+    full_reward, _ = merge_sample_results(
+        sample_summaries=full_summaries,
+        n_tasks=len(all_tasks),
     )
-    if benchmark_completed.returncode != 0:
-        print(benchmark_completed.stdout)
-        print(benchmark_completed.stderr, file=sys.stderr)
-        raise SystemExit(benchmark_completed.returncode)
-    official_benchmark, benchmark_summary = load_workspace_benchmark_result(
-        result_json_path=benchmark_result_path,
+
+    small_task_set = set(small_tasks)
+    small_passes = 0
+    for s in full_summaries:
+        for trial_id in s.passed_trials:
+            task_name = trial_id.split("__")[0]
+            if task_name in small_task_set:
+                small_passes += 1
+
+    small_reward = small_passes / (n_samples * len(small_tasks)) if small_tasks else 0.0
+    _log(
+        f"  train/full reward: {full_reward:.3f}, train/small reward: {small_reward:.3f}"
     )
-    state.official_benchmark = official_benchmark
-    state.result = benchmark_summary
+
+    all_passed = []
+    all_failed = []
+    for s in full_summaries:
+        all_passed.extend(s.passed_trials)
+        all_failed.extend(s.failed_trials)
+
+    last_official_run = full_results[-1][0] if full_results else None
+    state.result = BenchmarkSummary(
+        created_at_utc=last_official_run.created_at_utc if last_official_run else "",
+        aggregate_result_path=last_official_run.aggregate_result_path
+        if last_official_run
+        else "",
+        harbor_job_dir=last_official_run.harbor_job_dir if last_official_run else "",
+        reward_mean=full_reward,
+        n_trials=len(all_tasks) * n_samples,
+        pass_count=sum(s.pass_count for s in full_summaries),
+        failure_count=sum(s.failure_count for s in full_summaries),
+        error_count=sum(s.error_count for s in full_summaries),
+        passed_trials=all_passed,
+        failed_trials=all_failed,
+        train_small_reward_mean=small_reward,
+        train_small_n_samples=n_samples,
+        train_full_reward_mean=full_reward,
+        train_full_n_samples=n_samples,
+        sample_results=full_summaries,
+    )
+    if last_official_run:
+        state.official_benchmark = last_official_run
+
+
+def _best_train_small_reward(*, states: list[AgentState]) -> float:
+    best = 0.0
+    for state in states:
+        result = state.result
+        if result is None:
+            continue
+        if result.train_small_reward_mean is not None:
+            best = max(best, result.train_small_reward_mean)
+    return best
+
+
+def _run_failure_investigations(
+    *,
+    state: AgentState,
+    run_spec: RunSpec,
+    sample_summaries: list[BenchmarkSummary],
+) -> list[FailureAnalysis]:
+    if len(sample_summaries) < 2:
+        return []
+
+    s0, s1 = sample_summaries[0], sample_summaries[1]
+
+    all_task_names: set[str] = set()
+    for s in (s0, s1):
+        for trial_id in s.passed_trials + s.failed_trials:
+            all_task_names.add(trial_id.split("__")[0])
+        for trial_ids in s.exception_types.values():
+            for trial_id in trial_ids:
+                all_task_names.add(trial_id.split("__")[0])
+
+    reward_by_task: dict[str, list[float]] = {}
+    for idx, s in enumerate((s0, s1)):
+        passed_tasks = {tid.split("__")[0] for tid in s.passed_trials}
+        for task_name in all_task_names:
+            reward_by_task.setdefault(task_name, [0.0, 0.0])
+            if task_name in passed_tasks:
+                reward_by_task[task_name][idx] = 1.0
+
+    log_by_task: dict[str, list[str]] = {}
+    verifier_by_task: dict[str, list[str]] = {}
+    exception_by_task: dict[str, list[str]] = {}
+    for idx, s in enumerate((s0, s1)):
+        harbor_dir = Path(s.harbor_job_dir)
+        if not harbor_dir.is_dir():
+            continue
+        for trial_dir in harbor_dir.iterdir():
+            if not trial_dir.is_dir() or "__" not in trial_dir.name:
+                continue
+            task_name = trial_dir.name.split("__")[0]
+            log_by_task.setdefault(task_name, ["", ""])
+            verifier_by_task.setdefault(task_name, ["", ""])
+            exception_by_task.setdefault(task_name, ["", ""])
+
+            result_path = trial_dir / "result.json"
+            if result_path.exists():
+                try:
+                    trial_result = json.loads(result_path.read_text(encoding="utf-8"))
+                    agent_result = trial_result.get("agent_result", {})
+                    metadata = (
+                        agent_result.get("metadata", {})
+                        if isinstance(agent_result, dict)
+                        else {}
+                    )
+                    workspace_agent = (
+                        metadata.get("workspace_agent", {})
+                        if isinstance(metadata, dict)
+                        else {}
+                    )
+                    stdout = (
+                        str(workspace_agent.get("stdout", ""))
+                        if isinstance(workspace_agent, dict)
+                        else ""
+                    )
+                    if not stdout and isinstance(metadata, dict):
+                        stdout = str(metadata.get("stdout", ""))
+                    log_by_task[task_name][idx] = (
+                        stdout[-10000:] if len(stdout) > 10000 else stdout
+                    )
+                except (json.JSONDecodeError, OSError):
+                    pass
+
+            exception_path = trial_dir / "exception.txt"
+            if exception_path.exists():
+                try:
+                    exc_content = exception_path.read_text(
+                        encoding="utf-8", errors="replace"
+                    )
+                    exception_by_task[task_name][idx] = (
+                        exc_content[-3000:] if len(exc_content) > 3000 else exc_content
+                    )
+                except OSError:
+                    pass
+
+            verifier_path = trial_dir / "verifier" / "test-stdout.txt"
+            if verifier_path.exists():
+                try:
+                    content = verifier_path.read_text(
+                        encoding="utf-8", errors="replace"
+                    )
+                    verifier_by_task[task_name][idx] = (
+                        content[-5000:] if len(content) > 5000 else content
+                    )
+                except OSError:
+                    pass
+
+    core_agent_path = Path(state.refiner_workspace_path) / "agent" / "core_agent.py"
+    core_agent_source = ""
+    if core_agent_path.exists():
+        try:
+            core_agent_source = core_agent_path.read_text(encoding="utf-8")
+        except OSError:
+            pass
+
+    investigation_template = load_failure_investigation_prompt()
+    analyses: list[FailureAnalysis] = []
+
+    for task_name in sorted(all_task_names):
+        rewards = reward_by_task.get(task_name, [0.0, 0.0])
+        if rewards[0] == 1.0 and rewards[1] == 1.0:
+            continue
+
+        _log(f"    Investigating: {task_name}")
+        logs = log_by_task.get(task_name, ["", ""])
+        verifiers = verifier_by_task.get(task_name, ["", ""])
+        exceptions = exception_by_task.get(task_name, ["", ""])
+
+        prompt_text = investigation_template.format(
+            task_name=task_name,
+            run_0_reward=rewards[0],
+            run_1_reward=rewards[1],
+        )
+
+        result = run_failure_investigation_agent(
+            prompt_text=prompt_text,
+            cursor_model=run_spec.failure_investigation_model,
+            run_0_agent_log=logs[0],
+            run_1_agent_log=logs[1],
+            run_0_verifier=verifiers[0],
+            run_1_verifier=verifiers[1],
+            run_0_exception=exceptions[0],
+            run_1_exception=exceptions[1],
+            core_agent_source=core_agent_source,
+        )
+
+        analyses.append(
+            FailureAnalysis(
+                task_name=result.get("task_name", task_name),
+                general_failure_reason=result.get(
+                    "general_failure_reason", "infrastructure_error"
+                ),
+                task_specific_explanation=result.get("task_specific_explanation", ""),
+                consistency=result.get("consistency", "both_same_failure"),
+                suggested_fix_category=result.get(
+                    "suggested_fix_category", "not_fixable_by_agent"
+                ),
+            )
+        )
+
+    return analyses
 
 
 def _build_scoreboard(*, states: list[AgentState]) -> str:
     lines = [
         "## Scoreboard",
         "",
-        "| Iter | Baseline | Reward | Passed | Failed | Errors | Parent |",
-        "|------|----------|--------|--------|--------|--------|--------|",
+        "| Iter | Baseline | Small (N=2) | Full (N=2) | Passed | Failed | Errors | Parent |",
+        "|------|----------|-------------|------------|--------|--------|--------|--------|",
     ]
     for state in states:
         parent = "root"
         if state.prev_path:
             parent = Path(state.prev_path).stem.replace("iteration-", "")
-        reward = (
-            f"{state.result.reward_mean:.3f}"
-            if state.result and state.result.reward_mean is not None
+        small_reward = (
+            f"{state.result.train_small_reward_mean:.3f}"
+            if state.result and state.result.train_small_reward_mean is not None
+            else "N/A"
+        )
+        full_reward = (
+            f"{state.result.train_full_reward_mean:.3f}"
+            if state.result and state.result.train_full_reward_mean is not None
             else "N/A"
         )
         passed = state.result.pass_count if state.result else "N/A"
         failed = state.result.failure_count if state.result else "N/A"
         errors = state.result.error_count if state.result else "N/A"
         lines.append(
-            f"| {state.iteration} | {state.baseline} | {reward} | {passed} | {failed} | {errors} | {parent} |"
+            f"| {state.iteration} | {state.baseline} | {small_reward} | {full_reward} | {passed} | {failed} | {errors} | {parent} |"
         )
     return "\n".join(lines)
 
@@ -465,11 +859,14 @@ def _select_best_completed_state(*, states: list[AgentState]) -> AgentState | No
     if not completed:
         return None
 
-    def _sort_key(state: AgentState) -> tuple[float, int, int, int, int]:
+    def _sort_key(state: AgentState) -> tuple[float, float, int, int, int, int]:
         assert state.result is not None
         assert state.result.reward_mean is not None
+        full_reward = state.result.train_full_reward_mean or 0.0
+        small_reward = state.result.train_small_reward_mean or state.result.reward_mean
         return (
-            state.result.reward_mean,
+            full_reward,
+            small_reward,
             state.result.pass_count,
             -state.result.error_count,
             -state.result.failure_count,
@@ -498,6 +895,7 @@ def _render_planner_prompt(
     benchmark_model_key: str,
     candidate_state_count: int,
     iteration_count: int,
+    completed_states: list[AgentState],
 ) -> str:
     template = load_planning_prompt()
     latest_result = latest_state.result if latest_state else None
@@ -559,6 +957,13 @@ def _render_planner_prompt(
         best_failed=best_result.failure_count if best_result else "N/A",
         best_errors=best_result.error_count if best_result else "N/A",
         scoreboard=scoreboard_text,
+        noise_context=compute_noise_stats(states=completed_states),
+        task_pass_rate_table=build_task_pass_rate_table(states=completed_states),
+        failure_analysis_summary=(
+            format_failure_analyses(state=latest_state)
+            if latest_state
+            else "No failure analyses available."
+        ),
     )
 
 

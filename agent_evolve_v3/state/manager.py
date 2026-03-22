@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 from contextlib import contextmanager
 import json
+import logging
 import re
 import shutil
 import tempfile
@@ -18,6 +19,8 @@ from agent_evolve_v3.state.types import (
     agent_state_json_schema,
     planning_output_json_schema,
 )
+
+log = logging.getLogger(__name__)
 
 COPY_IGNORES = shutil.ignore_patterns(
     "__pycache__",
@@ -95,12 +98,15 @@ class StateManager:
         planner_output_artifact_path: Path,
     ) -> AgentState:
         workspace_path = self.workspaces_dir / f"iteration-{iteration:04d}"
-        shutil.copytree(
-            src=Path(parent_state.refiner_workspace_path),
-            dst=workspace_path,
-            ignore=COPY_IGNORES,
-            dirs_exist_ok=False,
-        )
+        if workspace_path.exists():
+            log.warning("Workspace already exists, reusing: %s", workspace_path)
+        else:
+            shutil.copytree(
+                src=Path(parent_state.refiner_workspace_path),
+                dst=workspace_path,
+                ignore=COPY_IGNORES,
+                dirs_exist_ok=False,
+            )
         self._sync_workspace_docs(workspace_path=workspace_path)
         self._seed_workspace_outputs(
             workspace_path=workspace_path,

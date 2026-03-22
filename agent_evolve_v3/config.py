@@ -19,6 +19,9 @@ class RunSpec:
     iterations: int = 25
     random_seed: int = 0
     benchmark_tasks: tuple[str, ...] = ()
+    train_small_tasks: tuple[str, ...] = ()
+    n_samples: int = 2
+    failure_investigation_model: str = "gemini-3-flash"
 
 
 @dataclass(frozen=True)
@@ -89,6 +92,16 @@ def load_runs_config(*, path: Path) -> RunsConfig:
                 f"Run '{run_name}' benchmark_tasks must be a list of strings."
             )
 
+        raw_train_small_tasks = run_payload.get("train_small_tasks", [])
+        if raw_train_small_tasks is None:
+            train_small_tasks: tuple[str, ...] = ()
+        elif isinstance(raw_train_small_tasks, list):
+            train_small_tasks = tuple(
+                str(task_name).strip() for task_name in raw_train_small_tasks
+            )
+        else:
+            train_small_tasks = ()
+
         runs[run_name] = RunSpec(
             name=run_name,
             baseline=baseline,
@@ -97,6 +110,11 @@ def load_runs_config(*, path: Path) -> RunsConfig:
             iterations=max(1, int(run_payload.get("iterations", 25))),
             random_seed=int(run_payload.get("random_seed", 0)),
             benchmark_tasks=benchmark_tasks,
+            train_small_tasks=train_small_tasks,
+            n_samples=int(run_payload.get("n_samples", 2)),
+            failure_investigation_model=str(
+                run_payload.get("failure_investigation_model", "gemini-3-flash")
+            ).strip(),
         )
 
     if default_run not in runs:

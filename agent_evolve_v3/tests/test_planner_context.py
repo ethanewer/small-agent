@@ -243,6 +243,7 @@ def test_render_planner_prompt_embeds_latest_run_context(tmp_path: Path) -> None
         benchmark_model_key=manager.run_spec.model_key,
         candidate_state_count=1,
         iteration_count=2,
+        completed_states=[root],
     )
 
     assert "Artifact pointers:" in prompt

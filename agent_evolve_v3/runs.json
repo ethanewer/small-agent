@@ -7,6 +7,8 @@
       "cursor_model": "claude-4.6-opus-max-thinking",
       "iterations": 50,
       "random_seed": 0,
+      "n_samples": 2,
+      "failure_investigation_model": "gemini-3-flash",
       "benchmark_tasks": [
         "circuit-fibsqrt",
         "portfolio-optimization",
@@ -32,6 +34,20 @@
         "cancel-async-tasks",
         "gcode-to-text",
         "kv-store-grpc",
+        "overfull-hbox"
+      ],
+      "train_small_tasks": [
+        "feal-linear-cryptanalysis",
+        "regex-log",
+        "nginx-request-logging",
+        "portfolio-optimization",
+        "kv-store-grpc",
+        "configure-git-webserver",
+        "sanitize-git-repo",
+        "sqlite-with-gcov",
+        "code-from-image",
+        "cancel-async-tasks",
+        "feal-differential-cryptanalysis",
         "overfull-hbox"
       ]
     }

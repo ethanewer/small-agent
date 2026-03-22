@@ -26,6 +26,42 @@ LATEST_VISIBLE_RUN_PATH = Path("outputs") / "latest_run.json"
 ARTIFACTS_RUNS_DIR = Path("benchmark-artifacts")
 HARBOR_TASK_CACHE_DIR = Path("~/.cache/harbor/tasks").expanduser()
 
+TASK_MEAN_DURATIONS: dict[str, float] = {
+    "circuit-fibsqrt": 53.9,
+    "winning-avg-corewars": 30.1,
+    "path-tracing": 31.0,
+    "crack-7z-hash": 21.0,
+    "write-compressor": 17.1,
+    "caffe-cifar-10": 15.0,
+    "torch-tensor-parallelism": 12.0,
+    "code-from-image": 10.8,
+    "feal-differential-cryptanalysis": 10.3,
+    "overfull-hbox": 9.1,
+    "portfolio-optimization": 8.7,
+    "sqlite-with-gcov": 8.0,
+    "feal-linear-cryptanalysis": 7.7,
+    "gpt2-codegolf": 7.0,
+    "rstan-to-pystan": 6.0,
+    "financial-document-processor": 5.0,
+    "sanitize-git-repo": 4.8,
+    "regex-log": 4.6,
+    "configure-git-webserver": 4.2,
+    "nginx-request-logging": 3.5,
+    "fix-git": 3.1,
+    "build-cython-ext": 3.0,
+    "gcode-to-text": 2.5,
+    "kv-store-grpc": 2.4,
+    "cancel-async-tasks": 2.1,
+}
+
+
+def sort_tasks_by_duration(*, task_names: list[str]) -> list[str]:
+    return sorted(
+        task_names,
+        key=lambda name: TASK_MEAN_DURATIONS.get(name, 0.0),
+        reverse=True,
+    )
+
 
 @dataclass(frozen=True)
 class BenchmarkSpec:
@@ -166,6 +202,208 @@ def run_workspace_benchmark(
     )
 
 
+def run_task_subset_benchmark(
+    *,
+    workspace_path: Path,
+    model_key: str,
+    task_names: list[str],
+    artifacts_dir: Path,
+) -> tuple[OfficialBenchmarkRun, BenchmarkSummary, subprocess.CompletedProcess[str]]:
+    workspace_root = workspace_path.resolve()
+    repo_root = discover_repo_root(start_path=workspace_root)
+    sorted_tasks = sort_tasks_by_duration(task_names=task_names)
+    jobs_dir = artifacts_dir / "harbor_jobs"
+    jobs_dir.mkdir(parents=True, exist_ok=True)
+    command = build_harbor_command(
+        workspace_root=workspace_root,
+        jobs_dir=jobs_dir,
+        model_key=model_key,
+        task_names=sorted_tasks,
+        benchmark_preset="official",
+    )
+    completed = subprocess.run(
+        command,
+        cwd=repo_root,
+        text=True,
+        capture_output=True,
+        check=False,
+        env=os.environ.copy(),
+    )
+    stdout_path = artifacts_dir / "benchmark_stdout.log"
+    stderr_path = artifacts_dir / "benchmark_stderr.log"
+    stdout_path.write_text(completed.stdout, encoding="utf-8")
+    stderr_path.write_text(completed.stderr, encoding="utf-8")
+    if completed.returncode != 0:
+        print(completed.stdout)
+        print(completed.stderr)
+        raise SystemExit(completed.returncode)
+
+    aggregate_result_path = resolve_aggregate_result_path(jobs_dir=jobs_dir)
+    harbor_job_dir = aggregate_result_path.parent
+    benchmark_summary = summarize_benchmark_job(harbor_job_dir=harbor_job_dir)
+    summary_payload = asdict(benchmark_summary)
+    summary_payload["aggregate_result_path"] = str(aggregate_result_path)
+    summary_payload["harbor_job_dir"] = str(harbor_job_dir)
+    created_at_utc = datetime.now(UTC).isoformat()
+    summary_payload["created_at_utc"] = created_at_utc
+    summary_path = artifacts_dir / "benchmark_summary.json"
+    summary_path.write_text(
+        json.dumps(summary_payload, indent=2, ensure_ascii=True) + "\n",
+        encoding="utf-8",
+    )
+
+    trial_summaries = summarize_trial_logs(harbor_job_dir=harbor_job_dir)
+    trial_summaries_path = artifacts_dir / "trial_summaries.json"
+    write_trial_summaries(
+        summaries=trial_summaries,
+        output_path=trial_summaries_path,
+    )
+
+    trial_logs_dir = extract_trial_log_files(
+        harbor_job_dir=harbor_job_dir,
+        output_dir=artifacts_dir / "trial_logs",
+    )
+
+    official_run = OfficialBenchmarkRun(
+        model_key=model_key,
+        aggregate_result_path=str(aggregate_result_path),
+        harbor_job_dir=str(harbor_job_dir),
+        benchmark_summary_path=str(summary_path),
+        benchmark_stdout_path=str(stdout_path),
+        benchmark_stderr_path=str(stderr_path),
+        created_at_utc=created_at_utc,
+        trial_summaries_path=str(trial_summaries_path),
+        trial_logs_dir=str(trial_logs_dir),
+    )
+    return official_run, benchmark_summary, completed
+
+
+def _try_load_existing_sample(
+    *, sample_dir: Path
+) -> tuple[OfficialBenchmarkRun, BenchmarkSummary] | None:
+    summary_path = sample_dir / "benchmark_summary.json"
+    if summary_path.exists():
+        try:
+            payload = json.loads(summary_path.read_text(encoding="utf-8"))
+            summary = BenchmarkSummary(
+                created_at_utc=str(payload.get("created_at_utc", "")),
+                aggregate_result_path=str(payload.get("aggregate_result_path", "")),
+                harbor_job_dir=str(payload.get("harbor_job_dir", "")),
+                reward_mean=payload.get("reward_mean"),
+                n_trials=int(payload.get("n_trials", 0)),
+                pass_count=int(payload.get("pass_count", 0)),
+                failure_count=int(payload.get("failure_count", 0)),
+                error_count=int(payload.get("error_count", 0)),
+                passed_trials=payload.get("passed_trials", []),
+                failed_trials=payload.get("failed_trials", []),
+                exception_types=payload.get("exception_types", {}),
+            )
+            official_run = OfficialBenchmarkRun(
+                model_key="",
+                aggregate_result_path=summary.aggregate_result_path,
+                harbor_job_dir=summary.harbor_job_dir,
+                benchmark_summary_path=str(summary_path),
+                benchmark_stdout_path=str(sample_dir / "benchmark_stdout.log"),
+                benchmark_stderr_path=str(sample_dir / "benchmark_stderr.log"),
+                created_at_utc=summary.created_at_utc,
+                trial_summaries_path=str(sample_dir / "trial_summaries.json"),
+                trial_logs_dir=str(sample_dir / "trial_logs"),
+            )
+            return official_run, summary
+        except (json.JSONDecodeError, OSError, KeyError, TypeError, ValueError):
+            pass
+
+    jobs_dir = sample_dir / "harbor_jobs"
+    if not jobs_dir.exists():
+        return None
+
+    try:
+        aggregate_result_path = resolve_aggregate_result_path(jobs_dir=jobs_dir)
+    except FileNotFoundError:
+        return None
+
+    harbor_job_dir = aggregate_result_path.parent
+    benchmark_summary = summarize_benchmark_job(harbor_job_dir=harbor_job_dir)
+    created_at_utc = datetime.now(UTC).isoformat()
+
+    summary_payload = asdict(benchmark_summary)
+    summary_payload["aggregate_result_path"] = str(aggregate_result_path)
+    summary_payload["harbor_job_dir"] = str(harbor_job_dir)
+    summary_payload["created_at_utc"] = created_at_utc
+    summary_path.write_text(
+        json.dumps(summary_payload, indent=2, ensure_ascii=True) + "\n",
+        encoding="utf-8",
+    )
+
+    trial_summaries = summarize_trial_logs(harbor_job_dir=harbor_job_dir)
+    trial_summaries_path = sample_dir / "trial_summaries.json"
+    write_trial_summaries(
+        summaries=trial_summaries,
+        output_path=trial_summaries_path,
+    )
+    trial_logs_dir = extract_trial_log_files(
+        harbor_job_dir=harbor_job_dir,
+        output_dir=sample_dir / "trial_logs",
+    )
+
+    official_run = OfficialBenchmarkRun(
+        model_key="",
+        aggregate_result_path=str(aggregate_result_path),
+        harbor_job_dir=str(harbor_job_dir),
+        benchmark_summary_path=str(summary_path),
+        benchmark_stdout_path=str(sample_dir / "benchmark_stdout.log"),
+        benchmark_stderr_path=str(sample_dir / "benchmark_stderr.log"),
+        created_at_utc=created_at_utc,
+        trial_summaries_path=str(trial_summaries_path),
+        trial_logs_dir=str(trial_logs_dir),
+    )
+    return official_run, benchmark_summary
+
+
+def run_n_sample_benchmarks(
+    *,
+    workspace_path: Path,
+    model_key: str,
+    task_names: list[str],
+    artifacts_base_dir: Path,
+    n_samples: int,
+) -> list[tuple[OfficialBenchmarkRun, BenchmarkSummary]]:
+    results: list[tuple[OfficialBenchmarkRun, BenchmarkSummary]] = []
+    for sample_idx in range(n_samples):
+        sample_dir = artifacts_base_dir / f"sample_{sample_idx}"
+        sample_dir.mkdir(parents=True, exist_ok=True)
+
+        existing = _try_load_existing_sample(sample_dir=sample_dir)
+        if existing is not None:
+            print(f"  Reusing existing sample_{sample_idx} results")
+            results.append(existing)
+            continue
+
+        official_run, summary, _completed = run_task_subset_benchmark(
+            workspace_path=workspace_path,
+            model_key=model_key,
+            task_names=task_names,
+            artifacts_dir=sample_dir,
+        )
+        results.append((official_run, summary))
+    return results
+
+
+def merge_sample_results(
+    *,
+    sample_summaries: list[BenchmarkSummary],
+    n_tasks: int,
+) -> tuple[float, list[BenchmarkSummary]]:
+    if not sample_summaries:
+        return 0.0, []
+
+    total_passes = sum(s.pass_count for s in sample_summaries)
+    avg_reward = (
+        total_passes / (len(sample_summaries) * n_tasks) if n_tasks > 0 else 0.0
+    )
+    return avg_reward, sample_summaries
+
+
 def load_benchmark_summary(*, summary_path: Path) -> BenchmarkSummary:
     data = json.loads(summary_path.read_text(encoding="utf-8"))
     return BenchmarkSummary(**data)
@@ -218,7 +456,9 @@ def execute_workspace_benchmark(
         if benchmark_preset == "official"
         else None
     )
-    task_names = configured_tasks or list(benchmark_spec.task_names)
+    task_names = sort_tasks_by_duration(
+        task_names=configured_tasks or list(benchmark_spec.task_names),
+    )
     artifact_root, visible_run_dir = _prepare_benchmark_output_dirs(
         workspace_root=workspace_root,
         artifacts_dir=artifacts_dir,
@@ -422,7 +662,9 @@ def build_harbor_command(
         value = resolve_env_value(env_name=env_name)
         if value:
             command.extend(["--agent-env", f"{env_name}={value}"])
-    selected_tasks = task_names or list(benchmark_spec.task_names)
+    selected_tasks = sort_tasks_by_duration(
+        task_names=task_names or list(benchmark_spec.task_names),
+    )
     for task_name in selected_tasks:
         command.extend(["--task-name", task_name])
     return command
