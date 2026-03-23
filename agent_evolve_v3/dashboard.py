@@ -370,15 +370,83 @@ def _has_benchmark_results(*, artifacts_dir: Path) -> bool:
     return False
 
 
-def _get_benchmark_progress(*, artifacts_dir: Path) -> dict[str, int] | None:
-    """Legacy single-number progress for backward compat."""
+def _get_benchmark_progress(
+    *,
+    artifacts_dir: Path,
+    n_benchmark_tasks: int = 0,
+    n_train_small_tasks: int = 0,
+    n_samples: int = 1,
+) -> dict[str, int] | None:
+    """Compute overall benchmark progress with expected totals."""
     progress = _get_two_tier_benchmark_progress(artifacts_dir=artifacts_dir)
     if progress is None:
         return None
     phases = progress.get("phases", [])
     total_done = sum(p.get("completed", 0) for p in phases)
-    total_all = sum(p.get("total", 0) for p in phases)
+
+    has_remaining = any(p.get("phase") == "train_remaining" for p in phases)
+    has_full = any(p.get("phase") == "train_full" for p in phases)
+    if has_remaining or has_full:
+        expected_total = n_benchmark_tasks * n_samples
+    else:
+        expected_total = n_train_small_tasks * n_samples
+
+    observed_total = sum(p.get("total", 0) for p in phases)
+    total_all = max(expected_total, observed_total)
     return {"completed": total_done, "total": total_all}
+
+
+def _read_live_benchmark_scores(
+    *, artifacts_dir: Path, n_samples: int
+) -> dict[str, Any]:
+    """Read in-progress benchmark scores from artifact summaries."""
+    out: dict[str, Any] = {
+        "train_small_reward": None,
+        "train_full_reward": None,
+        "promoted": False,
+    }
+
+    small_dir = artifacts_dir / "train_small"
+    if small_dir.is_dir():
+        rewards: list[float] = []
+        for sample_dir in sorted(small_dir.iterdir()):
+            summary = sample_dir / "benchmark_summary.json"
+            if summary.exists():
+                try:
+                    d = json.loads(summary.read_text(encoding="utf-8"))
+                    r = d.get("reward_mean")
+                    if isinstance(r, (int, float)):
+                        rewards.append(float(r))
+                except (json.JSONDecodeError, OSError):
+                    pass
+
+        if len(rewards) >= n_samples:
+            out["train_small_reward"] = sum(rewards) / len(rewards)
+
+    has_remaining = (artifacts_dir / "train_remaining").is_dir()
+    has_full = (artifacts_dir / "train_full").is_dir()
+    out["promoted"] = has_remaining or has_full
+
+    if has_remaining or has_full:
+        all_rewards: list[float] = []
+        for phase in ("train_small", "train_remaining", "train_full"):
+            phase_dir = artifacts_dir / phase
+            if not phase_dir.is_dir():
+                continue
+            for sample_dir in sorted(phase_dir.iterdir()):
+                summary = sample_dir / "benchmark_summary.json"
+                if summary.exists():
+                    try:
+                        d = json.loads(summary.read_text(encoding="utf-8"))
+                        for tid in d.get("passed_trials", []):
+                            all_rewards.append(1.0)
+                        for tid in d.get("failed_trials", []):
+                            if tid not in d.get("passed_trials", []):
+                                all_rewards.append(0.0)
+                    except (json.JSONDecodeError, OSError):
+                        pass
+
+    return out
 
 
 def _parse_iso_timestamp(ts: str | None) -> float | None:
@@ -606,6 +674,19 @@ def _load_single_run(*, run_dir: Path) -> dict[str, Any] | None:
         reward_mean = result.reward_mean if result else None
         promoted = train_full_reward is not None
 
+        if result is None or result.reward_mean is None:
+            live = _read_live_benchmark_scores(
+                artifacts_dir=run_dir
+                / "artifacts"
+                / f"iteration-{state.iteration:04d}",
+                n_samples=n_samples,
+            )
+            if live["train_small_reward"] is not None:
+                train_small_reward = live["train_small_reward"]
+            if live["train_full_reward"] is not None:
+                train_full_reward = live["train_full_reward"]
+            promoted = live["promoted"]
+
         failure_analyses = [
             {
                 "task_name": fa.task_name,
@@ -706,6 +787,9 @@ def _load_single_run(*, run_dir: Path) -> dict[str, Any] | None:
     if current_stage == "benchmarking":
         benchmark_progress = _get_benchmark_progress(
             artifacts_dir=current_artifacts,
+            n_benchmark_tasks=len(benchmark_tasks),
+            n_train_small_tasks=len(train_small_tasks),
+            n_samples=n_samples,
         )
         two_tier_progress = _get_two_tier_benchmark_progress(
             artifacts_dir=current_artifacts,
@@ -1133,7 +1217,8 @@ function renderRun(run, idx) {
     const parent = it.parent_iteration != null ? it.parent_iteration : 'root';
     const promotedBadge = it.iteration === 0 ? '<span class="promoted-badge promoted-yes">ROOT</span>'
       : it.promoted ? '<span class="promoted-badge promoted-yes">YES</span>'
-      : '<span class="promoted-badge promoted-no">NO</span>';
+      : it.train_small_reward != null ? '<span class="promoted-badge promoted-no">NO</span>'
+      : '';
     const faCount = it.n_failure_analyses || 0;
     const faSuffix = faCount > 0 ? ' <span style="font-size:9px;opacity:0.7" title="' + faCount + ' failure analyses">' + faCount + 'fa</span>' : '';
     iterTableRows += '<tr>' +

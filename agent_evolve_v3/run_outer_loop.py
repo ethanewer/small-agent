@@ -499,12 +499,10 @@ def _benchmark_state_two_tier(
         last_official_run = small_results[-1][0] if small_results else None
 
         best_small_reward = _best_train_small_reward(states=completed_states)
-        noise_margin = 0.08
-        promoted = small_reward >= best_small_reward - noise_margin
+        promoted = small_reward > best_small_reward
         _log(
-            f"  Promotion check: {small_reward:.3f} >= "
-            f"{best_small_reward:.3f} - {noise_margin} = "
-            f"{best_small_reward - noise_margin:.3f} -> "
+            f"  Promotion check: {small_reward:.3f} > "
+            f"{best_small_reward:.3f} -> "
             f"{'PROMOTED' if promoted else 'not promoted'}"
         )
 
