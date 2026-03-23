@@ -54,3 +54,4 @@ backup*
 node_modules/
 bun.lock
 package.json
+agent_evolve_v3/start_workdirs/opencode/outputs*

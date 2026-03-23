@@ -18,9 +18,8 @@ from agent_evolve_v3.prompts import (
     load_planning_prompt,
 )
 from agent_evolve_v3.services.benchmark import (
-    merge_sample_results,
     prepull_task_images,
-    run_n_sample_benchmarks,
+    run_n_sample_benchmark,
 )
 from agent_evolve_v3.services.runtime import (
     record_completed_process,
@@ -48,6 +47,16 @@ from agent_evolve_v3.state.planner_context import (
     summarize_problem_trials,
     summarize_problem_trials_detail,
 )
+
+
+def _merge_exception_types(
+    summaries: list[BenchmarkSummary],
+) -> dict[str, list[str]]:
+    merged: dict[str, list[str]] = {}
+    for s in summaries:
+        for exc_type, trial_ids in s.exception_types.items():
+            merged.setdefault(exc_type, []).extend(trial_ids)
+    return merged
 
 
 def _log(msg: str) -> None:
@@ -193,13 +202,13 @@ def main(argv: list[str]) -> int:
     _cleanup_docker_resources()
 
     root_result = root_state.result
-    if root_result and root_result.sample_results and not root_state.failure_analyses:
+    if root_result and root_result.harbor_job_dir and not root_state.failure_analyses:
         _log("Running failure investigations for root state...")
         t0 = time.monotonic()
         root_state.failure_analyses = _run_failure_investigations(
             state=root_state,
             run_spec=run_spec,
-            sample_summaries=root_result.sample_results,
+            benchmark_summary=root_result,
         )
         _log(
             f"Failure investigation done ({_format_elapsed(t0)}): "
@@ -401,13 +410,13 @@ def main(argv: list[str]) -> int:
 
         _cleanup_docker_resources()
 
-        if result and result.sample_results:
+        if result and result.harbor_job_dir:
             _log("Running failure investigations...")
             t0 = time.monotonic()
             state.failure_analyses = _run_failure_investigations(
                 state=state,
                 run_spec=run_spec,
-                sample_summaries=result.sample_results,
+                benchmark_summary=result,
             )
             _log(
                 f"Failure investigation done ({_format_elapsed(t0)}): "
@@ -503,116 +512,77 @@ def _benchmark_state_two_tier(
         _log(
             f"  Running train/small benchmark ({len(small_tasks)} tasks, N={n_samples})..."
         )
-        small_results = run_n_sample_benchmarks(
+        small_run, small_summary = run_n_sample_benchmark(
             workspace_path=Path(state.refiner_workspace_path),
             model_key=run_spec.model_key,
             task_names=small_tasks,
-            artifacts_base_dir=iteration_artifacts / "train_small",
+            artifacts_dir=iteration_artifacts / "train_small",
             n_samples=n_samples,
         )
-        small_summaries = [s for _, s in small_results]
-        small_reward, _sample_list = merge_sample_results(
-            sample_summaries=small_summaries,
-            n_tasks=len(small_tasks),
-        )
+        small_reward = small_summary.reward_mean or 0.0
         _log(f"  train/small reward: {small_reward:.3f}")
 
-        last_official_run = small_results[-1][0] if small_results else None
-
         best_small_reward = _best_train_small_reward(states=completed_states)
-        noise_margin = 0.08
-        promoted = small_reward >= best_small_reward - noise_margin
+        promoted = small_reward > best_small_reward
         _log(
-            f"  Promotion check: {small_reward:.3f} >= "
-            f"{best_small_reward:.3f} - {noise_margin} = "
-            f"{best_small_reward - noise_margin:.3f} -> "
+            f"  Promotion check: {small_reward:.3f} > "
+            f"{best_small_reward:.3f} -> "
             f"{'PROMOTED' if promoted else 'not promoted'}"
         )
 
         if promoted:
             _log(f"  Running remaining {len(remaining_tasks)} tasks (N={n_samples})...")
-            remaining_results = run_n_sample_benchmarks(
+            remaining_run, remaining_summary = run_n_sample_benchmark(
                 workspace_path=Path(state.refiner_workspace_path),
                 model_key=run_spec.model_key,
                 task_names=remaining_tasks,
-                artifacts_base_dir=iteration_artifacts / "train_remaining",
+                artifacts_dir=iteration_artifacts / "train_remaining",
                 n_samples=n_samples,
             )
-            remaining_summaries = [s for _, s in remaining_results]
-            total_small_passes = sum(s.pass_count for s in small_summaries)
-            total_remaining_passes = sum(s.pass_count for s in remaining_summaries)
-            full_reward = (total_small_passes + total_remaining_passes) / (
-                n_samples * len(all_tasks)
-            )
+            total_passes = small_summary.pass_count + remaining_summary.pass_count
+            full_reward = total_passes / (n_samples * len(all_tasks))
             _log(f"  train/full reward: {full_reward:.3f}")
 
-            all_passed = []
-            all_failed = []
-            for s in small_summaries + remaining_summaries:
-                all_passed.extend(s.passed_trials)
-                all_failed.extend(s.failed_trials)
-
-            if remaining_results:
-                last_official_run = remaining_results[-1][0]
-
             state.result = BenchmarkSummary(
-                created_at_utc=last_official_run.created_at_utc
-                if last_official_run
-                else "",
-                aggregate_result_path=last_official_run.aggregate_result_path
-                if last_official_run
-                else "",
-                harbor_job_dir=last_official_run.harbor_job_dir
-                if last_official_run
-                else "",
+                created_at_utc=remaining_run.created_at_utc,
+                aggregate_result_path=remaining_run.aggregate_result_path,
+                harbor_job_dir=remaining_run.harbor_job_dir,
                 reward_mean=full_reward,
-                n_trials=len(all_tasks) * n_samples,
-                pass_count=total_small_passes + total_remaining_passes,
-                failure_count=sum(
-                    s.failure_count for s in small_summaries + remaining_summaries
+                n_trials=small_summary.n_trials + remaining_summary.n_trials,
+                pass_count=total_passes,
+                failure_count=small_summary.failure_count
+                + remaining_summary.failure_count,
+                error_count=small_summary.error_count + remaining_summary.error_count,
+                passed_trials=small_summary.passed_trials
+                + remaining_summary.passed_trials,
+                failed_trials=small_summary.failed_trials
+                + remaining_summary.failed_trials,
+                exception_types=_merge_exception_types(
+                    [small_summary, remaining_summary]
                 ),
-                error_count=sum(
-                    s.error_count for s in small_summaries + remaining_summaries
-                ),
-                passed_trials=all_passed,
-                failed_trials=all_failed,
                 train_small_reward_mean=small_reward,
                 train_small_n_samples=n_samples,
                 train_full_reward_mean=full_reward,
                 train_full_n_samples=n_samples,
-                sample_results=small_summaries + remaining_summaries,
             )
+            state.official_benchmark = remaining_run
         else:
-            all_passed = []
-            all_failed = []
-            for s in small_summaries:
-                all_passed.extend(s.passed_trials)
-                all_failed.extend(s.failed_trials)
-
             state.result = BenchmarkSummary(
-                created_at_utc=last_official_run.created_at_utc
-                if last_official_run
-                else "",
-                aggregate_result_path=last_official_run.aggregate_result_path
-                if last_official_run
-                else "",
-                harbor_job_dir=last_official_run.harbor_job_dir
-                if last_official_run
-                else "",
+                created_at_utc=small_run.created_at_utc,
+                aggregate_result_path=small_run.aggregate_result_path,
+                harbor_job_dir=small_run.harbor_job_dir,
                 reward_mean=small_reward,
-                n_trials=len(small_tasks) * n_samples,
-                pass_count=sum(s.pass_count for s in small_summaries),
-                failure_count=sum(s.failure_count for s in small_summaries),
-                error_count=sum(s.error_count for s in small_summaries),
-                passed_trials=all_passed,
-                failed_trials=all_failed,
+                n_trials=small_summary.n_trials,
+                pass_count=small_summary.pass_count,
+                failure_count=small_summary.failure_count,
+                error_count=small_summary.error_count,
+                passed_trials=small_summary.passed_trials,
+                failed_trials=small_summary.failed_trials,
+                exception_types=small_summary.exception_types,
                 train_small_reward_mean=small_reward,
                 train_small_n_samples=n_samples,
-                sample_results=small_summaries,
             )
-
-        if last_official_run:
-            state.official_benchmark = last_official_run
+            state.official_benchmark = small_run
 
 
 def _run_full_benchmark(
@@ -624,60 +594,42 @@ def _run_full_benchmark(
     small_tasks: list[str],
     n_samples: int,
 ) -> None:
-    full_results = run_n_sample_benchmarks(
+    full_run, full_summary = run_n_sample_benchmark(
         workspace_path=Path(state.refiner_workspace_path),
         model_key=run_spec.model_key,
         task_names=all_tasks,
-        artifacts_base_dir=iteration_artifacts / "train_full",
+        artifacts_dir=iteration_artifacts / "train_full",
         n_samples=n_samples,
     )
-    full_summaries = [s for _, s in full_results]
-    full_reward, _ = merge_sample_results(
-        sample_summaries=full_summaries,
-        n_tasks=len(all_tasks),
-    )
+    full_reward = full_summary.reward_mean or 0.0
 
     small_task_set = set(small_tasks)
-    small_passes = 0
-    for s in full_summaries:
-        for trial_id in s.passed_trials:
-            task_name = trial_id.split("__")[0]
-            if task_name in small_task_set:
-                small_passes += 1
-
+    small_passes = sum(
+        1 for tid in full_summary.passed_trials if tid.split("__")[0] in small_task_set
+    )
     small_reward = small_passes / (n_samples * len(small_tasks)) if small_tasks else 0.0
     _log(
         f"  train/full reward: {full_reward:.3f}, train/small reward: {small_reward:.3f}"
     )
 
-    all_passed = []
-    all_failed = []
-    for s in full_summaries:
-        all_passed.extend(s.passed_trials)
-        all_failed.extend(s.failed_trials)
-
-    last_official_run = full_results[-1][0] if full_results else None
     state.result = BenchmarkSummary(
-        created_at_utc=last_official_run.created_at_utc if last_official_run else "",
-        aggregate_result_path=last_official_run.aggregate_result_path
-        if last_official_run
-        else "",
-        harbor_job_dir=last_official_run.harbor_job_dir if last_official_run else "",
+        created_at_utc=full_run.created_at_utc,
+        aggregate_result_path=full_run.aggregate_result_path,
+        harbor_job_dir=full_run.harbor_job_dir,
         reward_mean=full_reward,
-        n_trials=len(all_tasks) * n_samples,
-        pass_count=sum(s.pass_count for s in full_summaries),
-        failure_count=sum(s.failure_count for s in full_summaries),
-        error_count=sum(s.error_count for s in full_summaries),
-        passed_trials=all_passed,
-        failed_trials=all_failed,
+        n_trials=full_summary.n_trials,
+        pass_count=full_summary.pass_count,
+        failure_count=full_summary.failure_count,
+        error_count=full_summary.error_count,
+        passed_trials=full_summary.passed_trials,
+        failed_trials=full_summary.failed_trials,
+        exception_types=full_summary.exception_types,
         train_small_reward_mean=small_reward,
         train_small_n_samples=n_samples,
         train_full_reward_mean=full_reward,
         train_full_n_samples=n_samples,
-        sample_results=full_summaries,
     )
-    if last_official_run:
-        state.official_benchmark = last_official_run
+    state.official_benchmark = full_run
 
 
 def _best_train_small_reward(*, states: list[AgentState]) -> float:
@@ -695,44 +647,36 @@ def _run_failure_investigations(
     *,
     state: AgentState,
     run_spec: RunSpec,
-    sample_summaries: list[BenchmarkSummary],
+    benchmark_summary: BenchmarkSummary,
 ) -> list[FailureAnalysis]:
-    if len(sample_summaries) < 2:
+    harbor_dir = Path(benchmark_summary.harbor_job_dir)
+    if not harbor_dir.is_dir():
         return []
 
-    s0, s1 = sample_summaries[0], sample_summaries[1]
+    passed_set = set(benchmark_summary.passed_trials)
 
-    all_task_names: set[str] = set()
-    for s in (s0, s1):
-        for trial_id in s.passed_trials + s.failed_trials:
-            all_task_names.add(trial_id.split("__")[0])
-        for trial_ids in s.exception_types.values():
-            for trial_id in trial_ids:
-                all_task_names.add(trial_id.split("__")[0])
+    task_trials: dict[str, list[Path]] = {}
+    for child in sorted(harbor_dir.iterdir()):
+        if not child.is_dir() or "__" not in child.name:
+            continue
+        task_name = child.name.split("__")[0]
+        task_trials.setdefault(task_name, []).append(child)
 
     reward_by_task: dict[str, list[float]] = {}
-    for idx, s in enumerate((s0, s1)):
-        passed_tasks = {tid.split("__")[0] for tid in s.passed_trials}
-        for task_name in all_task_names:
-            reward_by_task.setdefault(task_name, [0.0, 0.0])
-            if task_name in passed_tasks:
-                reward_by_task[task_name][idx] = 1.0
-
     log_by_task: dict[str, list[str]] = {}
     verifier_by_task: dict[str, list[str]] = {}
     exception_by_task: dict[str, list[str]] = {}
-    for idx, s in enumerate((s0, s1)):
-        harbor_dir = Path(s.harbor_job_dir)
-        if not harbor_dir.is_dir():
-            continue
-        for trial_dir in harbor_dir.iterdir():
-            if not trial_dir.is_dir() or "__" not in trial_dir.name:
-                continue
-            task_name = trial_dir.name.split("__")[0]
-            log_by_task.setdefault(task_name, ["", ""])
-            verifier_by_task.setdefault(task_name, ["", ""])
-            exception_by_task.setdefault(task_name, ["", ""])
 
+    for task_name, trial_dirs in task_trials.items():
+        rewards: list[float] = []
+        logs: list[str] = []
+        verifiers: list[str] = []
+        exceptions: list[str] = []
+
+        for trial_dir in trial_dirs:
+            rewards.append(1.0 if trial_dir.name in passed_set else 0.0)
+
+            stdout = ""
             result_path = trial_dir / "result.json"
             if result_path.exists():
                 try:
@@ -755,35 +699,42 @@ def _run_failure_investigations(
                     )
                     if not stdout and isinstance(metadata, dict):
                         stdout = str(metadata.get("stdout", ""))
-                    log_by_task[task_name][idx] = (
-                        stdout[-10000:] if len(stdout) > 10000 else stdout
-                    )
                 except (json.JSONDecodeError, OSError):
                     pass
+            logs.append(stdout[-10000:] if len(stdout) > 10000 else stdout)
 
+            exc_content = ""
             exception_path = trial_dir / "exception.txt"
             if exception_path.exists():
                 try:
                     exc_content = exception_path.read_text(
                         encoding="utf-8", errors="replace"
                     )
-                    exception_by_task[task_name][idx] = (
-                        exc_content[-3000:] if len(exc_content) > 3000 else exc_content
-                    )
                 except OSError:
                     pass
+            exceptions.append(
+                exc_content[-3000:] if len(exc_content) > 3000 else exc_content
+            )
 
+            verifier_content = ""
             verifier_path = trial_dir / "verifier" / "test-stdout.txt"
             if verifier_path.exists():
                 try:
-                    content = verifier_path.read_text(
+                    verifier_content = verifier_path.read_text(
                         encoding="utf-8", errors="replace"
-                    )
-                    verifier_by_task[task_name][idx] = (
-                        content[-5000:] if len(content) > 5000 else content
                     )
                 except OSError:
                     pass
+            verifiers.append(
+                verifier_content[-5000:]
+                if len(verifier_content) > 5000
+                else verifier_content
+            )
+
+        reward_by_task[task_name] = rewards
+        log_by_task[task_name] = logs
+        verifier_by_task[task_name] = verifiers
+        exception_by_task[task_name] = exceptions
 
     core_agent_path = Path(state.refiner_workspace_path) / "agent" / "core_agent.py"
     core_agent_source = ""
@@ -796,9 +747,9 @@ def _run_failure_investigations(
     investigation_template = load_failure_investigation_prompt()
     analyses: list[FailureAnalysis] = []
 
-    for task_name in sorted(all_task_names):
-        rewards = reward_by_task.get(task_name, [0.0, 0.0])
-        if rewards[0] == 1.0 and rewards[1] == 1.0:
+    for task_name in sorted(task_trials):
+        rewards = reward_by_task.get(task_name, [])
+        if all(r == 1.0 for r in rewards):
             continue
 
         _log(f"    Investigating: {task_name}")
@@ -808,19 +759,19 @@ def _run_failure_investigations(
 
         prompt_text = investigation_template.format(
             task_name=task_name,
-            run_0_reward=rewards[0],
-            run_1_reward=rewards[1],
+            run_0_reward=rewards[0] if len(rewards) > 0 else 0.0,
+            run_1_reward=rewards[1] if len(rewards) > 1 else 0.0,
         )
 
         result = run_failure_investigation_agent(
             prompt_text=prompt_text,
             cursor_model=run_spec.failure_investigation_model,
-            run_0_agent_log=logs[0],
-            run_1_agent_log=logs[1],
-            run_0_verifier=verifiers[0],
-            run_1_verifier=verifiers[1],
-            run_0_exception=exceptions[0],
-            run_1_exception=exceptions[1],
+            run_0_agent_log=logs[0] if len(logs) > 0 else "",
+            run_1_agent_log=logs[1] if len(logs) > 1 else "",
+            run_0_verifier=verifiers[0] if len(verifiers) > 0 else "",
+            run_1_verifier=verifiers[1] if len(verifiers) > 1 else "",
+            run_0_exception=exceptions[0] if len(exceptions) > 0 else "",
+            run_1_exception=exceptions[1] if len(exceptions) > 1 else "",
             core_agent_source=core_agent_source,
         )
 

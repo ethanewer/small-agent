@@ -47,13 +47,8 @@ def _classify_trial(trial: dict[str, Any]) -> str:
     exc = trial.get("exception_info")
     if exc and isinstance(exc, dict):
         exc_type = exc.get("exception_type", "")
-        exc_msg = exc.get("exception_message", "")
         if exc_type == "AgentTimeoutError":
             return OUTCOME_TIMEOUT
-        if exc_type == "RuntimeError":
-            if "exit_code=1" in str(exc_msg):
-                return OUTCOME_MAX_ITERS
-            return OUTCOME_OTHER_ERROR
         return OUTCOME_OTHER_ERROR
 
     if verifier and isinstance(verifier, dict):
@@ -83,15 +78,12 @@ def _find_all_harbor_job_dirs(*, artifacts_dir: Path) -> list[Path]:
         phase_dir = artifacts_dir / phase
         if not phase_dir.is_dir():
             continue
-        for sample_dir in sorted(phase_dir.iterdir()):
-            if not sample_dir.is_dir() or not sample_dir.name.startswith("sample_"):
-                continue
-            jobs_dir = sample_dir / "harbor_jobs"
-            if not jobs_dir.is_dir():
-                continue
-            for job_dir in sorted(jobs_dir.iterdir()):
-                if job_dir.is_dir() and (job_dir / "result.json").exists():
-                    dirs.append(job_dir)
+        jobs_dir = phase_dir / "harbor_jobs"
+        if not jobs_dir.is_dir():
+            continue
+        for job_dir in sorted(jobs_dir.iterdir()):
+            if job_dir.is_dir() and (job_dir / "result.json").exists():
+                dirs.append(job_dir)
 
     legacy = artifacts_dir / "official_benchmark" / "harbor_jobs"
     if legacy.is_dir():
@@ -161,49 +153,41 @@ def _get_two_tier_benchmark_progress(*, artifacts_dir: Path) -> dict[str, Any] |
         if not phase_dir.is_dir():
             continue
 
-        sample_dirs = sorted(
-            d
-            for d in phase_dir.iterdir()
-            if d.is_dir() and d.name.startswith("sample_")
-        )
-        for sample_dir in sample_dirs:
-            summary_path = sample_dir / "benchmark_summary.json"
-            if summary_path.exists():
-                try:
-                    s = json.loads(summary_path.read_text(encoding="utf-8"))
-                    progress["phases"].append(
-                        {
-                            "phase": phase,
-                            "sample": sample_dir.name,
-                            "status": "done",
-                            "completed": s.get("n_trials", 0),
-                            "total": s.get("n_trials", 0),
-                        }
-                    )
-                except (json.JSONDecodeError, OSError):
-                    pass
-                continue
-
-            jobs_dir = sample_dir / "harbor_jobs"
-            if not jobs_dir.is_dir():
-                continue
-            for job_dir in sorted(jobs_dir.iterdir()):
-                if not job_dir.is_dir():
-                    continue
-                agg = _load_aggregate_result(harbor_job_dir=job_dir)
-                if agg is None:
-                    continue
-                n_total = agg.get("n_total_trials", 0)
-                n_done = agg.get("stats", {}).get("n_trials", 0)
+        summary_path = phase_dir / "benchmark_summary.json"
+        if summary_path.exists():
+            try:
+                s = json.loads(summary_path.read_text(encoding="utf-8"))
                 progress["phases"].append(
                     {
                         "phase": phase,
-                        "sample": sample_dir.name,
-                        "status": "running" if n_done < n_total else "done",
-                        "completed": n_done,
-                        "total": n_total,
+                        "status": "done",
+                        "completed": s.get("n_trials", 0),
+                        "total": s.get("n_trials", 0),
                     }
                 )
+            except (json.JSONDecodeError, OSError):
+                pass
+            continue
+
+        jobs_dir = phase_dir / "harbor_jobs"
+        if not jobs_dir.is_dir():
+            continue
+        for job_dir in sorted(jobs_dir.iterdir()):
+            if not job_dir.is_dir():
+                continue
+            agg = _load_aggregate_result(harbor_job_dir=job_dir)
+            if agg is None:
+                continue
+            n_total = agg.get("n_total_trials", 0)
+            n_done = agg.get("stats", {}).get("n_trials", 0)
+            progress["phases"].append(
+                {
+                    "phase": phase,
+                    "status": "running" if n_done < n_total else "done",
+                    "completed": n_done,
+                    "total": n_total,
+                }
+            )
 
     if not progress["phases"]:
         return None
@@ -258,13 +242,22 @@ def _compute_metrics_from_state(*, state: AgentState) -> dict[str, Any] | None:
         return None
 
     passed_set = set(result.passed_trials)
+    exc_types = result.exception_types
+    if not exc_types and result.sample_results:
+        exc_types = {}
+        for s in result.sample_results:
+            for exc_type, tids in s.exception_types.items():
+                exc_types.setdefault(exc_type, []).extend(tids)
+
     error_map: dict[str, str] = {}
-    for exc_type, trial_ids in result.exception_types.items():
+    for exc_type, trial_ids in exc_types.items():
         for tid in trial_ids:
             error_map[tid] = exc_type
 
     trial_outcomes: dict[str, str] = {}
-    all_trial_ids = set(result.passed_trials) | set(result.failed_trials)
+    all_trial_ids = (
+        set(result.passed_trials) | set(result.failed_trials) | set(error_map)
+    )
     for tid in all_trial_ids:
         if tid in passed_set:
             trial_outcomes[tid] = OUTCOME_PASS
@@ -358,9 +351,8 @@ def _has_benchmark_results(*, artifacts_dir: Path) -> bool:
         phase_dir = artifacts_dir / phase
         if not phase_dir.is_dir():
             continue
-        for sample_dir in phase_dir.iterdir():
-            if sample_dir.is_dir() and (sample_dir / "benchmark_summary.json").exists():
-                return True
+        if (phase_dir / "benchmark_summary.json").exists():
+            return True
 
     legacy = artifacts_dir / "official_benchmark" / "harbor_jobs"
     if legacy.is_dir():
@@ -370,15 +362,58 @@ def _has_benchmark_results(*, artifacts_dir: Path) -> bool:
     return False
 
 
-def _get_benchmark_progress(*, artifacts_dir: Path) -> dict[str, int] | None:
-    """Legacy single-number progress for backward compat."""
+def _get_benchmark_progress(
+    *,
+    artifacts_dir: Path,
+    n_benchmark_tasks: int = 0,
+    n_train_small_tasks: int = 0,
+    n_samples: int = 1,
+) -> dict[str, int] | None:
+    """Compute overall benchmark progress with expected totals."""
     progress = _get_two_tier_benchmark_progress(artifacts_dir=artifacts_dir)
     if progress is None:
         return None
     phases = progress.get("phases", [])
     total_done = sum(p.get("completed", 0) for p in phases)
-    total_all = sum(p.get("total", 0) for p in phases)
+
+    has_remaining = any(p.get("phase") == "train_remaining" for p in phases)
+    has_full = any(p.get("phase") == "train_full" for p in phases)
+    if has_remaining or has_full:
+        expected_total = n_benchmark_tasks * n_samples
+    else:
+        expected_total = n_train_small_tasks * n_samples
+
+    observed_total = sum(p.get("total", 0) for p in phases)
+    total_all = max(expected_total, observed_total)
     return {"completed": total_done, "total": total_all}
+
+
+def _read_live_benchmark_scores(
+    *,
+    artifacts_dir: Path,
+) -> dict[str, Any]:
+    """Read in-progress benchmark scores from artifact summaries."""
+    out: dict[str, Any] = {
+        "train_small_reward": None,
+        "train_full_reward": None,
+        "promoted": False,
+    }
+
+    small_summary = artifacts_dir / "train_small" / "benchmark_summary.json"
+    if small_summary.exists():
+        try:
+            d = json.loads(small_summary.read_text(encoding="utf-8"))
+            r = d.get("reward_mean")
+            if isinstance(r, (int, float)):
+                out["train_small_reward"] = float(r)
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    has_remaining = (artifacts_dir / "train_remaining").is_dir()
+    has_full = (artifacts_dir / "train_full").is_dir()
+    out["promoted"] = has_remaining or has_full
+
+    return out
 
 
 def _parse_iso_timestamp(ts: str | None) -> float | None:
@@ -504,26 +539,6 @@ def _find_first_harbor_start(*, artifacts_dir: Path) -> float | None:
         if started is not None and (earliest is None or started < earliest):
             earliest = started
 
-    for phase in ("train_small", "train_remaining", "train_full"):
-        phase_dir = artifacts_dir / phase
-        if not phase_dir.is_dir():
-            continue
-        for sample_dir in sorted(phase_dir.iterdir()):
-            if not sample_dir.is_dir():
-                continue
-            jobs_dir = sample_dir / "harbor_jobs"
-            if not jobs_dir.is_dir():
-                continue
-            for job_dir in sorted(jobs_dir.iterdir()):
-                if not job_dir.is_dir():
-                    continue
-                agg = _load_aggregate_result(harbor_job_dir=job_dir)
-                if agg is None:
-                    continue
-                started = _parse_iso_timestamp(agg.get("started_at"))
-                if started is not None and (earliest is None or started < earliest):
-                    earliest = started
-
     if earliest is None:
         for phase in ("train_small", "train_remaining", "train_full"):
             mt = _file_mtime(artifacts_dir / phase)
@@ -540,12 +555,9 @@ def _find_latest_summary_mtime(*, artifacts_dir: Path) -> float | None:
         phase_dir = artifacts_dir / phase
         if not phase_dir.is_dir():
             continue
-        for sample_dir in phase_dir.iterdir():
-            if not sample_dir.is_dir():
-                continue
-            mt = _file_mtime(sample_dir / "benchmark_summary.json")
-            if mt is not None and (latest is None or mt > latest):
-                latest = mt
+        mt = _file_mtime(phase_dir / "benchmark_summary.json")
+        if mt is not None and (latest is None or mt > latest):
+            latest = mt
     return latest
 
 
@@ -605,6 +617,18 @@ def _load_single_run(*, run_dir: Path) -> dict[str, Any] | None:
         train_full_reward = result.train_full_reward_mean if result else None
         reward_mean = result.reward_mean if result else None
         promoted = train_full_reward is not None
+
+        if result is None or result.reward_mean is None:
+            live = _read_live_benchmark_scores(
+                artifacts_dir=run_dir
+                / "artifacts"
+                / f"iteration-{state.iteration:04d}",
+            )
+            if live["train_small_reward"] is not None:
+                train_small_reward = live["train_small_reward"]
+            if live["train_full_reward"] is not None:
+                train_full_reward = live["train_full_reward"]
+            promoted = live["promoted"]
 
         failure_analyses = [
             {
@@ -706,6 +730,9 @@ def _load_single_run(*, run_dir: Path) -> dict[str, Any] | None:
     if current_stage == "benchmarking":
         benchmark_progress = _get_benchmark_progress(
             artifacts_dir=current_artifacts,
+            n_benchmark_tasks=len(benchmark_tasks),
+            n_train_small_tasks=len(train_small_tasks),
+            n_samples=n_samples,
         )
         two_tier_progress = _get_two_tier_benchmark_progress(
             artifacts_dir=current_artifacts,
@@ -1071,7 +1098,7 @@ function renderPhaseProgress(run) {
   if (!run.two_tier_progress || !run.two_tier_progress.phases.length) return '';
   const phases = run.two_tier_progress.phases;
   let chips = phases.map(p => {
-    const label = p.phase.replace('train_', '') + '/' + p.sample;
+    const label = p.phase.replace('train_', '');
     const cls = p.status === 'done' ? 'done' : 'running';
     const info = p.status === 'done' ? 'done' : p.completed + '/' + p.total;
     return '<span class="phase-chip ' + cls + '">' + label + ': ' + info + '</span>';
@@ -1133,7 +1160,8 @@ function renderRun(run, idx) {
     const parent = it.parent_iteration != null ? it.parent_iteration : 'root';
     const promotedBadge = it.iteration === 0 ? '<span class="promoted-badge promoted-yes">ROOT</span>'
       : it.promoted ? '<span class="promoted-badge promoted-yes">YES</span>'
-      : '<span class="promoted-badge promoted-no">NO</span>';
+      : it.train_small_reward != null ? '<span class="promoted-badge promoted-no">NO</span>'
+      : '';
     const faCount = it.n_failure_analyses || 0;
     const faSuffix = faCount > 0 ? ' <span style="font-size:9px;opacity:0.7" title="' + faCount + ' failure analyses">' + faCount + 'fa</span>' : '';
     iterTableRows += '<tr>' +
@@ -1223,7 +1251,7 @@ function renderRun(run, idx) {
           '<thead><tr>' +
             '<th class="num">Iter</th><th>Status</th>' +
             '<th class="num">Small</th><th class="num">Full</th><th>Promoted</th>' +
-            '<th class="num">Failure</th><th class="num">Timeout/TL</th><th class="num">Other Err</th>' +
+            '<th class="num">Failure</th><th class="num">Timeout</th><th class="num">Other Err</th>' +
             '<th class="num">Plan</th><th class="num">Impl</th><th class="num">Bench</th><th class="num">Parent</th>' +
           '</tr></thead>' +
           '<tbody>' + iterTableRows + '</tbody>' +
@@ -1236,7 +1264,7 @@ function renderRun(run, idx) {
       '<div class="table-scroll">' +
         '<table>' +
           '<thead><tr>' +
-            '<th>Task</th><th class="num">Completion</th><th class="num">Failure</th><th class="num">Timeout / TL</th>' +
+            '<th>Task</th><th class="num">Completion</th><th class="num">Failure</th><th class="num">Timeout</th>' +
             '<th class="num">Timeout</th><th class="num">Max Iters</th><th class="num">Other Error</th><th class="num">Iters</th>' +
           '</tr></thead>' +
           '<tbody>' + taskRows + '</tbody>' +
