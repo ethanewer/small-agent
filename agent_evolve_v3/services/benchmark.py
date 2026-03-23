@@ -208,6 +208,7 @@ def run_task_subset_benchmark(
     model_key: str,
     task_names: list[str],
     artifacts_dir: Path,
+    n_attempts: int = 1,
 ) -> tuple[OfficialBenchmarkRun, BenchmarkSummary, subprocess.CompletedProcess[str]]:
     workspace_root = workspace_path.resolve()
     repo_root = discover_repo_root(start_path=workspace_root)
@@ -220,6 +221,7 @@ def run_task_subset_benchmark(
         model_key=model_key,
         task_names=sorted_tasks,
         benchmark_preset="official",
+        n_attempts=n_attempts,
     )
     completed = subprocess.run(
         command,
@@ -360,48 +362,27 @@ def _try_load_existing_sample(
     return official_run, benchmark_summary
 
 
-def run_n_sample_benchmarks(
+def run_n_sample_benchmark(
     *,
     workspace_path: Path,
     model_key: str,
     task_names: list[str],
-    artifacts_base_dir: Path,
+    artifacts_dir: Path,
     n_samples: int,
-) -> list[tuple[OfficialBenchmarkRun, BenchmarkSummary]]:
-    results: list[tuple[OfficialBenchmarkRun, BenchmarkSummary]] = []
-    for sample_idx in range(n_samples):
-        sample_dir = artifacts_base_dir / f"sample_{sample_idx}"
-        sample_dir.mkdir(parents=True, exist_ok=True)
+) -> tuple[OfficialBenchmarkRun, BenchmarkSummary]:
+    """Run a benchmark with ``-k n_samples`` in a single Harbor invocation."""
+    existing = _try_load_existing_sample(sample_dir=artifacts_dir)
+    if existing is not None:
+        print("  Reusing existing benchmark results")
+        return existing
 
-        existing = _try_load_existing_sample(sample_dir=sample_dir)
-        if existing is not None:
-            print(f"  Reusing existing sample_{sample_idx} results")
-            results.append(existing)
-            continue
-
-        official_run, summary, _completed = run_task_subset_benchmark(
-            workspace_path=workspace_path,
-            model_key=model_key,
-            task_names=task_names,
-            artifacts_dir=sample_dir,
-        )
-        results.append((official_run, summary))
-    return results
-
-
-def merge_sample_results(
-    *,
-    sample_summaries: list[BenchmarkSummary],
-    n_tasks: int,
-) -> tuple[float, list[BenchmarkSummary]]:
-    if not sample_summaries:
-        return 0.0, []
-
-    total_passes = sum(s.pass_count for s in sample_summaries)
-    avg_reward = (
-        total_passes / (len(sample_summaries) * n_tasks) if n_tasks > 0 else 0.0
-    )
-    return avg_reward, sample_summaries
+    return run_task_subset_benchmark(
+        workspace_path=workspace_path,
+        model_key=model_key,
+        task_names=task_names,
+        artifacts_dir=artifacts_dir,
+        n_attempts=n_samples,
+    )[:2]
 
 
 def load_benchmark_summary(*, summary_path: Path) -> BenchmarkSummary:
@@ -624,6 +605,7 @@ def build_harbor_command(
     model_key: str,
     task_names: list[str] | None = None,
     benchmark_preset: BenchmarkPreset = "official",
+    n_attempts: int = 1,
 ) -> list[str]:
     repo_root = discover_repo_root(start_path=workspace_root)
     benchmark_spec = load_benchmark_spec(
@@ -638,6 +620,8 @@ def build_harbor_command(
         str(jobs_dir),
         "--n-concurrent",
         str(benchmark_spec.n_concurrent),
+        "-k",
+        str(n_attempts),
         "--env",
         "docker",
         "--no-delete",
