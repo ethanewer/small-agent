@@ -649,18 +649,30 @@ def _run_failure_investigations(
     run_spec: RunSpec,
     benchmark_summary: BenchmarkSummary,
 ) -> list[FailureAnalysis]:
-    harbor_dir = Path(benchmark_summary.harbor_job_dir)
-    if not harbor_dir.is_dir():
+    harbor_dirs: list[Path] = []
+    if benchmark_summary.sample_results:
+        for s in benchmark_summary.sample_results:
+            d = Path(s.harbor_job_dir)
+            if d.is_dir():
+                harbor_dirs.append(d)
+
+    if not harbor_dirs:
+        d = Path(benchmark_summary.harbor_job_dir)
+        if d.is_dir():
+            harbor_dirs.append(d)
+
+    if not harbor_dirs:
         return []
 
     passed_set = set(benchmark_summary.passed_trials)
 
     task_trials: dict[str, list[Path]] = {}
-    for child in sorted(harbor_dir.iterdir()):
-        if not child.is_dir() or "__" not in child.name:
-            continue
-        task_name = child.name.split("__")[0]
-        task_trials.setdefault(task_name, []).append(child)
+    for harbor_dir in harbor_dirs:
+        for child in sorted(harbor_dir.iterdir()):
+            if not child.is_dir() or "__" not in child.name:
+                continue
+            task_name = child.name.split("__")[0]
+            task_trials.setdefault(task_name, []).append(child)
 
     reward_by_task: dict[str, list[float]] = {}
     log_by_task: dict[str, list[str]] = {}
