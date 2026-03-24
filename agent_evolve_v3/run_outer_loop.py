@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 import json
 from pathlib import Path
 import shutil
+import subprocess
 import sys
 import time
 
@@ -61,6 +62,23 @@ def _merge_exception_types(
 def _log(msg: str) -> None:
     timestamp = datetime.now(UTC).strftime("%H:%M:%S")
     print(f"[{timestamp}] {msg}", flush=True)
+
+
+def _cleanup_docker_resources() -> None:
+    """Stop leftover containers and prune unused networks to avoid address pool exhaustion."""
+    try:
+        subprocess.run(
+            ["docker", "container", "prune", "-f"],
+            capture_output=True,
+            check=False,
+        )
+        subprocess.run(
+            ["docker", "network", "prune", "-f"],
+            capture_output=True,
+            check=False,
+        )
+    except FileNotFoundError:
+        pass
 
 
 def _format_elapsed(start: float) -> str:
@@ -181,6 +199,7 @@ def main(argv: list[str]) -> int:
             state=root_state,
         )
         return _system_exit_code(exc=exc)
+    _cleanup_docker_resources()
 
     root_result = root_state.result
     if root_result and root_result.harbor_job_dir and not root_state.failure_analyses:
@@ -233,12 +252,18 @@ def main(argv: list[str]) -> int:
             candidate_state_count=len(manager.completed_states),
             iteration_count=len(states),
             completed_states=manager.completed_states,
+            baseline=run_spec.baseline,
         )
         planner_prompt_path = artifacts_dir / "planner_prompt.txt"
         planner_prompt_path.write_text(planner_prompt_text, encoding="utf-8")
 
         _log("Running planner agent...")
         t0 = time.monotonic()
+        planner_succeeded = False
+        planning_output: PlanningOutput | None = None
+        parent_state: AgentState | None = None
+        planner_output_path = artifacts_dir / "planner_output.json"
+
         with manager.planning_environment(
             planner_notes_path=planner_notes_path,
         ) as (planning_workspace, candidate_states):
@@ -246,46 +271,83 @@ def main(argv: list[str]) -> int:
                 planning_workspace=planning_workspace,
                 artifacts_dir=artifacts_dir,
             )
-            planner_completed = run_planner_agent(
-                workspace_path=planning_workspace,
-                prompt_text=planner_prompt_text,
-                cursor_model=run_spec.cursor_model,
-            )
-            record_completed_process(
-                output_path=artifacts_dir / "planner_step.json",
-                completed=planner_completed,
-            )
-            if planner_completed.returncode != 0:
+            planner_notes_snapshot = (
+                planning_workspace / PLANNER_NOTES_FILE_NAME
+            ).read_text(encoding="utf-8")
+
+            for planner_attempt in range(1, _MAX_PLANNER_ATTEMPTS + 1):
+                if planner_attempt > 1:
+                    (planning_workspace / PLANNER_NOTES_FILE_NAME).write_text(
+                        planner_notes_snapshot, encoding="utf-8"
+                    )
+                    (planning_workspace / "output.json").unlink(missing_ok=True)
+
+                planner_completed = run_planner_agent(
+                    workspace_path=planning_workspace,
+                    prompt_text=planner_prompt_text,
+                    cursor_model=run_spec.cursor_model,
+                )
+                record_completed_process(
+                    output_path=artifacts_dir / "planner_step.json",
+                    completed=planner_completed,
+                )
+                if planner_completed.returncode != 0:
+                    _log(
+                        f"Planner FAILED (rc={planner_completed.returncode}, "
+                        f"{_format_elapsed(t0)})"
+                    )
+                    _sync_planner_notes(
+                        run_root=run_root,
+                        planning_workspace=planning_workspace,
+                        artifacts_dir=artifacts_dir,
+                    )
+                    print(planner_completed.stdout, flush=True)
+                    print(planner_completed.stderr, file=sys.stderr, flush=True)
+                    return planner_completed.returncode
+
+                _log(f"Planner completed ({_format_elapsed(t0)})")
+
+                planner_output_source = planning_workspace / "output.json"
+                if planner_output_source.exists():
+                    shutil.copy2(src=planner_output_source, dst=planner_output_path)
+                    _sync_planner_notes(
+                        run_root=run_root,
+                        planning_workspace=planning_workspace,
+                        artifacts_dir=artifacts_dir,
+                    )
+                    planning_output = PlanningOutput.load(path=planner_output_path)
+
+                    if (
+                        not 0
+                        <= planning_output.selected_state_index
+                        < len(candidate_states)
+                    ):
+                        raise ValueError(
+                            f"Planner selected an out-of-range state index: "
+                            f"{planning_output.selected_state_index}"
+                        )
+                    parent_state = candidate_states[
+                        planning_output.selected_state_index
+                    ]
+                    planner_succeeded = True
+                    break
+
                 _log(
-                    f"Planner FAILED (rc={planner_completed.returncode}, {_format_elapsed(t0)})"
+                    f"Planner did not produce output.json "
+                    f"(attempt {planner_attempt}/{_MAX_PLANNER_ATTEMPTS})"
                 )
-                _sync_planner_notes(
-                    run_root=run_root,
-                    planning_workspace=planning_workspace,
-                    artifacts_dir=artifacts_dir,
-                )
-                print(planner_completed.stdout, flush=True)
-                print(planner_completed.stderr, file=sys.stderr, flush=True)
-                return planner_completed.returncode
 
-            _log(f"Planner completed ({_format_elapsed(t0)})")
-
-            planner_output_source = planning_workspace / "output.json"
-            planner_output_path = artifacts_dir / "planner_output.json"
-            shutil.copy2(src=planner_output_source, dst=planner_output_path)
-            _sync_planner_notes(
-                run_root=run_root,
-                planning_workspace=planning_workspace,
-                artifacts_dir=artifacts_dir,
+        if not planner_succeeded:
+            _log(
+                "All planner attempts exhausted without output.json, skipping iteration"
             )
-            planning_output = PlanningOutput.load(path=planner_output_path)
+            if artifacts_dir.exists():
+                shutil.rmtree(artifacts_dir)
+            next_iteration += 1
+            continue
 
-            if not 0 <= planning_output.selected_state_index < len(candidate_states):
-                raise ValueError(
-                    f"Planner selected an out-of-range state index: {planning_output.selected_state_index}"
-                )
-            parent_state = candidate_states[planning_output.selected_state_index]
-
+        assert planning_output is not None
+        assert parent_state is not None
         _log(
             f"Planner selected parent iteration {parent_state.iteration} "
             f"(index {planning_output.selected_state_index})"
@@ -305,6 +367,7 @@ def main(argv: list[str]) -> int:
         implementation_prompt_text = _render_implementation_prompt(
             parent_state=parent_state,
             plan=planning_output.plan,
+            baseline=run_spec.baseline,
         )
         implementation_prompt_path = artifacts_dir / "implementation_prompt.txt"
         implementation_prompt_path.write_text(
@@ -388,6 +451,8 @@ def main(argv: list[str]) -> int:
             f"Benchmark done ({_format_elapsed(t0)}): "
             f"reward={reward}, passed={passed}, failed={failed}, errors={errors}"
         )
+
+        _cleanup_docker_resources()
 
         if result and result.harbor_job_dir:
             _log("Running failure investigations...")
@@ -504,7 +569,7 @@ def _benchmark_state_two_tier(
         best_small_reward = _best_train_small_reward(states=completed_states)
         promoted = small_reward > best_small_reward
         _log(
-            f"  Promotion check: {small_reward:.3f} > "
+            f"  Promotion check (window={_PROMOTION_WINDOW}): {small_reward:.3f} > "
             f"{best_small_reward:.3f} -> "
             f"{'PROMOTED' if promoted else 'not promoted'}"
         )
@@ -611,14 +676,27 @@ def _run_full_benchmark(
     state.official_benchmark = full_run
 
 
-def _best_train_small_reward(*, states: list[AgentState]) -> float:
+_PROMOTION_WINDOW = 5
+_MAX_PLANNER_ATTEMPTS = 5
+
+
+def _best_train_small_reward(
+    *, states: list[AgentState], window: int = _PROMOTION_WINDOW
+) -> float:
+    scored = [
+        s
+        for s in states
+        if s.result is not None and s.result.train_small_reward_mean is not None
+    ]
+    scored.sort(key=lambda s: s.iteration)
+    recent = scored[-window:] if window > 0 else scored
+
     best = 0.0
-    for state in states:
+    for state in recent:
         result = state.result
-        if result is None:
-            continue
-        if result.train_small_reward_mean is not None:
+        if result is not None and result.train_small_reward_mean is not None:
             best = max(best, result.train_small_reward_mean)
+
     return best
 
 
@@ -859,8 +937,9 @@ def _render_planner_prompt(
     candidate_state_count: int,
     iteration_count: int,
     completed_states: list[AgentState],
+    baseline: str,
 ) -> str:
-    template = load_planning_prompt()
+    template = load_planning_prompt(baseline=baseline)
     latest_result = latest_state.result if latest_state else None
     latest_artifacts = latest_run_artifact_map(
         state=latest_state,
@@ -934,8 +1013,9 @@ def _render_implementation_prompt(
     *,
     parent_state: AgentState,
     plan: str,
+    baseline: str,
 ) -> str:
-    template = load_implementation_prompt()
+    template = load_implementation_prompt(baseline=baseline)
     parent_result = parent_state.result
     parent_benchmark = parent_state.official_benchmark
     return template.format(
