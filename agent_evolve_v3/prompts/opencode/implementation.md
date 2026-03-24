@@ -34,7 +34,7 @@ After you finish, the outer loop will automatically run the official benchmark a
 
 This workspace uses the OpenCode SDK (`@opencode-ai/sdk/v2`) via `agent/orchestrator.ts`. See `OPENCODE_NOTES.md` in the workspace for the full reference. Key patterns for implementation:
 
-- **Custom agents** are defined inline in the `createOpencodeServer` config under `agent: { agentName: { prompt, temperature, permission, ... } }`. Each agent gets its own system prompt, temperature, and tool permissions.
+- **Custom agents** are defined inline in the `createOpencodeServer` config under `agent: {{ agentName: {{ prompt, temperature, permission, ... }} }}`. Each agent gets its own system prompt, temperature, and tool permissions.
 - **Multi-step flows** use sequential `promptAsync` calls on the same session with different `agent` values. Conversation history accumulates across calls, so later agents see earlier agents' work.
-- **Tool permissions**: `permission: { toolName: "deny" }` removes a tool entirely from the LLM context. Use `permission: { bash: { "*": "deny", "git*": "allow" } }` for fine-grained bash control.
+- **Tool permissions**: `permission: {{ toolName: "deny" }}` removes a tool entirely from the LLM context. Use `permission: {{ bash: {{ "*": "deny", "git*": "allow" }} }}` for fine-grained bash control.
 - **Per-call system injection**: The `system` field on `promptAsync` injects text for a single turn without replacing the agent's base prompt.
