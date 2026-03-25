@@ -1,14 +1,18 @@
 from __future__ import annotations
 
 import argparse
+import json
 from dataclasses import dataclass
 import os
 from pathlib import Path
+import re
 import sys
 import textwrap
 from typing import Any
 
+import litellm
 from agents import get_agent
+from agents.agent_types import Config
 from agents.registry import AVAILABLE_AGENTS
 from harbor_config import (
     CONFIG_PATH,
@@ -215,6 +219,111 @@ def _fit_line(text: str, width: int, prefix_len: int) -> str:
         return text
 
     return text[: max_chars - 1] + "…"
+
+
+_SUCCESS_SUMMARY_PROMPT = (
+    "The task is complete. Write the final user-facing summary as plain text or "
+    "Markdown only.\n\n"
+    "Requirements:\n"
+    "- Do not use JSON\n"
+    "- Do not wrap the response in code fences\n"
+    "- Keep it concise and outcome-focused\n"
+    "- Mention any caveats or follow-up steps if needed"
+)
+
+_FAILURE_SUMMARY_PROMPT = (
+    "The task could not be completed. Write a brief user-facing explanation as plain "
+    "text or Markdown only.\n\n"
+    "Requirements:\n"
+    "- Do not use JSON\n"
+    "- Do not wrap the response in code fences\n"
+    "- Explain what went wrong and why the task failed\n"
+    "- Mention what was accomplished before the failure, if anything\n"
+    "- Suggest possible next steps or fixes if applicable"
+)
+
+
+def _litellm_model_name(model: str, api_base: str) -> str:
+    if "/" in model:
+        return model
+
+    if "openai.com" in api_base:
+        return f"openai/{model}"
+
+    if "openrouter.ai" in api_base:
+        return f"openrouter/{model}"
+
+    return f"openai/{model}"
+
+
+def _strip_code_fences(text: str) -> str:
+    if not text.startswith("```"):
+        return text
+
+    fence_pattern = re.compile(r"^```[a-zA-Z0-9_-]*\n?(.*?)\n?```$", re.DOTALL)
+    match = fence_pattern.match(text)
+    if not match:
+        return text
+
+    return match.group(1).strip()
+
+
+def _try_parse_json(text: str) -> Any | None:
+    try:
+        return json.loads(text)
+    except Exception:
+        return None
+
+
+def _normalize_summary(raw: str) -> str | None:
+    text = _strip_code_fences(raw.strip())
+    if not text:
+        return None
+
+    parsed = _try_parse_json(text)
+    if isinstance(parsed, dict):
+        for key in ("final_message", "message", "summary"):
+            value = parsed.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+
+        analysis = parsed.get("analysis")
+        if isinstance(analysis, str) and analysis.strip():
+            return analysis.strip()
+
+        return None
+
+    return text
+
+
+def _generate_final_summary(
+    *,
+    config: Config,
+    history: list[dict[str, str]],
+    success: bool,
+) -> str | None:
+    prompt = _SUCCESS_SUMMARY_PROMPT if success else _FAILURE_SUMMARY_PROMPT
+    model_name = _litellm_model_name(model=config.model, api_base=config.api_base)
+    completion_kwargs: dict[str, Any] = {
+        "model": model_name,
+        "messages": [*history, {"role": "user", "content": prompt}],
+        "api_base": config.api_base,
+        "api_key": config.api_key,
+    }
+
+    if config.temperature is not None:
+        completion_kwargs["temperature"] = config.temperature
+
+    if config.extra_params:
+        for k, v in config.extra_params.items():
+            completion_kwargs[k] = v
+
+    try:
+        result = litellm.completion(**completion_kwargs)
+        content: str = result.choices[0].message.content or ""  # pyright: ignore[reportAttributeAccessIssue]
+        return _normalize_summary(content)
+    except Exception:
+        return None
 
 
 @dataclass
@@ -628,6 +737,20 @@ def main() -> None:
         config=config,
         logger=logger,  # pyright: ignore[reportArgumentType]
     )
+
+    if result.final_message is not None:
+        console.print(Panel(result.final_message, title="Done", border_style="green"))
+    elif result.history is not None:
+        summary = _generate_final_summary(
+            config=config,
+            history=result.history,
+            success=result.success,
+        )
+        if summary:
+            title = "Done" if result.success else "Failed"
+            style = "green" if result.success else "red"
+            console.print(Panel(summary, title=title, border_style=style))
+
     logger.print_compaction_summary()
     raise SystemExit(result.exit_code)
 

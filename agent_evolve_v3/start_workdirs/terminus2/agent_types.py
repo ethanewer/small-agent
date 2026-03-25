@@ -23,6 +23,7 @@ class RunResult:
     exit_code: int
     success: bool
     history: list[dict[str, str]] | None = None
+    final_message: str | None = None
 
 
 class ReasoningPayload(TypedDict):
