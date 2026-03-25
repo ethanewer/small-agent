@@ -578,6 +578,7 @@ def test_benchmark_fingerprint_is_stable_across_workspace_copies(
     for path in sorted(first.rglob("*")):
         if path.is_dir():
             continue
+
         target = second / path.relative_to(first)
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(path.read_bytes())

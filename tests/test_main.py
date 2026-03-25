@@ -41,6 +41,7 @@ class FakeSession:
         del min_timeout_sec
         if isinstance(keys, str):
             keys = [keys]
+
         self.send_keys_calls.append(keys)
 
     def get_incremental_output(self) -> str:

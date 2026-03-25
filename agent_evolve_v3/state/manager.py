@@ -107,6 +107,7 @@ class StateManager:
                 ignore=COPY_IGNORES,
                 dirs_exist_ok=False,
             )
+
         self._sync_workspace_docs(workspace_path=workspace_path)
         self._seed_workspace_outputs(
             workspace_path=workspace_path,
@@ -199,6 +200,7 @@ class StateManager:
                 ),
                 encoding="utf-8",
             )
+
         self._sync_workspace_docs(workspace_path=workspace_path)
 
     def _sync_workspace_docs(self, *, workspace_path: Path) -> None:

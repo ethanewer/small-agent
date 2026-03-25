@@ -46,6 +46,7 @@ async def _environment_exec(
     executor = getattr(environment, "exec", None)
     if not callable(executor):
         raise RuntimeError("Harbor environment does not expose an exec method.")
+
     attempts = [
         {
             "command": command,
@@ -76,15 +77,19 @@ def _extract_exec_fields(exec_result: Any) -> tuple[int, str, str]:
 
     if exec_result is None:
         return 0, "", ""
+
     if isinstance(exec_result, tuple):
         if len(exec_result) == 3:
             first, second, third = exec_result
             return int(first), _as_text(second), _as_text(third)
+
         if len(exec_result) == 2:
             first, second = exec_result
             return int(first), _as_text(second), ""
+
     if isinstance(exec_result, str):
         return 0, exec_result, ""
+
     if isinstance(exec_result, dict):
         return (
             int(
@@ -130,6 +135,7 @@ def _set_context_metadata(
     metadata = getattr(context, "metadata", None)
     if not isinstance(metadata, dict):
         metadata = {}
+
     payload = {
         "workspace_agent": {
             "model_key": model_key,
@@ -154,6 +160,7 @@ async def _environment_upload_dir(
     uploader = getattr(environment, "upload_dir", None)
     if not callable(uploader):
         raise RuntimeError("Harbor environment does not expose upload_dir.")
+
     try:
         for kwargs in (
             {"source_dir": source_dir, "target_dir": target_dir},
@@ -182,8 +189,10 @@ class WorkspaceHarborAgent(HarborBaseAgent):
             base_init_kwargs: dict[str, object] = dict(kwargs)
             if logs_dir is not None:
                 base_init_kwargs["logs_dir"] = logs_dir
+
             if model_name is not None:
                 base_init_kwargs["model_name"] = model_name
+
             super().__init__(**base_init_kwargs)
         except TypeError:
             try:
@@ -208,6 +217,7 @@ class WorkspaceHarborAgent(HarborBaseAgent):
         model_key = str(getattr(self, "model_name", "") or "").strip()
         if not model_key:
             model_key = os.environ.get("WORKSPACE_MODEL_KEY", "").strip()
+
         if not model_key:
             _set_context_metadata(
                 context=context,
@@ -323,4 +333,5 @@ def _require_env_path(*, env_name: str) -> Path:
     raw = os.environ.get(env_name, "").strip()
     if not raw:
         raise RuntimeError(f"{env_name} is required.")
+
     return Path(raw).resolve()

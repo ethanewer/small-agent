@@ -53,6 +53,7 @@ class _FakeEnvironment:
         )
         if self._results:
             return self._results.pop(0)
+
         return self._result
 
     async def is_dir(self, *, path: str) -> bool:

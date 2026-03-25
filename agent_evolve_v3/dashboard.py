@@ -43,7 +43,6 @@ def _classify_trial(trial: dict[str, Any]) -> str:
             reward = rewards.get("reward")
             if reward == 1.0:
                 return OUTCOME_PASS
-
     exc = trial.get("exception_info")
     if exc and isinstance(exc, dict):
         exc_type = exc.get("exception_type", "")
@@ -78,9 +77,11 @@ def _find_all_harbor_job_dirs(*, artifacts_dir: Path) -> list[Path]:
         phase_dir = artifacts_dir / phase
         if not phase_dir.is_dir():
             continue
+
         jobs_dir = phase_dir / "harbor_jobs"
         if not jobs_dir.is_dir():
             continue
+
         for job_dir in sorted(jobs_dir.iterdir()):
             if job_dir.is_dir() and (job_dir / "result.json").exists():
                 dirs.append(job_dir)
@@ -118,13 +119,16 @@ def _load_trial_results(*, harbor_job_dir: Path) -> dict[str, dict[str, Any]]:
     for child in harbor_job_dir.iterdir():
         if not child.is_dir() or "__" not in child.name:
             continue
+
         result_path = child / "result.json"
         if not result_path.exists():
             continue
+
         try:
             data: object = json.loads(result_path.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError):
             continue
+
         if isinstance(data, dict):
             results[child.name] = data
 
@@ -175,9 +179,11 @@ def _get_two_tier_benchmark_progress(*, artifacts_dir: Path) -> dict[str, Any] |
         for job_dir in sorted(jobs_dir.iterdir()):
             if not job_dir.is_dir():
                 continue
+
             agg = _load_aggregate_result(harbor_job_dir=job_dir)
             if agg is None:
                 continue
+
             n_total = agg.get("n_total_trials", 0)
             n_done = agg.get("stats", {}).get("n_trials", 0)
             progress["phases"].append(
@@ -217,7 +223,6 @@ def _compute_iteration_metrics(
     for outcome in task_outcomes.values():
         if outcome in counts:
             counts[outcome] += 1
-
     n_classified = sum(counts.values())
     total = n_classified if n_classified > 0 else 1
 
@@ -280,7 +285,6 @@ def _compute_metrics_from_state(*, state: AgentState) -> dict[str, Any] | None:
     for outcome in trial_outcomes.values():
         if outcome in counts:
             counts[outcome] += 1
-
     total = sum(counts.values()) or 1
 
     task_outcomes: dict[str, str] = {}
@@ -320,6 +324,7 @@ def _detect_current_stage(*, artifacts_dir: Path, is_bootstrap: bool = False) ->
         has_result = _has_benchmark_results(artifacts_dir=artifacts_dir)
         if has_result:
             return "completed"
+
         has_harbor = bool(_find_all_harbor_job_dirs(artifacts_dir=artifacts_dir))
         if has_harbor or any(
             (artifacts_dir / p).is_dir()
@@ -331,7 +336,6 @@ def _detect_current_stage(*, artifacts_dir: Path, is_bootstrap: bool = False) ->
     for filename, stage_name in _STAGE_FILES:
         if not (artifacts_dir / filename).exists():
             return stage_name
-
     has_result = _has_benchmark_results(artifacts_dir=artifacts_dir)
     if has_result:
         return "completed"
@@ -351,6 +355,7 @@ def _has_benchmark_results(*, artifacts_dir: Path) -> bool:
         phase_dir = artifacts_dir / phase
         if not phase_dir.is_dir():
             continue
+
         if (phase_dir / "benchmark_summary.json").exists():
             return True
 
@@ -535,16 +540,15 @@ def _find_first_harbor_start(*, artifacts_dir: Path) -> float | None:
         agg = _load_aggregate_result(harbor_job_dir=job_dir)
         if agg is None:
             continue
+
         started = _parse_iso_timestamp(agg.get("started_at"))
         if started is not None and (earliest is None or started < earliest):
             earliest = started
-
     if earliest is None:
         for phase in ("train_small", "train_remaining", "train_full"):
             mt = _file_mtime(artifacts_dir / phase)
             if mt is not None and (earliest is None or mt < earliest):
                 earliest = mt
-
     return earliest
 
 
@@ -555,6 +559,7 @@ def _find_latest_summary_mtime(*, artifacts_dir: Path) -> float | None:
         phase_dir = artifacts_dir / phase
         if not phase_dir.is_dir():
             continue
+
         mt = _file_mtime(phase_dir / "benchmark_summary.json")
         if mt is not None and (latest is None or mt > latest):
             latest = mt
@@ -588,7 +593,6 @@ def _load_states(*, run_dir: Path) -> list[AgentState]:
             states.append(AgentState.load(path=sf))
         except (json.JSONDecodeError, ValueError, KeyError, OSError):
             continue
-
     return states
 
 
@@ -720,6 +724,7 @@ def _load_single_run(*, run_dir: Path) -> dict[str, Any] | None:
                             current_stage = "benchmarking"
                     except (json.JSONDecodeError, OSError):
                         pass
+
             current_iteration = next_iter
             current_artifacts = next_artifacts
         else:
@@ -814,6 +819,7 @@ def api_runs() -> JSONResponse:
         for child in sorted(OUTPUTS_ROOT.iterdir()):
             if not child.is_dir():
                 continue
+
             run_data = _load_single_run(run_dir=child)
             if run_data is not None:
                 runs.append(run_data)

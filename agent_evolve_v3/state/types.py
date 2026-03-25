@@ -61,6 +61,7 @@ class PlanningOutput:
         payload = json.loads(path.read_text(encoding="utf-8"))
         if not isinstance(payload, dict):
             raise ValueError("Planner output must be a JSON object.")
+
         return cls.from_dict(data=payload)
 
     @classmethod
@@ -68,6 +69,7 @@ class PlanningOutput:
         plan = _optional_text(value=data.get("plan"))
         if plan is None:
             raise ValueError("Planner output must include a non-empty 'plan'.")
+
         return cls(
             selected_state_index=int(data["selected_state_index"]),
             plan=plan,
@@ -110,6 +112,7 @@ class AgentState:
         data = json.loads(path.read_text(encoding="utf-8"))
         if not isinstance(data, dict):
             raise ValueError(f"State file must contain an object: {path}")
+
         return cls.from_dict(data=data)
 
     @classmethod
@@ -196,6 +199,7 @@ def planning_output_json_schema() -> dict[str, object]:
 def _optional_text(*, value: object) -> str | None:
     if value is None:
         return None
+
     text = str(value)
     return text if text else None
 
@@ -203,23 +207,30 @@ def _optional_text(*, value: object) -> str | None:
 def _optional_int(*, value: object) -> int | None:
     if value is None:
         return None
+
     if isinstance(value, bool):
         return int(value)
+
     if isinstance(value, int):
         return value
+
     if isinstance(value, float):
         return int(value)
+
     if isinstance(value, str):
         text = value.strip()
         if not text:
             return None
+
         return int(text)
+
     return None
 
 
 def _parse_benchmark_summary(*, raw: object) -> BenchmarkSummary | None:
     if not isinstance(raw, dict):
         return None
+
     nested = raw.get("sample_results", [])
     parsed_samples: list[BenchmarkSummary] = []
     if isinstance(nested, list):
@@ -251,10 +262,12 @@ def _parse_benchmark_summary(*, raw: object) -> BenchmarkSummary | None:
 def _parse_failure_analyses(*, raw: object) -> list[FailureAnalysis]:
     if not isinstance(raw, list):
         return []
+
     analyses: list[FailureAnalysis] = []
     for item in raw:
         if not isinstance(item, dict):
             continue
+
         analyses.append(
             FailureAnalysis(
                 task_name=str(item.get("task_name", "")),

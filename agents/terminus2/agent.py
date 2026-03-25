@@ -135,7 +135,6 @@ def _check_field_order(json_content: str, warnings: list[str]) -> None:
         match = re.search(rf'"{field}"\s*:', json_content)
         if match:
             positions[field] = match.start()
-
     if len(positions) < 2:
         return
 
@@ -216,7 +215,6 @@ def _fix_mixed_content(response: str) -> str | None:
             return match
         except json.JSONDecodeError:
             continue
-
     return None
 
 
@@ -811,6 +809,7 @@ def run(
             feedback = ""
             if result.error:
                 feedback += f"ERROR: {result.error}"
+
             if result.warning:
                 feedback += (
                     f"\nWARNINGS: {result.warning}"

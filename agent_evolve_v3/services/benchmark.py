@@ -135,6 +135,7 @@ def _resolve_task_docker_images(*, task_names: tuple[str, ...]) -> list[str]:
         task_dir = task_dirs.get(task_name)
         if task_dir is None:
             continue
+
         toml_path = task_dir / "task.toml"
         match = re.search(
             r'^docker_image\s*=\s*"([^"]+)"',
@@ -157,6 +158,7 @@ def _list_local_docker_images() -> set[str]:
     )
     if result.returncode != 0:
         return set()
+
     return {
         line.strip()
         for line in result.stdout.splitlines()
@@ -194,6 +196,7 @@ def run_workspace_benchmark(
     ]
     if artifacts_dir is not None:
         command.extend(["--artifacts-dir", str(artifacts_dir)])
+
     if not record_visible:
         command.append("--no-record-visible")
     return run_command(
@@ -516,6 +519,7 @@ def execute_workspace_benchmark(
             request_label=request_label,
             benchmark=official_run,
         )
+
     payload = {
         "model_key": official_run.model_key,
         "aggregate_result_path": official_run.aggregate_result_path,
@@ -534,6 +538,7 @@ def execute_workspace_benchmark(
             json.dumps(payload, indent=2, ensure_ascii=True) + "\n",
             encoding="utf-8",
         )
+
     print(json.dumps(payload, ensure_ascii=True))
     return 0
 
@@ -547,6 +552,7 @@ def reset_visible_benchmark_outputs(
     outputs_root = workspace_root / "outputs"
     if outputs_root.exists():
         shutil.rmtree(path=outputs_root)
+
     visible_run_dir = _create_visible_run_dir(
         workspace_root=workspace_root,
         request_label=request_label,
@@ -658,15 +664,18 @@ def resolve_workspace_benchmark_tasks(*, workspace_root: Path) -> list[str] | No
     manifest_path = _discover_run_manifest(start_path=workspace_root)
     if manifest_path is None:
         return None
+
     try:
         payload = json.loads(manifest_path.read_text(encoding="utf-8"))
     except json.JSONDecodeError:
         return None
     if not isinstance(payload, dict):
         return None
+
     raw_task_names = payload.get("benchmark_tasks")
     if not isinstance(raw_task_names, list):
         return None
+
     task_names = [str(task_name).strip() for task_name in raw_task_names]
     task_names = [task_name for task_name in task_names if task_name]
     return task_names or None
@@ -683,12 +692,14 @@ def _prepare_benchmark_output_dirs(
         artifact_root = artifacts_dir.resolve()
         artifact_root.mkdir(parents=True, exist_ok=True)
         return artifact_root, None
+
     if record_visible:
         visible_run_dir = _create_visible_run_dir(
             workspace_root=workspace_root,
             request_label=request_label,
         )
         return visible_run_dir, visible_run_dir
+
     artifact_root = _create_artifacts_dir(
         workspace_root=workspace_root,
         request_label=request_label,
@@ -771,6 +782,7 @@ def _copy_benchmark_artifacts(
         copies[Path(benchmark.trial_summaries_path)] = (
             destination_root / "trial_summaries.json"
         )
+
     if benchmark.trial_logs_dir:
         trial_logs_src = Path(benchmark.trial_logs_dir)
         if trial_logs_src.is_dir():
@@ -780,9 +792,11 @@ def _copy_benchmark_artifacts(
                 dst=trial_logs_dst,
                 dirs_exist_ok=True,
             )
+
     aggregate_result_path = Path(benchmark.aggregate_result_path)
     if aggregate_result_path.exists():
         copies[aggregate_result_path] = destination_root / "aggregate_result.json"
+
     for src, dst in copies.items():
         if src.exists():
             shutil.copy2(src=src, dst=dst)
@@ -799,6 +813,7 @@ def _copy_benchmark_artifacts(
 def _script_relative_path(benchmark_preset: BenchmarkPreset) -> Path:
     if benchmark_preset == "smoke":
         return SMOKE_BENCHMARK_SCRIPT_RELATIVE_PATH
+
     return OFFICIAL_BENCHMARK_SCRIPT_RELATIVE_PATH
 
 
@@ -815,9 +830,11 @@ def _extract_script_setting(
     match = pattern.search(content)
     if match is None:
         raise RuntimeError(f"Missing {name} in {script_path}.")
+
     value = match.group("quoted") or match.group("bare") or ""
     if not value:
         raise RuntimeError(f"Empty {name} in {script_path}.")
+
     return value
 
 
@@ -829,11 +846,15 @@ def _extract_benchmark_tasks(*, content: str, script_path: Path) -> list[str]:
         if not in_tasks:
             if stripped.endswith("_TASKS=("):
                 in_tasks = True
+
             continue
+
         if stripped == ")":
             break
+
         if not stripped or stripped.startswith("#"):
             continue
+
         task_names.append(stripped)
     if not task_names:
         raise RuntimeError(f"Unable to parse task list from {script_path}.")
@@ -851,6 +872,7 @@ def _discover_run_manifest(*, start_path: Path) -> Path | None:
 def resolve_harbor_command() -> list[str]:
     if shutil.which("harbor"):
         return ["harbor"]
+
     if shutil.which("uvx"):
         return [
             "uvx",
@@ -864,6 +886,7 @@ def resolve_harbor_command() -> list[str]:
             "-c",
             "import truststore; truststore.inject_into_ssl(); from harbor.cli.main import app; app()",
         ]
+
     raise RuntimeError("Neither 'harbor' nor 'uvx' is available on PATH.")
 
 
@@ -873,6 +896,7 @@ def resolve_aggregate_result_path(*, jobs_dir: Path) -> Path:
     ]
     if not candidates:
         raise FileNotFoundError("Unable to locate Harbor aggregate result.json")
+
     return sorted(candidates)[-1]
 
 
@@ -919,18 +943,22 @@ def _extract_reward_mean(*, eval_stats: dict[str, object]) -> float | None:
     metrics = eval_stats.get("metrics")
     if not isinstance(metrics, list) or not metrics:
         return None
+
     first_metric = metrics[0]
     if not isinstance(first_metric, dict):
         return None
+
     mean = first_metric.get("mean")
     if isinstance(mean, (int, float)):
         return float(mean)
+
     return None
 
 
 def _load_harbor_json(*, path: Path) -> dict[str, object]:
     if not path.exists():
         return {}
+
     data = json.loads(path.read_text(encoding="utf-8"))
     return data if isinstance(data, dict) else {}
 
@@ -942,18 +970,23 @@ def _as_dict(*, value: object) -> dict[str, object]:
 def _string_list(*, value: object) -> list[str]:
     if not isinstance(value, list):
         return []
+
     return [str(item) for item in value]
 
 
 def _coerce_int(*, value: object) -> int:
     if isinstance(value, bool):
         return int(value)
+
     if isinstance(value, int):
         return value
+
     if isinstance(value, float):
         return int(value)
+
     if isinstance(value, str):
         return int(value)
+
     return 0
 
 
@@ -980,6 +1013,7 @@ def summarize_trial_logs(*, harbor_job_dir: Path) -> list[TrialLogSummary]:
     for trial_dir in sorted(harbor_job_dir.iterdir()):
         if not trial_dir.is_dir():
             continue
+
         if "__" not in trial_dir.name:
             continue
 
@@ -1032,16 +1066,19 @@ def write_trial_summaries(
 def load_trial_summaries(*, path: Path) -> list[TrialLogSummary]:
     if not path.exists():
         return []
+
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
         return []
     if not isinstance(data, list):
         return []
+
     summaries: list[TrialLogSummary] = []
     for item in data:
         if not isinstance(item, dict):
             continue
+
         summaries.append(
             TrialLogSummary(
                 task_name=str(item.get("task_name", "")),
@@ -1062,6 +1099,7 @@ def _extract_trial_reward(*, trial_result: dict[str, object]) -> float | None:
     raw = rewards.get("reward")
     if isinstance(raw, (int, float)):
         return float(raw)
+
     return None
 
 
@@ -1072,8 +1110,10 @@ def _extract_agent_exit_code(*, trial_result: dict[str, object]) -> int | None:
     raw = workspace_agent.get("exit_code")
     if raw is None:
         raw = metadata.get("exit_code")
+
     if isinstance(raw, (int, float)):
         return int(raw)
+
     return None
 
 
@@ -1081,9 +1121,11 @@ def _extract_exception_type(*, trial_result: dict[str, object]) -> str | None:
     exc_info = trial_result.get("exception_info")
     if not isinstance(exc_info, dict):
         return None
+
     exc_type = exc_info.get("type") or exc_info.get("exception_type")
     if exc_type:
         return str(exc_type)
+
     return None
 
 
@@ -1098,11 +1140,14 @@ def _extract_agent_stdout_tail(
     stdout = str(workspace_agent.get("stdout", ""))
     if not stdout:
         stdout = str(metadata.get("stdout", ""))
+
     if not stdout:
         return ""
+
     encoded = stdout.encode("utf-8")
     if len(encoded) <= limit:
         return stdout
+
     return encoded[-limit:].decode("utf-8", errors="ignore")
 
 
@@ -1110,16 +1155,19 @@ def _extract_verifier_summary(*, trial_dir: Path, limit: int) -> str:
     test_stdout_path = trial_dir / "verifier" / "test-stdout.txt"
     if not test_stdout_path.exists():
         return ""
+
     try:
         content = test_stdout_path.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return ""
     if not content.strip():
         return ""
+
     relevant = _extract_pytest_failure_section(content=content)
     encoded = relevant.encode("utf-8")
     if len(encoded) <= limit:
         return relevant
+
     return encoded[-limit:].decode("utf-8", errors="ignore")
 
 
@@ -1135,24 +1183,30 @@ def _extract_pytest_failure_section(*, content: str) -> str:
 
     if failure_start is not None:
         return "\n".join(lines[failure_start:])
+
     if summary_start is not None:
         return "\n".join(lines[summary_start:])
+
     return content
 
 
 def _optional_float(*, value: object) -> float | None:
     if value is None:
         return None
+
     if isinstance(value, (int, float)) and not isinstance(value, bool):
         return float(value)
+
     return None
 
 
 def _optional_int_field(*, value: object) -> int | None:
     if value is None:
         return None
+
     if isinstance(value, (int, float)) and not isinstance(value, bool):
         return int(value)
+
     return None
 
 
@@ -1169,6 +1223,7 @@ def extract_trial_log_files(
     for trial_dir in sorted(harbor_job_dir.iterdir()):
         if not trial_dir.is_dir():
             continue
+
         if "__" not in trial_dir.name:
             continue
 

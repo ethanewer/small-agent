@@ -126,6 +126,7 @@ class TmuxSession:
             idx = current_buffer.index(pb)
             if "\n" in pb:
                 idx = pb.rfind("\n")
+
             return current_buffer[idx:]
 
         return None

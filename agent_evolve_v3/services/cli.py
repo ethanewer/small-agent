@@ -49,6 +49,7 @@ def main(argv: list[str]) -> int:
     args = parse_args(argv=argv)
     if args.command == "validate":
         return _run_validate(args=args)
+
     if args.command == "benchmark":
         return execute_workspace_benchmark(
             workspace_path=args.workspace,

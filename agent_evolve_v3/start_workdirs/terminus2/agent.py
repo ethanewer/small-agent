@@ -502,6 +502,7 @@ def _query_model(
                         event_type="compaction",
                         payload={"kind": "reactive"},
                     )
+
                 continue
 
             raise
@@ -734,6 +735,7 @@ def _execute_turn_commands(
                         "output": timeout_msg,
                     },
                 )
+
             return timeout_msg
 
     terminal_output = session.get_incremental_output()
@@ -813,6 +815,7 @@ def run(
             feedback = ""
             if result.error:
                 feedback += f"ERROR: {result.error}"
+
             if result.warning:
                 feedback += (
                     f"\nWARNINGS: {result.warning}"

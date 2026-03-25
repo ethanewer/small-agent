@@ -28,11 +28,14 @@ def _load_benchmark_expectations(
         if stripped.startswith('DATASET_REF="') and stripped.endswith('"'):
             dataset_ref = stripped[len('DATASET_REF="') : -1]
             continue
+
         if stripped == "BENCHMARK_TASKS=(":
             in_tasks = True
             continue
+
         if in_tasks and stripped == ")":
             break
+
         if in_tasks and stripped:
             task_count += 1
     return dataset_ref, task_count

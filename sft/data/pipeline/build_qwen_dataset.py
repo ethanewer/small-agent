@@ -207,6 +207,7 @@ def to_text(value: Any) -> str:
                     parts.append(json.dumps(item, ensure_ascii=False))
             else:
                 parts.append(str(item))
+
         return "\n".join(parts)
 
     if isinstance(value, dict):
@@ -1426,6 +1427,7 @@ def build_balanced(output_dir: Path, seed: int) -> None:
             if candidate_distance < best_distance:
                 best_distance = candidate_distance
                 best_extra_row = row
+
     if best_extra_row is not None:
         nvidia_selected.append(best_extra_row)
 

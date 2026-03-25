@@ -16,6 +16,7 @@ PLANNER_NOTES_FILE_NAME = "PLANNER_NOTES.md"
 def classify_state_status(*, state: AgentState, run_root: Path) -> str:
     if state.result is not None and state.official_benchmark is not None:
         return "completed"
+
     iteration_artifacts = _iteration_artifacts_dir(
         run_root=run_root,
         iteration=state.iteration,
@@ -25,33 +26,42 @@ def classify_state_status(*, state: AgentState, run_root: Path) -> str:
     )
     if benchmark_step and benchmark_step.get("returncode") not in (None, 0):
         return "benchmark_failed"
+
     validation_step = _load_step_result(
         path=iteration_artifacts / "validation_step.json",
     )
     if validation_step and validation_step.get("returncode") not in (None, 0):
         return "validation_failed"
+
     implementation_step = _load_step_result(
         path=iteration_artifacts / "implementation_step.json",
     )
     if implementation_step and implementation_step.get("returncode") not in (None, 0):
         return "implementation_failed"
+
     if benchmark_step:
         return "benchmark_pending_summary"
+
     if validation_step:
         return "benchmark_pending"
+
     if implementation_step:
         return "validation_pending"
+
     if state.plan:
         return "planned"
+
     return "seeded"
 
 
 def parent_iteration_for_state(*, state: AgentState) -> int | None:
     if state.prev_path is None:
         return None
+
     stem = Path(state.prev_path).stem
     if not stem.startswith("iteration-"):
         return None
+
     suffix = stem.removeprefix("iteration-")
     try:
         return int(suffix)
@@ -63,18 +73,22 @@ def summarize_problem_trials(*, state: AgentState) -> str:
     result = state.result
     if result is None:
         return "No benchmark result available."
+
     trial_ids = _problem_trial_ids(result=result)
     if not trial_ids:
         return "No failed or erroring tasks recorded."
+
     preview = ", ".join(trial_ids[:5])
     if len(trial_ids) > 5:
         preview += ", ..."
+
     return preview
 
 
 def plan_summary(*, plan: str | None) -> str:
     if not plan:
         return "No plan recorded."
+
     first_line = next((line.strip() for line in plan.splitlines() if line.strip()), "")
     return first_line or "No plan recorded."
 
@@ -104,6 +118,7 @@ def latest_iteration_section(*, state: AgentState, run_root: Path) -> str:
             f"{result.reward_mean:.3f} / {result.pass_count} / "
             f"{result.failure_count} / {result.error_count}"
         )
+
     return "\n".join(
         [
             f"## Iteration {state.iteration}",
@@ -139,12 +154,14 @@ def latest_iteration_header(*, state: AgentState) -> str:
 def latest_run_selectable_text(*, state: AgentState | None) -> str:
     if state is None:
         return "N/A"
+
     return "yes" if state.result is not None else "no"
 
 
 def latest_run_parent_iteration_text(*, state: AgentState | None) -> str:
     if state is None:
         return "N/A"
+
     parent_iteration = parent_iteration_for_state(state=state)
     return str(parent_iteration) if parent_iteration is not None else "root"
 
@@ -165,6 +182,7 @@ def latest_run_artifact_map(
             "trial_summaries_path": "N/A",
             "trial_logs_dir": "N/A",
         }
+
     benchmark = state.official_benchmark
     iteration_artifacts = _iteration_artifacts_dir(
         run_root=run_root,
@@ -230,9 +248,11 @@ _INLINE_VERIFIER_LIMIT = 300
 def summarize_problem_trials_detail(*, state: AgentState | None) -> str:
     if state is None:
         return "No benchmark data available."
+
     benchmark = state.official_benchmark
     if benchmark is None:
         return "No benchmark data available."
+
     result = state.result
     if result is None:
         return "No benchmark result available."
@@ -288,6 +308,7 @@ def _format_trial_detail(
     status_parts = [f"Agent exit: {exit_str}"]
     if summary.exception_type:
         status_parts.append(f"Exception: {summary.exception_type}")
+
     status_line = " | ".join(status_parts)
 
     sections = [header, status_line]
@@ -316,6 +337,7 @@ def _truncate_text(*, text: str, limit: int) -> str:
     encoded = text.encode("utf-8")
     if len(encoded) <= limit:
         return text.strip()
+
     return "..." + encoded[-limit:].decode("utf-8", errors="ignore").strip()
 
 
@@ -323,9 +345,11 @@ def _fallback_problem_summary(*, result: BenchmarkSummary) -> str:
     trial_ids = _problem_trial_ids(result=result)
     if not trial_ids:
         return "No failed or erroring tasks recorded."
+
     preview = ", ".join(trial_ids[:5])
     if len(trial_ids) > 5:
         preview += ", ..."
+
     return f"Problem trials (IDs only, no detailed logs available): {preview}"
 
 
@@ -336,18 +360,21 @@ def _iteration_artifacts_dir(*, run_root: Path, iteration: int) -> Path:
 def _existing_path(*, path: Path | None) -> str | None:
     if path is None or not path.exists():
         return None
+
     return str(path.resolve())
 
 
 def _load_step_result(*, path: Path) -> dict[str, object] | None:
     if not path.exists():
         return None
+
     try:
         payload_obj: object = json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError:
         return None
     if not isinstance(payload_obj, dict):
         return None
+
     return {str(key): value for key, value in payload_obj.items()}
 
 
@@ -361,6 +388,7 @@ def _problem_trial_ids(*, result: BenchmarkSummary) -> list[str]:
     ]:
         if trial_id in seen:
             continue
+
         seen.add(trial_id)
         ordered.append(trial_id)
     return ordered
@@ -380,6 +408,7 @@ def classify_task_volatility(
         result = state.result
         if result is None:
             continue
+
         for trial_id in result.passed_trials:
             name = _extract_task_name_from_trial_id(trial_id=trial_id)
             task_pass[name] = task_pass.get(name, 0) + 1
@@ -394,6 +423,7 @@ def classify_task_volatility(
                 name = _extract_task_name_from_trial_id(trial_id=trial_id)
                 if name not in task_pass:
                     task_pass.setdefault(name, 0)
+
                 task_total[name] = task_total.get(name, 0) + 1
 
     always_pass: set[str] = set()
@@ -403,6 +433,7 @@ def classify_task_volatility(
         passes = task_pass.get(name, 0)
         if total == 0:
             continue
+
         rate = passes / total
         if rate >= 1.0:
             always_pass.add(name)
@@ -422,6 +453,7 @@ def build_task_pass_rate_table(*, states: list[AgentState]) -> str:
         result = state.result
         if result is None:
             continue
+
         for trial_id in result.passed_trials:
             name = _extract_task_name_from_trial_id(trial_id=trial_id)
             task_pass[name] = task_pass.get(name, 0) + 1
@@ -459,6 +491,7 @@ def build_task_pass_rate_table(*, states: list[AgentState]) -> str:
             stability = "always-fail"
         else:
             stability = "volatile"
+
         rows.append((name, rate, passes, fails, errors, stability))
 
     rows.sort(key=lambda r: r[1], reverse=True)
@@ -480,6 +513,7 @@ def compute_noise_stats(*, states: list[AgentState]) -> str:
         result = state.result
         if result is None or result.reward_mean is None:
             continue
+
         rewards.append(result.reward_mean)
 
     if len(rewards) < 2:
@@ -531,8 +565,10 @@ def format_failure_analyses(*, state: AgentState) -> str:
         parts = []
         if sys_count:
             parts.append(f"{sys_count} systematic")
+
         if sto_count:
             parts.append(f"{sto_count} stochastic")
+
         detail = f" ({', '.join(parts)})" if parts else ""
         summary_parts.append(f"{count} {reason}{detail}")
 

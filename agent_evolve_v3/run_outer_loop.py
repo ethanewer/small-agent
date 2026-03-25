@@ -86,6 +86,7 @@ def _format_elapsed(start: float) -> str:
     minutes, seconds = divmod(int(elapsed), 60)
     if minutes:
         return f"{minutes}m {seconds}s"
+
     return f"{seconds}s"
 
 
@@ -770,6 +771,7 @@ def _run_failure_investigations(
                         stdout = str(metadata.get("stdout", ""))
                 except (json.JSONDecodeError, OSError):
                     pass
+
             logs.append(stdout[-10000:] if len(stdout) > 10000 else stdout)
 
             exc_content = ""
@@ -781,6 +783,7 @@ def _run_failure_investigations(
                     )
                 except OSError:
                     pass
+
             exceptions.append(
                 exc_content[-3000:] if len(exc_content) > 3000 else exc_content
             )
@@ -794,6 +797,7 @@ def _run_failure_investigations(
                     )
                 except OSError:
                     pass
+
             verifiers.append(
                 verifier_content[-5000:]
                 if len(verifier_content) > 5000
@@ -872,6 +876,7 @@ def _build_scoreboard(*, states: list[AgentState]) -> str:
         parent = "root"
         if state.prev_path:
             parent = Path(state.prev_path).stem.replace("iteration-", "")
+
         small_reward = (
             f"{state.result.train_small_reward_mean:.3f}"
             if state.result and state.result.train_small_reward_mean is not None
@@ -1068,6 +1073,7 @@ def _prepare_planner_notes(*, run_root: Path, states: list[AgentState]) -> Path:
         content = notes_path.read_text(encoding="utf-8")
     else:
         content = planner_notes_template()
+
     latest_state = states[-1] if states else None
     if latest_state is not None:
         iteration_header = latest_iteration_header(state=latest_state)
@@ -1080,6 +1086,7 @@ def _prepare_planner_notes(*, run_root: Path, states: list[AgentState]) -> Path:
                     run_root=run_root,
                 )
             )
+
     notes_path.write_text(content.rstrip() + "\n", encoding="utf-8")
     return notes_path
 
@@ -1090,6 +1097,7 @@ def _sync_planner_notes(
     notes_path = planning_workspace / PLANNER_NOTES_FILE_NAME
     if not notes_path.exists():
         return
+
     shutil.copy2(src=notes_path, dst=_planner_notes_path(run_root=run_root))
     shutil.copy2(src=notes_path, dst=artifacts_dir / "planner_notes_output.md")
 

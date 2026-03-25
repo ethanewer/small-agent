@@ -115,6 +115,7 @@ def main(argv: list[str]) -> int:
             request_label=args.request_label,
             benchmark=official_run,
         )
+
     payload = {
         "model_key": official_run.model_key,
         "aggregate_result_path": official_run.aggregate_result_path,
@@ -131,6 +132,7 @@ def main(argv: list[str]) -> int:
             json.dumps(payload, indent=2, ensure_ascii=True) + "\n",
             encoding="utf-8",
         )
+
     print(json.dumps(payload, ensure_ascii=True))
     return 0
 
@@ -245,15 +247,19 @@ def resolve_workspace_benchmark_tasks(*, workspace_root: Path) -> list[str] | No
     manifest_path = _discover_run_manifest(start_path=workspace_root)
     if manifest_path is None:
         return None
+
     try:
         payload = json.loads(manifest_path.read_text(encoding="utf-8"))
     except json.JSONDecodeError:
         return None
+
     if not isinstance(payload, dict):
         return None
+
     raw_task_names = payload.get("benchmark_tasks")
     if not isinstance(raw_task_names, list):
         return None
+
     task_names = [str(task_name).strip() for task_name in raw_task_names]
     task_names = [task_name for task_name in task_names if task_name]
     return task_names or None
@@ -263,6 +269,7 @@ def discover_repo_root(*, start_path: Path) -> Path:
     current = start_path.resolve()
     if current.is_file():
         current = current.parent
+
     for candidate in (current, *current.parents):
         if (candidate / OFFICIAL_BENCHMARK_SCRIPT_RELATIVE_PATH).exists():
             return candidate
@@ -282,12 +289,14 @@ def _prepare_benchmark_output_dirs(
         artifact_root = artifacts_dir.resolve()
         artifact_root.mkdir(parents=True, exist_ok=True)
         return artifact_root, None
+
     if record_visible:
         visible_run_dir = _create_visible_run_dir(
             workspace_root=workspace_root,
             request_label=request_label,
         )
         return visible_run_dir, visible_run_dir
+
     artifact_root = _create_artifacts_dir(
         workspace_root=workspace_root,
         request_label=request_label,
@@ -387,10 +396,13 @@ def _extract_benchmark_tasks(*, content: str, script_path: Path) -> list[str]:
             if stripped.endswith("_TASKS=("):
                 in_tasks = True
             continue
+
         if stripped == ")":
             break
+
         if not stripped or stripped.startswith("#"):
             continue
+
         task_names.append(stripped)
     if not task_names:
         raise RuntimeError(f"Unable to parse task list from {script_path}.")
@@ -408,6 +420,7 @@ def _discover_run_manifest(*, start_path: Path) -> Path | None:
 def resolve_harbor_command() -> list[str]:
     if shutil.which("harbor"):
         return ["harbor"]
+
     if shutil.which("uvx"):
         return [
             "uvx",
@@ -421,6 +434,7 @@ def resolve_harbor_command() -> list[str]:
             "-c",
             "import truststore; truststore.inject_into_ssl(); from harbor.cli.main import app; app()",
         ]
+
     raise RuntimeError("Neither 'harbor' nor 'uvx' is available on PATH.")
 
 
@@ -475,18 +489,22 @@ def _extract_reward_mean(*, eval_stats: dict[str, object]) -> float | None:
     metrics = eval_stats.get("metrics")
     if not isinstance(metrics, list) or not metrics:
         return None
+
     first_metric = metrics[0]
     if not isinstance(first_metric, dict):
         return None
+
     mean = first_metric.get("mean")
     if isinstance(mean, (int, float)):
         return float(mean)
+
     return None
 
 
 def _load_harbor_json(*, path: Path) -> dict[str, object]:
     if not path.exists():
         return {}
+
     data = json.loads(path.read_text(encoding="utf-8"))
     return data if isinstance(data, dict) else {}
 
@@ -498,18 +516,23 @@ def _as_dict(*, value: object) -> dict[str, object]:
 def _string_list(*, value: object) -> list[str]:
     if not isinstance(value, list):
         return []
+
     return [str(item) for item in value]
 
 
 def _coerce_int(*, value: object) -> int:
     if isinstance(value, bool):
         return int(value)
+
     if isinstance(value, int):
         return value
+
     if isinstance(value, float):
         return int(value)
+
     if isinstance(value, str):
         return int(value)
+
     return 0
 
 

@@ -58,6 +58,7 @@ def load_runs_config(*, path: Path) -> RunsConfig:
     for run_name, run_payload in raw_runs.items():
         if not isinstance(run_name, str) or not run_name.strip():
             raise ValueError("Each run name must be a non-empty string.")
+
         if not isinstance(run_payload, dict):
             raise ValueError(f"Run '{run_name}' must be an object.")
 
@@ -73,6 +74,7 @@ def load_runs_config(*, path: Path) -> RunsConfig:
         cursor_model = str(run_payload.get("cursor_model", "")).strip()
         if not model_key:
             raise ValueError(f"Run '{run_name}' must define 'model_key'.")
+
         if not cursor_model:
             raise ValueError(f"Run '{run_name}' must define 'cursor_model'.")
         raw_benchmark_tasks = run_payload.get("benchmark_tasks", [])

@@ -43,10 +43,12 @@ def discover_repo_root(*, start_path: Path) -> Path:
     current = start_path.resolve()
     if current.is_file():
         current = current.parent
+
     for candidate in (current, *current.parents):
         config_dir = candidate / "agent_evolve_v3"
         if any((config_dir / name).exists() for name in RUNS_CONFIG_NAMES):
             return candidate
+
     raise FileNotFoundError(
         f"Unable to locate repo root from {start_path} via agent_evolve_v3/runs.json."
     )
@@ -56,6 +58,7 @@ def load_workspace_agent(*, workspace_root: Path) -> object:
     module_path = workspace_root / "orchestrator.py"
     if not module_path.exists():
         raise RuntimeError(f"Workspace agent not found at {module_path}")
+
     with workspace_imports(workspace_dir=workspace_root):
         module = _load_module(
             module_name=f"workspace_agent_{abs(hash(module_path.resolve()))}",
@@ -64,6 +67,7 @@ def load_workspace_agent(*, workspace_root: Path) -> object:
         agent_cls = getattr(module, "WorkspaceAgent", None)
         if agent_cls is None:
             raise RuntimeError("orchestrator.py must define WorkspaceAgent.")
+
         return agent_cls()
 
 
@@ -129,6 +133,7 @@ def resolve_model_config(
     api_key = resolve_api_key(config_api_key=model_payload.get("api_key"))
     if not api_key:
         raise ValueError(f"Unable to resolve API key for model '{model_key}'.")
+
     return ResolvedModelConfig(
         key=model_key,
         model=str(model_payload["model"]),
@@ -169,10 +174,13 @@ def build_runtime_env_payload(
         env["WORKSPACE_CFG_EXTRA_PARAMS_B64"] = base64.b64encode(
             extra_params_json.encode("utf-8")
         ).decode("ascii")
+
     if model_cfg.temperature is not None:
         env["WORKSPACE_CFG_TEMPERATURE"] = str(model_cfg.temperature)
+
     if model_cfg.context_length is not None:
         env["WORKSPACE_CFG_CONTEXT_LENGTH"] = str(model_cfg.context_length)
+
     return env
 
 
@@ -185,6 +193,7 @@ def stage_remote_bundle(
     for entry in workspace_root.iterdir():
         if entry.name == "__pycache__" or entry.name.startswith("."):
             continue
+
         if entry.is_file() and entry.suffix == ".py":
             shutil.copy2(src=entry, dst=staging / entry.name)
         elif entry.is_dir() and entry.name != "__pycache__":
@@ -199,13 +208,17 @@ def stage_remote_bundle(
 def resolve_api_key(*, config_api_key: object) -> str | None:
     if not isinstance(config_api_key, str):
         return None
+
     raw = config_api_key.strip()
     if not raw:
         return None
+
     if raw.startswith("$"):
         raw = raw[1:]
+
     if raw.isupper() and raw.replace("_", "").isalnum():
         return resolve_env_value(env_name=raw)
+
     return raw
 
 
@@ -213,8 +226,10 @@ def resolve_env_value(*, env_name: str) -> str | None:
     current = os.environ.get(env_name)
     if current:
         return current
+
     if not shutil.which("zsh"):
         return None
+
     command = f'source ~/.zshrc >/dev/null 2>&1; printf %s "${{{env_name}}}"'
     completed = subprocess.run(
         ["zsh", "-ic", command],
@@ -243,6 +258,7 @@ def _load_runtime_types_module(*, workspace_root: Path) -> ModuleType:
     module_path = workspace_root / "agent_types.py"
     if not module_path.exists():
         raise RuntimeError(f"Workspace types not found at {module_path}")
+
     with workspace_imports(workspace_dir=workspace_root):
         return _load_module(module_name="workspace_types", module_path=module_path)
 
@@ -254,6 +270,7 @@ def _load_module(*, module_name: str, module_path: Path) -> ModuleType:
     )
     if spec is None or spec.loader is None:
         raise RuntimeError(f"Unable to load module from {module_path}")
+
     module = importlib.util.module_from_spec(spec)
     sys.modules[module_name] = module
     spec.loader.exec_module(module)
@@ -268,6 +285,7 @@ def _workspace_module_prefixes(*, workspace_dir: Path) -> list[str]:
     for entry in workspace_dir.iterdir():
         if entry.name == "__pycache__":
             continue
+
         if entry.is_dir() and (entry / "__init__.py").exists():
             prefixes.append(entry.name)
         elif entry.is_file() and entry.suffix == ".py":
@@ -281,6 +299,7 @@ def _workspace_module_prefixes(*, workspace_dir: Path) -> list[str]:
         if prefix not in seen:
             ordered.append(prefix)
             seen.add(prefix)
+
     return ordered
 
 
@@ -297,26 +316,35 @@ def _as_dict(*, value: object) -> dict[str, Any]:
 def _maybe_int(*, value: object) -> int | None:
     if value is None:
         return None
+
     if isinstance(value, bool):
         return int(value)
+
     if isinstance(value, int):
         return value
+
     if isinstance(value, float):
         return int(value)
+
     if isinstance(value, str):
         return int(value)
+
     return None
 
 
 def _maybe_float(*, value: object) -> float | None:
     if value is None:
         return None
+
     if isinstance(value, bool):
         return float(value)
+
     if isinstance(value, (int, float)):
         return float(value)
+
     if isinstance(value, str):
         return float(value)
+
     return None
 
 

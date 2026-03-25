@@ -78,13 +78,17 @@ def build_runtime_config(
 def resolve_api_key(*, config_api_key: object) -> str | None:
     if not isinstance(config_api_key, str):
         return None
+
     raw = config_api_key.strip()
     if not raw:
         return None
+
     if raw.startswith("$"):
         raw = raw[1:]
+
     if raw.isupper() and raw.replace("_", "").isalnum():
         return resolve_env_value(env_name=raw)
+
     return raw
 
 
@@ -92,6 +96,7 @@ def resolve_env_value(*, env_name: str) -> str | None:
     current = os.environ.get(env_name)
     if current:
         return current
+
     if not shutil.which("zsh"):
         return None
 
@@ -113,26 +118,35 @@ def _as_dict(*, value: object) -> dict[str, Any]:
 def _maybe_int(*, value: object) -> int | None:
     if value is None:
         return None
+
     if isinstance(value, bool):
         return int(value)
+
     if isinstance(value, int):
         return value
+
     if isinstance(value, float):
         return int(value)
+
     if isinstance(value, str):
         return int(value)
+
     return None
 
 
 def _maybe_float(*, value: object) -> float | None:
     if value is None:
         return None
+
     if isinstance(value, bool):
         return float(value)
+
     if isinstance(value, (int, float)):
         return float(value)
+
     if isinstance(value, str):
         return float(value)
+
     return None
 
 
@@ -143,5 +157,6 @@ def _maybe_dict(*, value: object) -> dict[str, Any] | None:
 def _optional_text(*, value: object) -> str | None:
     if value is None:
         return None
+
     text = str(value).strip()
     return text or None

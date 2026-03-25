@@ -46,6 +46,7 @@ def _build_runtime_config(*, workspace_root: Path) -> object:
         )
         if spec is None or spec.loader is None:
             raise RuntimeError(f"Unable to load workspace types from {types_path}")
+
         module = importlib.util.module_from_spec(spec)
         sys.modules["workspace_types"] = module
         spec.loader.exec_module(module)
@@ -92,14 +93,18 @@ def _load_extra_params() -> dict[str, object] | None:
 def _parse_extra_params(*, raw: str | None) -> dict[str, object] | None:
     if raw is None:
         return None
+
     normalized = raw.strip()
     if not normalized:
         return None
+
     parsed = json.loads(normalized)
     if parsed is None:
         return None
+
     if not isinstance(parsed, dict):
         raise RuntimeError("Workspace extra params must be a JSON object.")
+
     return parsed
 
 
@@ -112,12 +117,14 @@ def _load_workspace_agent(*, workspace_root: Path) -> object:
         )
         if spec is None or spec.loader is None:
             raise RuntimeError(f"Unable to load workspace agent from {agent_path}")
+
         module = importlib.util.module_from_spec(spec)
         sys.modules[spec.name] = module
         spec.loader.exec_module(module)
         agent_cls = getattr(module, "WorkspaceAgent", None)
         if agent_cls is None:
             raise RuntimeError("orchestrator.py must define WorkspaceAgent.")
+
         return agent_cls()
 
 
@@ -145,6 +152,7 @@ def _workspace_module_prefixes(*, workspace_dir: Path) -> list[str]:
     for entry in workspace_dir.iterdir():
         if entry.name == "__pycache__":
             continue
+
         if entry.is_dir() and (entry / "__init__.py").exists():
             prefixes.append(entry.name)
         elif entry.is_file() and entry.suffix == ".py":
@@ -158,6 +166,7 @@ def _workspace_module_prefixes(*, workspace_dir: Path) -> list[str]:
         if prefix not in seen:
             ordered.append(prefix)
             seen.add(prefix)
+
     return ordered
 
 
@@ -170,12 +179,14 @@ def _purge_module_prefix(*, prefix: str) -> None:
 def _maybe_int(*, value: str | None) -> int | None:
     if value is None or value == "":
         return None
+
     return int(value)
 
 
 def _maybe_float(*, value: str | None) -> float | None:
     if value is None or value == "":
         return None
+
     return float(value)
 
 

@@ -81,6 +81,7 @@ def _append_context_message(context: Any, message: str) -> None:
     if not isinstance(metadata, dict):
         metadata = {}
         _safe_setattr(obj=context, name="metadata", value=metadata)
+
     if isinstance(metadata, dict):
         logs = metadata.setdefault("small_agent_logs", [])
         if isinstance(logs, list):
@@ -117,6 +118,7 @@ def _set_context_result(
     if not isinstance(metadata, dict):
         metadata = {}
         _safe_setattr(obj=context, name="metadata", value=metadata)
+
     if isinstance(metadata, dict):
         metadata["small_agent_result"] = payload
 
@@ -135,6 +137,7 @@ def _record_setup_stage(
     if not isinstance(metadata, dict):
         metadata = {}
         _safe_setattr(obj=context, name="metadata", value=metadata)
+
     if not isinstance(metadata, dict):
         return
 
@@ -145,6 +148,7 @@ def _record_setup_stage(
     payload: dict[str, str] = {"status": status}
     if details:
         payload["details"] = details
+
     setup_log[stage] = payload
 
 
@@ -194,6 +198,7 @@ def _extract_exec_fields(exec_result: Any) -> tuple[int, str, str]:
     def _as_text(value: Any) -> str:
         if value is None:
             return ""
+
         return str(value)
 
     if exec_result is None:
@@ -269,6 +274,7 @@ async def _environment_is_dir(
         except (ProcessLookupError, TimeoutError, OSError):
             if attempt >= max_retries:
                 raise
+
             await asyncio.sleep(float(2**attempt))
 
     raise AssertionError("unreachable")
@@ -304,8 +310,10 @@ def _stage_upload_dir(source_dir: Path) -> Path:
     for entry in source_dir.iterdir():
         if entry.name in _UPLOAD_EXCLUDE_DIRS and entry.is_dir():
             continue
+
         if entry.name in _UPLOAD_EXCLUDE_FILES and entry.is_file():
             continue
+
         dest = staging / entry.name
         if entry.is_dir():
             shutil.copytree(src=entry, dst=dest, symlinks=True)
@@ -362,11 +370,14 @@ def _build_config_env(config: Any) -> dict[str, str]:
     }
     if config.temperature is not None:
         env["CFG_TEMPERATURE"] = str(config.temperature)
+
     if config.context_length is not None:
         env["CFG_CONTEXT_LENGTH"] = str(config.context_length)
+
     if config.extra_params is not None:
         encoded = base64.b64encode(json.dumps(config.extra_params).encode()).decode()
         env["CFG_EXTRA_PARAMS_B64"] = encoded
+
     return env
 
 
@@ -385,8 +396,10 @@ class SmallAgentHarborAgent(HarborBaseAgent):
             base_init_kwargs: dict[str, object] = dict(_kwargs)
             if logs_dir is not None:
                 base_init_kwargs["logs_dir"] = logs_dir
+
             if model_name is not None:
                 base_init_kwargs["model_name"] = model_name
+
             super().__init__(**base_init_kwargs)
         except TypeError:
             try:
@@ -552,6 +565,7 @@ class SmallAgentHarborAgent(HarborBaseAgent):
             except (ProcessLookupError, TimeoutError, OSError):
                 if attempt >= max_retries:
                     raise
+
                 await asyncio.sleep(float(2**attempt))
 
     async def run(

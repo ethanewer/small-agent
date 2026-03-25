@@ -106,6 +106,7 @@ class ConsoleLogger:
             response_preview = output_text.replace("\n", " ")
             if self._has_printed_output:
                 self._console.print(Text("─" * width, style="dim"))
+
             self._has_printed_output = True
             in_line = Text(in_prefix, style="cyan")
             in_line.append(
@@ -131,6 +132,7 @@ class ConsoleLogger:
 
         if self._has_printed_output:
             self._console.print(Text("─" * width, style="dim"))
+
         self._has_printed_output = True
         _render_labeled_fixed(
             console=self._console,
@@ -168,6 +170,7 @@ class ConsoleLogger:
 
         if self._has_printed_output:
             self._console.print(Text("─" * width, style="dim"))
+
         self._has_printed_output = True
         error_line = Text("error: ", style="red")
         error_line.append(kind, style="white")
@@ -684,6 +687,7 @@ def main() -> None:
                 f"API key not found for model '{active_model_key}'. "
                 "Set api_key to a literal value or env var name."
             )
+
         console.print(
             Panel(
                 message,
@@ -753,7 +757,6 @@ def main() -> None:
             title = "Done" if result.success else "Failed"
             style = "green" if result.success else "red"
             console.print(Panel(summary, title=title, border_style=style))
-
     logger.print_compaction_summary()
     raise SystemExit(result.exit_code)
 
