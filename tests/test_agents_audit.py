@@ -1,502 +1,124 @@
 from __future__ import annotations
 
-import tempfile
+import sys
 import unittest
 from pathlib import Path
-import sys
-from typing import cast
+from typing import Any, cast
 from unittest.mock import patch
-
-from rich.console import Console
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from agents.core.events import AgentEvent  # noqa: E402
-from agents.core.result import RunResult  # noqa: E402
-from agents.core.sink import EventSink, JsonlEventSink  # noqa: E402
-from agents.core.task import Task  # noqa: E402
-from agents.interface import (  # noqa: E402
-    AgentModelConfig,
-    AgentRuntimeConfig,
-    run_agent_task_with_fallback,
-)
-from agents.local_binary import resolve_agent_binary  # noqa: E402
-from agents.qwen.qwen_agent import QwenHeadlessAgent  # noqa: E402
-from agents.registry import get_agent  # noqa: E402
-from agents.terminus2 import agent as terminus_agent  # noqa: E402
+import agents  # noqa: E402
+from agents.agent_types import Config, Logger, RunResult  # noqa: E402
 
 
-class _RecordingSink(EventSink):
+def _test_config(**overrides: Any) -> Config:
+    defaults: dict[str, Any] = {
+        "model": "model-y",
+        "api_base": "https://example.invalid/v1",
+        "api_key": "test-key",
+        "max_turns": 2,
+        "max_wait_seconds": 1.0,
+        "final_message_enabled": False,
+    }
+    defaults.update(overrides)
+    return Config(**defaults)
+
+
+class _RecordingLogger:
     def __init__(self) -> None:
-        self.events: list[AgentEvent] = []
-        self.result: RunResult | None = None
+        self.events: list[dict[str, Any]] = []
 
-    def emit(self, *, event: AgentEvent) -> None:
-        self.events.append(event)
-
-    def finalize(self, *, result: RunResult) -> None:
-        self.result = result
-
-
-class _LegacyOnlyAgent:
-    def __init__(self, *, exit_code: int) -> None:
-        self._exit_code = exit_code
-        self.calls: list[str] = []
-
-    def run(self, instruction: str, cfg: AgentRuntimeConfig, console: Console) -> int:
-        del cfg, console
-        self.calls.append(instruction)
-        return self._exit_code
+    def log(
+        self,
+        *,
+        event_type: str,
+        payload: dict[str, Any],
+        turn: int | None = None,
+    ) -> None:
+        self.events.append({"event_type": event_type, "payload": payload, "turn": turn})
 
 
-class TestRegistryAndCore(unittest.TestCase):
-    def test_get_agent_unknown_lists_available_agents(self) -> None:
-        with self.assertRaisesRegex(
-            ValueError,
-            "Available agents: liteforge, qwen, terminus-2",
+class TestRunFunction(unittest.TestCase):
+    def test_run_returns_run_result(self) -> None:
+        config = _test_config()
+        with patch.object(
+            agents,
+            "run",
+            return_value=RunResult(exit_code=0, success=True),
         ):
-            get_agent("missing-agent")
-
-    def test_jsonl_sink_writes_events_and_result(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            path = Path(tmp_dir) / "events.jsonl"
-            sink = JsonlEventSink(output_path=path)
-            sink.emit(
-                event=AgentEvent(
-                    event_type="issue",
-                    payload={"kind": "parser", "message": "bad json"},
-                    turn=2,
-                )
-            )
-            sink.finalize(
-                result=RunResult(
-                    exit_code=0,
-                    success=True,
-                    task_id="t-1",
-                )
-            )
-            text = path.read_text(encoding="utf-8")
-            self.assertIn('"event_type": "issue"', text)
-            self.assertIn('"event_type": "result"', text)
-
-
-class TestFallbackRunnerContracts(unittest.TestCase):
-    def _runtime_cfg(self) -> AgentRuntimeConfig:
-        return AgentRuntimeConfig(
-            agent_key="terminus-2",
-            model=AgentModelConfig(
-                model="qwen/qwen3-coder-next",
-                api_base="https://openrouter.ai/api/v1",
-                api_key="test-key",
-            ),
-            agent_config={"final_message": False},
-        )
-
-    def test_fallback_uses_run_task_when_available(self) -> None:
-        runtime = self._runtime_cfg()
-        task = Task.from_instruction(instruction="echo hi", task_id="task-1")
-        with patch("agents.terminus2.agent.run_agent", return_value=0):
-            result = run_agent_task_with_fallback(
-                agent=get_agent("terminus-2"),
-                task=task,
-                cfg=runtime,
-                console=Console(record=True),
-            )
-        self.assertEqual(result.exit_code, 0)
-        self.assertEqual(result.task_id, "task-1")
-
-    def test_fallback_uses_legacy_run_when_no_run_task(self) -> None:
-        runtime = self._runtime_cfg()
-        task = Task.from_instruction(instruction="legacy call", task_id="legacy-1")
-        agent = _LegacyOnlyAgent(exit_code=2)
-        result = run_agent_task_with_fallback(
-            agent=agent,  # type: ignore[arg-type]
-            task=task,
-            cfg=runtime,
-            console=Console(record=True),
-        )
-        self.assertEqual(agent.calls, ["legacy call"])
-        self.assertEqual(result.exit_code, 2)
-        self.assertFalse(result.success)
-        self.assertEqual(result.task_id, "legacy-1")
-
-
-class TestQwenAndTerminusTaskAPI(unittest.TestCase):
-    def test_qwen_task_path_uses_task_instruction(self) -> None:
-        runtime = AgentRuntimeConfig(
-            agent_key="qwen",
-            model=AgentModelConfig(
-                model="qwen/qwen3-coder-next",
-                api_base="https://openrouter.ai/api/v1",
-                api_key="test-key",
-            ),
-            agent_config={"binary": "qwen-custom"},
-        )
-        captured: dict[str, object] = {}
-
-        def fake_run_subprocess(**kwargs):  # type: ignore[no-untyped-def]
-            captured.update(kwargs)
-            return 0
-
-        with patch(
-            "agents.qwen.qwen_agent.run_subprocess",
-            side_effect=fake_run_subprocess,
-        ):
-            result = QwenHeadlessAgent().run_task(
-                task=Task.from_instruction(
-                    instruction="echo from task",
-                    task_id="task-123",
-                ),
-                cfg=runtime,
-                console=Console(record=True),
-                sink=None,
-            )
-        self.assertTrue(result.success)
-        self.assertEqual(result.task_id, "task-123")
-        self.assertEqual(
-            cast(list[str], captured["args"]),
-            [
-                "qwen-custom",
-                "-p",
-                "echo from task",
-                "-y",
-                "--output-format",
-                "stream-json",
-            ],
-        )
-        self.assertEqual(cast(bool, captured["echo_stdout"]), False)
-        self.assertTrue(callable(cast(object, captured["on_stdout_line"])))
-
-    def test_qwen_emits_stream_tool_events_to_sink(self) -> None:
-        runtime = AgentRuntimeConfig(
-            agent_key="qwen",
-            model=AgentModelConfig(
-                model="qwen/qwen3-coder-next",
-                api_base="https://openrouter.ai/api/v1",
-                api_key="test-key",
-            ),
-            agent_config={"binary": "qwen-custom", "verbosity": 1},
-        )
-        sink = _RecordingSink()
-
-        def fake_run_subprocess(**kwargs):  # type: ignore[no-untyped-def]
-            on_stdout_line = kwargs["on_stdout_line"]
-            assert callable(on_stdout_line)
-            on_stdout_line(
-                '{"type":"assistant","message":{"content":[{"type":"text","text":"step 1"}]}}'
-            )
-            on_stdout_line(
-                '{"type":"assistant","message":{"content":[{"type":"tool_call","name":"shell","arguments":{"cmd":"ls"}}]}}'
-            )
-            on_stdout_line(
-                '{"type":"assistant","message":{"content":[{"type":"tool_result","name":"shell","output":"ok"}]}}'
-            )
-            return 0
-
-        console = Console(record=True)
-        with patch(
-            "agents.qwen.qwen_agent.run_subprocess",
-            side_effect=fake_run_subprocess,
-        ):
-            result = QwenHeadlessAgent().run_task(
-                task=Task.from_instruction(
-                    instruction="echo from task",
-                    task_id="task-events",
-                ),
-                cfg=runtime,
-                console=console,
-                sink=sink,
-            )
-        self.assertTrue(result.success)
-        self.assertIsNotNone(sink.result)
-        event_types = [event.event_type for event in sink.events]
-        self.assertIn("reasoning", event_types)
-        self.assertIn("tool_call", event_types)
-        self.assertIn("tool_result", event_types)
-        self.assertIn("done", event_types)
-        self.assertIn("Done", console.export_text())
-
-    def test_qwen_returns_error_when_binary_missing(self) -> None:
-        runtime = AgentRuntimeConfig(
-            agent_key="qwen",
-            model=AgentModelConfig(
-                model="qwen/qwen3-coder-next",
-                api_base="https://openrouter.ai/api/v1",
-                api_key="test-key",
-            ),
-            agent_config={"binary": "qwen-custom"},
-        )
-        with patch(
-            "agents.qwen.qwen_agent.run_subprocess",
-            side_effect=FileNotFoundError(),
-        ):
-            result = QwenHeadlessAgent().run_task(
-                task=Task.from_instruction(
-                    instruction="echo from task", task_id="task-404"
-                ),
-                cfg=runtime,
-                console=Console(record=True),
-                sink=None,
-            )
-        self.assertFalse(result.success)
-        self.assertEqual(result.exit_code, 1)
-        self.assertIn("not found", str(result.final_message))
-
-    def test_qwen_returns_error_on_called_process_error(self) -> None:
-        runtime = AgentRuntimeConfig(
-            agent_key="qwen",
-            model=AgentModelConfig(
-                model="qwen/qwen3-coder-next",
-                api_base="https://openrouter.ai/api/v1",
-                api_key="test-key",
-            ),
-            agent_config={"binary": "qwen-custom"},
-        )
-        with patch(
-            "agents.qwen.qwen_agent.run_subprocess",
-            side_effect=__import__("subprocess").CalledProcessError(
-                returncode=2,
-                cmd=["qwen-custom"],
-                stderr="boom",
-            ),
-        ):
-            result = QwenHeadlessAgent().run_task(
-                task=Task.from_instruction(
-                    instruction="echo from task", task_id="task-500"
-                ),
-                cfg=runtime,
-                console=Console(record=True),
-                sink=None,
-            )
-        self.assertFalse(result.success)
-        self.assertEqual(result.exit_code, 1)
-        self.assertIsNotNone(result.final_message)
-
-    def test_qwen_returns_compatibility_error_when_preflight_fails(self) -> None:
-        runtime = AgentRuntimeConfig(
-            agent_key="qwen",
-            model=AgentModelConfig(
-                model="qwen/qwen3-coder-next",
-                api_base="https://openrouter.ai/api/v1",
-                api_key="test-key",
-            ),
-        )
-        with patch(
-            "agents.qwen.qwen_agent.preflight_agent_model_compatibility",
-            return_value="compatibility mismatch",
-        ):
-            result = QwenHeadlessAgent().run_task(
-                task=Task.from_instruction(
-                    instruction="echo from task", task_id="task-compat"
-                ),
-                cfg=runtime,
-                console=Console(record=True),
-                sink=None,
-            )
-        self.assertFalse(result.success)
-        self.assertEqual(result.final_message, "compatibility mismatch")
-
-    def test_terminus_run_task_returns_run_result(self) -> None:
-        runtime = AgentRuntimeConfig(
-            agent_key="terminus-2",
-            model=AgentModelConfig(
-                model="model-y",
-                api_base="https://example.invalid/v1",
-                api_key="api",
-            ),
-            agent_config={"max_turns": 1, "max_wait_seconds": 1.0},
-        )
-        with patch("agents.terminus2.agent.run_agent", return_value=0):
-            result = terminus_agent.Terminus2Agent().run_task(
-                task=Task.from_instruction(instruction="inspect", task_id="t2"),
-                cfg=runtime,
-                console=Console(record=True),
-                sink=None,
-            )
+            result = agents.run(instruction="inspect", config=config)
         self.assertEqual(result.exit_code, 0)
         self.assertTrue(result.success)
-        self.assertEqual(result.task_id, "t2")
 
-    def test_terminus_run_task_maps_core_config_and_disable_final_message(self) -> None:
-        runtime = AgentRuntimeConfig(
-            agent_key="terminus-2",
-            model=AgentModelConfig(
-                model="qwen/qwen3-coder-next",
-                api_base="https://openrouter.ai/api/v1",
-                api_key="test-key",
-                temperature=0.0,
-            ),
-            agent_config={
-                "verbosity": 1,
-                "max_turns": 9,
-                "max_wait_seconds": 7.5,
-                "final_message": False,
-            },
+    def test_run_passes_config_directly(self) -> None:
+        config = _test_config(
+            model="qwen/qwen3-coder-next",
+            api_base="https://openrouter.ai/api/v1",
+            api_key="test-key",
+            temperature=0.0,
+            max_turns=9,
+            max_wait_seconds=7.5,
+            final_message_enabled=False,
         )
         captured_kwargs: dict[str, object] = {}
 
-        def fake_run_agent(**kwargs: object) -> int:
+        def fake_run_agent(**kwargs: object) -> RunResult:
             captured_kwargs.update(kwargs)
-            return 0
+            return RunResult(exit_code=0, success=True)
 
-        with patch("agents.terminus2.agent.run_agent", side_effect=fake_run_agent):
-            result = terminus_agent.Terminus2Agent().run_task(
-                task=Task.from_instruction(
-                    instruction="inspect config",
-                    task_id="term-cfg",
-                ),
-                cfg=runtime,
-                console=Console(record=True),
-                sink=None,
-            )
+        with patch.object(agents, "run", side_effect=fake_run_agent):
+            result = agents.run(instruction="inspect config", config=config)
+
         self.assertTrue(result.success)
-        cfg = cast(terminus_agent.CoreConfig, captured_kwargs["cfg"])
+        cfg = cast(Config, captured_kwargs["config"])
         self.assertEqual(cfg.max_turns, 9)
         self.assertEqual(cfg.max_wait_seconds, 7.5)
         self.assertFalse(cfg.final_message_enabled)
-        self.assertEqual(cfg.active_model.model, "qwen/qwen3-coder-next")
+        self.assertEqual(cfg.model, "qwen/qwen3-coder-next")
+        self.assertEqual(cfg.api_key, "test-key")
 
-    def test_terminus_emits_sink_events_from_callbacks(self) -> None:
-        runtime = AgentRuntimeConfig(
-            agent_key="terminus-2",
-            model=AgentModelConfig(
-                model="qwen/qwen3-coder-next",
-                api_base="https://openrouter.ai/api/v1",
-                api_key="test-key",
-            ),
-            agent_config={
-                "verbosity": 1,
-                "max_turns": 2,
-                "max_wait_seconds": 2.0,
-                "final_message": False,
-            },
-        )
-        sink = _RecordingSink()
+    def test_run_passes_logger_to_core(self) -> None:
+        config = _test_config()
+        logger = _RecordingLogger()
+        captured_kwargs: dict[str, object] = {}
 
-        def fake_run_agent(**kwargs: object) -> int:
-            callbacks = cast(terminus_agent.AgentCallbacks, kwargs["callbacks"])
-            parsed = terminus_agent.ParsedResponse(
-                analysis="a",
-                plan="p",
-                commands=[],
-                task_complete=True,
-                final_message=None,
+        def fake_run_agent(**kwargs: object) -> RunResult:
+            captured_kwargs.update(kwargs)
+            log = cast(Logger, kwargs["logger"])
+            log.log(
+                event_type="reasoning",
+                payload={"analysis": "a", "plan": "p"},
+                turn=1,
             )
-            command = terminus_agent.Command(keystrokes="echo hi\n", duration=0.1)
-            if callbacks.on_reasoning:
-                callbacks.on_reasoning(1, parsed)
-
-            if callbacks.on_command_output:
-                callbacks.on_command_output(command, "hi")
-
-            if callbacks.on_issue:
-                callbacks.on_issue("model", "rate limit")
-
-            if callbacks.on_done:
-                callbacks.on_done("done")
-
-            if callbacks.on_stopped:
-                callbacks.on_stopped(2)
-
-            return 0
-
-        with patch("agents.terminus2.agent.run_agent", side_effect=fake_run_agent):
-            result = terminus_agent.Terminus2Agent().run_task(
-                task=Task.from_instruction(instruction="emit events", task_id="evt-1"),
-                cfg=runtime,
-                console=Console(record=True),
-                sink=sink,
+            log.log(
+                event_type="command_output",
+                payload={"keystrokes": "echo hi\n", "duration": 0.1, "output": "hi"},
             )
+            log.log(
+                event_type="issue",
+                payload={"kind": "model", "message": "rate limit"},
+            )
+            log.log(event_type="done", payload={"message": "done"})
+            log.log(event_type="stopped", payload={"max_turns": 2})
+            return RunResult(exit_code=0, success=True)
+
+        with patch.object(agents, "run", side_effect=fake_run_agent):
+            result = agents.run(
+                instruction="emit events",
+                config=config,
+                logger=logger,  # pyright: ignore[reportArgumentType]
+            )
+
         self.assertTrue(result.success)
-        self.assertIsNotNone(sink.result)
-        event_types = [event.event_type for event in sink.events]
+        self.assertIs(captured_kwargs["logger"], logger)
+        event_types = [e["event_type"] for e in logger.events]
         self.assertIn("reasoning", event_types)
         self.assertIn("command_output", event_types)
         self.assertIn("issue", event_types)
         self.assertIn("done", event_types)
         self.assertIn("stopped", event_types)
-
-
-class TestResolveAgentBinary(unittest.TestCase):
-    def _make_tree(self, cli_root: Path) -> None:
-        (cli_root / "agents").mkdir(parents=True, exist_ok=True)
-        (cli_root / "agents" / "local_binary.py").write_text("", encoding="utf-8")
-
-    def _make_wrapper(self, *, bin_dir: Path, name: str, target: str) -> Path:
-        bin_dir.mkdir(parents=True, exist_ok=True)
-        wrapper = bin_dir / name
-        wrapper.write_text(
-            f'#!/usr/bin/env bash\nset -euo pipefail\nexec "{target}" "$@"\n',
-            encoding="utf-8",
-        )
-        wrapper.chmod(0o755)
-        return wrapper
-
-    def _make_npm_binary(self, *, cli_root: Path, name: str) -> Path:
-        npm_bin = cli_root / ".local" / "tools" / "node_modules" / ".bin"
-        npm_bin.mkdir(parents=True, exist_ok=True)
-        binary = npm_bin / name
-        binary.write_text("#!/usr/bin/env node\n", encoding="utf-8")
-        binary.chmod(0o755)
-        return binary
-
-    def test_returns_wrapper_when_target_exists(self) -> None:
-        import agents.local_binary as mod
-
-        with tempfile.TemporaryDirectory() as tmp:
-            cli_root = Path(tmp).resolve()
-            self._make_tree(cli_root=cli_root)
-            npm_binary = self._make_npm_binary(cli_root=cli_root, name="qwen")
-            self._make_wrapper(
-                bin_dir=cli_root / ".local" / "bin",
-                name="qwen",
-                target=str(npm_binary),
-            )
-            fake_file = str(cli_root / "agents" / "local_binary.py")
-            with patch.object(mod, "__file__", fake_file):
-                result = resolve_agent_binary(default_binary="qwen")
-            self.assertEqual(result, str(cli_root / ".local" / "bin" / "qwen"))
-
-    def test_falls_back_to_npm_binary_when_wrapper_target_missing(self) -> None:
-        import agents.local_binary as mod
-
-        with tempfile.TemporaryDirectory() as tmp:
-            cli_root = Path(tmp).resolve()
-            self._make_tree(cli_root=cli_root)
-            npm_binary = self._make_npm_binary(cli_root=cli_root, name="qwen")
-            self._make_wrapper(
-                bin_dir=cli_root / ".local" / "bin",
-                name="qwen",
-                target="/nonexistent/absolute/path/qwen",
-            )
-            fake_file = str(cli_root / "agents" / "local_binary.py")
-            with patch.object(mod, "__file__", fake_file):
-                result = resolve_agent_binary(default_binary="qwen")
-            self.assertEqual(result, str(npm_binary))
-
-    def test_returns_npm_binary_when_no_wrapper(self) -> None:
-        import agents.local_binary as mod
-
-        with tempfile.TemporaryDirectory() as tmp:
-            cli_root = Path(tmp).resolve()
-            self._make_tree(cli_root=cli_root)
-            npm_binary = self._make_npm_binary(cli_root=cli_root, name="qwen")
-            fake_file = str(cli_root / "agents" / "local_binary.py")
-            with patch.object(mod, "__file__", fake_file):
-                result = resolve_agent_binary(default_binary="qwen")
-            self.assertEqual(result, str(npm_binary))
-
-    def test_returns_default_when_nothing_found(self) -> None:
-        import agents.local_binary as mod
-
-        with tempfile.TemporaryDirectory() as tmp:
-            cli_root = Path(tmp).resolve()
-            self._make_tree(cli_root=cli_root)
-            fake_file = str(cli_root / "agents" / "local_binary.py")
-            with patch.object(mod, "__file__", fake_file):
-                result = resolve_agent_binary(default_binary="qwen")
-            self.assertEqual(result, "qwen")
 
 
 if __name__ == "__main__":

@@ -38,19 +38,16 @@ def main(argv: list[str]) -> int:
 
 
 def _build_runtime_config(*, workspace_root: Path) -> object:
-    agent_dir = workspace_root / "agent"
-    runtime_types_path = agent_dir / "runtime_types.py"
-    with _workspace_imports(agent_dir=agent_dir):
+    types_path = workspace_root / "agent_types.py"
+    with _workspace_imports(workspace_dir=workspace_root):
         spec = importlib.util.spec_from_file_location(
-            name="runtime_types",
-            location=runtime_types_path,
+            name="workspace_types",
+            location=types_path,
         )
         if spec is None or spec.loader is None:
-            raise RuntimeError(
-                f"Unable to load runtime types from {runtime_types_path}"
-            )
+            raise RuntimeError(f"Unable to load workspace types from {types_path}")
         module = importlib.util.module_from_spec(spec)
-        sys.modules["runtime_types"] = module
+        sys.modules["workspace_types"] = module
         spec.loader.exec_module(module)
         extra_params = _load_extra_params()
         temperature = _maybe_float(value=os.environ.get("WORKSPACE_CFG_TEMPERATURE"))
@@ -110,9 +107,8 @@ def _parse_extra_params(*, raw: str | None) -> dict[str, object] | None:
 
 
 def _load_workspace_agent(*, workspace_root: Path) -> object:
-    agent_dir = workspace_root / "agent"
-    agent_path = agent_dir / "agent.py"
-    with _workspace_imports(agent_dir=agent_dir):
+    agent_path = workspace_root / "orchestrator.py"
+    with _workspace_imports(workspace_dir=workspace_root):
         spec = importlib.util.spec_from_file_location(
             name=f"workspace_agent_{abs(hash(agent_path.resolve()))}",
             location=agent_path,
@@ -124,37 +120,43 @@ def _load_workspace_agent(*, workspace_root: Path) -> object:
         spec.loader.exec_module(module)
         agent_cls = getattr(module, "WorkspaceAgent", None)
         if agent_cls is None:
-            raise RuntimeError("agent/agent.py must define WorkspaceAgent.")
+            raise RuntimeError("orchestrator.py must define WorkspaceAgent.")
         return agent_cls()
 
 
 class _workspace_imports:
-    def __init__(self, *, agent_dir: Path) -> None:
-        self.agent_dir = agent_dir
+    def __init__(self, *, workspace_dir: Path) -> None:
+        self.workspace_dir = workspace_dir
 
     def __enter__(self) -> None:
-        for prefix in _workspace_module_prefixes(agent_dir=self.agent_dir):
+        for prefix in _workspace_module_prefixes(workspace_dir=self.workspace_dir):
             _purge_module_prefix(prefix=prefix)
-        sys.path.insert(0, str(self.agent_dir))
+        sys.path.insert(0, str(self.workspace_dir))
         return None
 
     def __exit__(self, exc_type, exc, tb) -> None:
         del exc_type, exc, tb
-        if sys.path and sys.path[0] == str(self.agent_dir):
+        if sys.path and sys.path[0] == str(self.workspace_dir):
             sys.path.pop(0)
 
 
-def _workspace_module_prefixes(*, agent_dir: Path) -> list[str]:
-    prefixes = ["runtime_types"]
-    for entry in agent_dir.iterdir():
+_STDLIB_MODULE_NAMES = frozenset({"types", "typing", "collections", "dataclasses"})
+
+
+def _workspace_module_prefixes(*, workspace_dir: Path) -> list[str]:
+    prefixes: list[str] = []
+    for entry in workspace_dir.iterdir():
         if entry.name == "__pycache__":
             continue
         if entry.is_dir() and (entry / "__init__.py").exists():
             prefixes.append(entry.name)
         elif entry.is_file() and entry.suffix == ".py":
-            prefixes.append(entry.stem)
+            stem = entry.stem
+            if stem not in _STDLIB_MODULE_NAMES:
+                prefixes.append(stem)
+
     ordered = []
-    seen = set()
+    seen: set[str] = set()
     for prefix in prefixes:
         if prefix not in seen:
             ordered.append(prefix)

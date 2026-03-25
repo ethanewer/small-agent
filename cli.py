@@ -5,35 +5,227 @@ from dataclasses import dataclass
 import os
 from pathlib import Path
 import sys
+import textwrap
+from typing import Any
 
-from agents.core.task import Task
-from agents.interface import run_agent_task_with_fallback
-from agents.registry import available_agents, get_agent
+from agents import run
 from harbor_config import (
     CONFIG_PATH,
     ConfigModelEntry,  # noqa: F401 -- re-exported for tests
     LoadedConfig,
     _env_var_name,
-    build_runtime_config,
+    build_config,
     load_config,
     resolve_api_key,
 )
 from rich.console import Console
 from rich.panel import Panel
 from rich.prompt import Prompt
+from rich.text import Text
+
+
+class ConsoleLogger:
+    def __init__(self, *, console: Console, verbosity: int) -> None:
+        self._console = console
+        self._verbosity = verbosity
+        self._compaction_counts: dict[str, int] = {"proactive": 0, "reactive": 0}
+
+    def log(
+        self,
+        *,
+        event_type: str,
+        payload: dict[str, Any],
+        turn: int | None = None,
+    ) -> None:
+        if event_type == "reasoning":
+            self._render_reasoning(turn=turn or 0, payload=payload)
+        elif event_type == "command_output":
+            self._render_command_output(payload=payload)
+        elif event_type == "issue":
+            self._render_issue(payload=payload)
+        elif event_type == "done":
+            self._console.print(
+                Panel(payload["message"], title="Done", border_style="green")
+            )
+        elif event_type == "stopped":
+            self._console.print(
+                Panel(
+                    f"Reached max turns ({payload['max_turns']}) without completion.",
+                    title="Stopped",
+                    border_style="yellow",
+                )
+            )
+        elif event_type == "compaction":
+            kind = payload.get("kind", "unknown")
+            self._compaction_counts[kind] = self._compaction_counts.get(kind, 0) + 1
+
+    def print_compaction_summary(self) -> None:
+        total = self._compaction_counts.get(
+            "proactive", 0
+        ) + self._compaction_counts.get("reactive", 0)
+        self._console.print(
+            f"Compactions: {total} "
+            f"(proactive={self._compaction_counts.get('proactive', 0)}, "
+            f"reactive={self._compaction_counts.get('reactive', 0)})"
+        )
+
+    def _render_reasoning(self, turn: int, payload: dict[str, Any]) -> None:
+        if self._verbosity >= 1:
+            reasoning = f"analysis:\n{payload['analysis']}\n\nplan:\n{payload['plan']}"
+            self._console.print(
+                Panel(reasoning, title=f"Turn {turn} Reasoning", border_style="magenta")
+            )
+
+    def _render_command_output(self, payload: dict[str, Any]) -> None:
+        width = self._display_width()
+        keystrokes = payload["keystrokes"]
+        output = payload["output"]
+
+        if keystrokes == "":
+            input_text = "<wait>"
+        elif keystrokes.strip() == "":
+            input_text = "<enter>"
+        else:
+            input_text = keystrokes
+
+        display_input = input_text.replace("\n", "\\n")
+        raw = output
+        for prefix in ("New Terminal Output:\n", "Current Terminal Screen:\n"):
+            if raw.startswith(prefix):
+                raw = raw[len(prefix) :]
+                break
+
+        normalized_output = raw.strip() if raw else ""
+        output_text = normalized_output if normalized_output else "[no output]"
+
+        if self._verbosity == 0:
+            in_prefix = "in: "
+            out_prefix = "out: "
+            response_preview = output_text.replace("\n", " ")
+            self._console.print(Text("─" * width, style="dim"))
+            in_line = Text(in_prefix, style="cyan")
+            in_line.append(
+                _fit_line(
+                    text=display_input or "<wait>",
+                    width=width,
+                    prefix_len=len(in_prefix),
+                ),
+                style="white",
+            )
+            self._console.print(in_line)
+            out_line = Text(out_prefix, style="green")
+            out_line.append(
+                _fit_line(
+                    text=response_preview,
+                    width=width,
+                    prefix_len=len(out_prefix),
+                ),
+                style="white",
+            )
+            self._console.print(out_line)
+            return
+
+        self._console.print(Text("─" * width, style="dim"))
+        _render_labeled_fixed(
+            console=self._console,
+            width=width,
+            label="cmd: ",
+            label_style="cyan",
+            content=display_input,
+        )
+        _render_labeled_fixed(
+            console=self._console,
+            width=width,
+            label="out: ",
+            label_style="green",
+            content=output_text,
+        )
+
+    def _render_issue(self, payload: dict[str, Any]) -> None:
+        kind = payload["kind"]
+        message = payload["message"]
+
+        if self._verbosity == 0 and kind != "model":
+            return
+
+        width = self._display_width()
+        content_width = max(10, width - len("details: "))
+        details_text = message.replace("\n", " ")
+        wrapped = textwrap.wrap(
+            details_text,
+            width=content_width,
+            replace_whitespace=False,
+            drop_whitespace=False,
+        )
+        if not wrapped:
+            wrapped = [""]
+
+        self._console.print(Text("─" * width, style="dim"))
+        error_line = Text("error: ", style="red")
+        error_line.append(kind, style="white")
+        error_line.append(
+            " " * max(0, width - len("error: ") - len(kind)), style="white"
+        )
+        self._console.print(error_line)
+        for idx, segment in enumerate(wrapped):
+            prefix = "details: " if idx == 0 else (" " * len("details: "))
+            line = Text(prefix, style="red")
+            line.append(segment.ljust(content_width), style="white")
+            self._console.print(line)
+
+    def _display_width(self) -> int:
+        return max(20, self._console.width)
+
+
+def _render_labeled_fixed(
+    console: Console,
+    width: int,
+    label: str,
+    label_style: str,
+    content: str,
+) -> None:
+    content_width = max(10, width - len(label))
+    lines = content.splitlines() or [""]
+    first = True
+    for raw_line in lines:
+        wrapped = textwrap.wrap(
+            raw_line,
+            width=content_width,
+            replace_whitespace=False,
+            drop_whitespace=False,
+        )
+        if not wrapped:
+            wrapped = [""]
+
+        for segment in wrapped:
+            prefix = label if first else (" " * len(label))
+            line = Text(prefix, style=label_style)
+            line.append(segment.ljust(content_width), style="white")
+            console.print(line)
+            first = False
+
+
+def _fit_line(text: str, width: int, prefix_len: int) -> str:
+    max_chars = width - prefix_len
+    if max_chars <= 0:
+        return text
+
+    if len(text) <= max_chars:
+        return text
+
+    return text[: max_chars - 1] + "…"
 
 
 @dataclass
 class InteractiveCommandResult:
     instruction: str
     selected_model: str | None = None
-    selected_agent: str | None = None
     updated_verbosity: int | None = None
     handled: bool = False
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Local multi-agent wrapper CLI")
+    parser = argparse.ArgumentParser(description="Terminal agent CLI")
     parser.add_argument(
         "instruction",
         nargs="*",
@@ -63,12 +255,6 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         type=str,
         default=None,
         help="Model key from config.models to run with.",
-    )
-    parser.add_argument(
-        "--agent",
-        type=str,
-        default=None,
-        help="Agent key from config.agents to run with.",
     )
     parser.add_argument(
         "--no-final-message",
@@ -106,33 +292,6 @@ def select_model_dialog(console: Console, config: LoadedConfig) -> str:
         return model_keys[selected_index - 1]
 
 
-def select_agent_dialog(console: Console, config: LoadedConfig) -> str:
-    agent_keys = list(config.agents.keys())
-    numbered_lines = []
-    for index, agent_key in enumerate(agent_keys, start=1):
-        numbered_lines.append(f"{index}. {agent_key}")
-
-    console.print(
-        Panel("\n".join(numbered_lines), title="Available Agents", border_style="cyan")
-    )
-
-    while True:
-        raw_choice = Prompt.ask("[bold]Enter agent number[/bold]").strip()
-        if not raw_choice:
-            continue
-
-        if not raw_choice.isdigit():
-            console.print(Panel("Please enter a valid number.", border_style="yellow"))
-            continue
-
-        selected_index = int(raw_choice)
-        if selected_index < 1 or selected_index > len(agent_keys):
-            console.print(Panel("Agent number out of range.", border_style="yellow"))
-            continue
-
-        return agent_keys[selected_index - 1]
-
-
 def select_verbosity_dialog(console: Console) -> int:
     console.print(
         Panel(
@@ -157,7 +316,6 @@ def select_verbosity_dialog(console: Console) -> int:
 def _interactive_help_panel() -> Panel:
     return Panel(
         "/model - choose active model from a numbered list\n"
-        "/agent [name] - choose active agent or set by key\n"
         "/verbosity <0|1> - set output detail level\n"
         "  0: one line per tool call\n"
         "  1: full inputs/responses + reasoning\n"
@@ -264,31 +422,6 @@ def parse_interactive_command(
             handled=True,
         )
 
-    if trimmed == "/agent" or trimmed.startswith("/agent "):
-        remainder = trimmed.removeprefix("/agent").strip()
-        if not remainder:
-            remainder = select_agent_dialog(console=console, config=config)
-
-        if remainder not in config.agents:
-            console.print(
-                Panel(
-                    f"Unknown agent '{remainder}'. Available: {', '.join(config.agents.keys())}",
-                    title="Invalid Command",
-                    border_style="yellow",
-                )
-            )
-            return InteractiveCommandResult(instruction="", handled=True)
-
-        instruction_without_agent = ""
-        console.print(Panel(f"Agent set to {remainder}.", border_style="cyan"))
-        return InteractiveCommandResult(
-            instruction=instruction_without_agent,
-            selected_model=None,
-            selected_agent=remainder,
-            updated_verbosity=None,
-            handled=True,
-        )
-
     if trimmed == "/max_turns" or trimmed.startswith("/max_turns "):
         remainder = trimmed.removeprefix("/max_turns").strip()
         raw_value = (
@@ -330,7 +463,7 @@ def parse_interactive_command(
 
     console.print(
         Panel(
-            "Unknown command. Available commands: /model, /agent, /verbosity, /max_turns, /max_wait_seconds",
+            "Unknown command. Available commands: /model, /verbosity, /max_turns, /max_wait_seconds",
             title="Invalid Command",
             border_style="yellow",
         )
@@ -342,7 +475,6 @@ def resolve_model_key(
     config: LoadedConfig,
     cli_model_key: str | None,
     selected_model_key: str | None,
-    agent_key: str | None = None,
 ) -> str:
     if cli_model_key:
         cleaned = cli_model_key.strip()
@@ -357,34 +489,7 @@ def resolve_model_key(
     if selected_model_key:
         return selected_model_key
 
-    if agent_key:
-        agent_cfg = config.agents.get(agent_key, {})
-        agent_default = agent_cfg.get("default_model")
-        if isinstance(agent_default, str) and agent_default.strip() in config.models:
-            return agent_default.strip()
-
     return config.default_model
-
-
-def resolve_agent_key(
-    config: LoadedConfig,
-    cli_agent_key: str | None,
-    selected_agent_key: str | None,
-) -> str:
-    if cli_agent_key:
-        cleaned = cli_agent_key.strip()
-        if cleaned not in config.agents:
-            available = ", ".join(config.agents.keys())
-            raise ValueError(
-                f"Unknown agent key '{cleaned}'. Available agent keys: {available}"
-            )
-
-        return cleaned
-
-    if selected_agent_key:
-        return selected_agent_key
-
-    return config.default_agent
 
 
 def main() -> None:
@@ -405,7 +510,6 @@ def main() -> None:
 
     instruction = " ".join(args.instruction).strip()
     selected_model_from_instruction: str | None = None
-    selected_agent_from_instruction: str | None = None
     if not instruction:
         while True:
             candidate_instruction = Prompt.ask("[bold]Enter instruction[/bold]").strip()
@@ -417,9 +521,6 @@ def main() -> None:
             if command_result.handled:
                 if command_result.selected_model:
                     selected_model_from_instruction = command_result.selected_model
-
-                if command_result.selected_agent:
-                    selected_agent_from_instruction = command_result.selected_agent
 
                 if command_result.updated_verbosity is not None:
                     args.verbosity = command_result.updated_verbosity
@@ -447,16 +548,10 @@ def main() -> None:
         raise SystemExit(1)
 
     try:
-        active_agent_key = resolve_agent_key(
-            config=loaded_config,
-            cli_agent_key=args.agent,
-            selected_agent_key=selected_agent_from_instruction,
-        )
         active_model_key = resolve_model_key(
             config=loaded_config,
             cli_model_key=args.model,
             selected_model_key=selected_model_from_instruction,
-            agent_key=active_agent_key,
         )
     except ValueError as err:
         console.print(Panel(str(err), title="Config Error", border_style="red"))
@@ -485,22 +580,9 @@ def main() -> None:
         )
         raise SystemExit(1)
 
-    available = available_agents()
-    if active_agent_key not in available:
-        supported = ", ".join(sorted(available.keys()))
-        console.print(
-            Panel(
-                f"Agent '{active_agent_key}' is not implemented. Supported agents: {supported}",
-                title="Config Error",
-                border_style="red",
-            )
-        )
-        raise SystemExit(1)
-
     try:
-        runtime_cfg = build_runtime_config(
-            config=loaded_config,
-            agent_key=active_agent_key,
+        config = build_config(
+            loaded_config=loaded_config,
             model_key=active_model_key,
         )
     except ValueError:
@@ -513,45 +595,41 @@ def main() -> None:
         )
         raise SystemExit(1) from None
 
-    runtime_cfg.agent_config["verbosity"] = args.verbosity
     if args.no_final_message:
-        runtime_cfg.agent_config["final_message"] = False
-    cwd = os.getcwd()
+        config.final_message_enabled = False
 
+    cwd = os.getcwd()
     if args.verbosity == 0:
         panel_lines = [
-            f"Agent: {active_agent_key}",
             f"Model: {active_model_key}",
             f"CWD: {cwd}",
         ]
     else:
         panel_lines = [
-            f"Agent: {active_agent_key}",
             f"Model Key: {active_model_key}",
-            f"Model: {runtime_cfg.model.model}",
-            f"API Base: {runtime_cfg.model.api_base}",
+            f"Model: {config.model}",
+            f"API Base: {config.api_base}",
             f"CWD: {cwd}",
             f"Verbosity: {args.verbosity}",
-            f"Max Turns: {runtime_cfg.agent_config['max_turns']}",
-            f"Max Wait: {runtime_cfg.agent_config['max_wait_seconds']}s",
+            f"Max Turns: {config.max_turns}",
+            f"Max Wait: {config.max_wait_seconds}s",
         ]
+
     console.print(
         Panel(
             "\n".join(panel_lines),
-            title="Multi-Agent Wrapper",
+            title="Terminal Agent",
             border_style="cyan",
         )
     )
 
-    agent = get_agent(active_agent_key)
-    task = Task.from_instruction(instruction=instruction, task_id="cli-interactive")
-    result = run_agent_task_with_fallback(
-        agent=agent,
-        task=task,
-        cfg=runtime_cfg,
-        console=console,
-        sink=None,
+    logger = ConsoleLogger(console=console, verbosity=args.verbosity)
+    result = run(
+        instruction=instruction,
+        config=config,
+        logger=logger,  # pyright: ignore[reportArgumentType]
     )
+    logger.print_compaction_summary()
     raise SystemExit(result.exit_code)
 
 

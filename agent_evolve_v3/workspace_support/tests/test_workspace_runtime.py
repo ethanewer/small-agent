@@ -31,7 +31,7 @@ def _assert_terminus2_runtime() -> None:
         ),
         agent_config={"max_turns": 1, "max_wait_seconds": 1.0},
     )
-    with patch.object(module, "run_agent", return_value=0):
+    with patch.object(module, "run", return_value=0):
         result = WorkspaceAgent().run_task(
             instruction="inspect",
             cfg=cfg,
@@ -44,7 +44,7 @@ def _assert_terminus2_runtime() -> None:
 
 def _load_workspace_agent_module():
     workspace_root = Path(__file__).resolve().parents[1]
-    module_path = workspace_root / "agents" / "agent.py"
+    module_path = workspace_root / "orchestrator.py"
     spec = importlib.util.spec_from_file_location(
         name="workspace_agent_for_tests",
         location=module_path,

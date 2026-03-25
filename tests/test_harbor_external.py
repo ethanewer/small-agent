@@ -109,7 +109,7 @@ class TestHarborExternalAgent(unittest.TestCase):
                 },
             },
             "default_agent": "terminus-2",
-            "agents": {"terminus-2": {}, "qwen": {}},
+            "agents": {"terminus-2": {}},
             "verbosity": 0,
             "max_turns": 5,
             "max_wait_seconds": 10.0,
@@ -129,27 +129,29 @@ class TestHarborExternalAgent(unittest.TestCase):
         self.assertNotIn("openai", sys.modules)
         self.assertNotIn("pexpect", sys.modules)
 
-    def test_setup_checks_cli_run_exists(self) -> None:
+    def test_setup_uploads_agent_bundle(self) -> None:
         environment = _FakeEnvironment()
         agent = SmallAgentHarborAgent()
         asyncio.run(agent.setup(environment=environment))
         self.assertTrue(environment.upload_calls)
         self.assertTrue(environment.calls)
-        self.assertIn("/tmp/small-agent-cli/cli.py", environment.calls[0]["command"])
+        preflight_cmd = environment.calls[0]["command"]
+        self.assertIn("/tmp/small-agent/harbor/runner.py", preflight_cmd)
+        self.assertIn("/tmp/small-agent/agents/__init__.py", preflight_cmd)
 
-    def test_setup_fails_when_cli_run_missing(self) -> None:
+    def test_setup_fails_when_bundle_missing(self) -> None:
         environment = _FakeEnvironment(
             result={
                 "exit_code": 1,
                 "stdout": "",
-                "stderr": "small-agent cli bundle is missing required files",
+                "stderr": "small-agent bundle is missing required files",
             }
         )
         agent = SmallAgentHarborAgent()
         with self.assertRaises(RuntimeError):
             asyncio.run(agent.setup(environment=environment))
 
-    def test_run_uses_default_model_and_agent(self) -> None:
+    def test_run_uses_default_model(self) -> None:
         path = self._write_config(self._minimal_config())
         try:
             environment = _FakeEnvironment(
@@ -171,17 +173,17 @@ class TestHarborExternalAgent(unittest.TestCase):
         assert context.result is not None
         self.assertTrue(context.result["success"])
         run_call = environment.calls[-1]
-        self.assertIn("--agent terminus-2", run_call["command"])
-        self.assertIn("--model qwen3-coder-next", run_call["command"])
+        self.assertIn("runner.py", run_call["command"])
         run_env = run_call["env"]
-        self.assertEqual(run_env["OPENAI_MODEL"], "qwen/qwen3-coder-next")
+        self.assertEqual(run_env["CFG_MODEL"], "qwen/qwen3-coder-next")
+        self.assertEqual(run_env["CFG_API_BASE"], "https://openrouter.ai/api/v1")
         setup_metadata = context.metadata.get("small_agent_setup", {})
         self.assertEqual(
             setup_metadata.get("bootstrap_python_dependencies", {}).get("status"),
             "ok",
         )
 
-    def test_run_honors_env_overrides(self) -> None:
+    def test_run_honors_model_env_override(self) -> None:
         path = self._write_config(self._minimal_config())
         try:
             environment = _FakeEnvironment()
@@ -189,10 +191,7 @@ class TestHarborExternalAgent(unittest.TestCase):
             agent = SmallAgentHarborAgent(config_path=str(path))
             with patch.dict(
                 "os.environ",
-                {
-                    "SMALL_AGENT_HARBOR_MODEL": "gpt-5.3-codex",
-                    "SMALL_AGENT_HARBOR_AGENT": "qwen",
-                },
+                {"SMALL_AGENT_HARBOR_MODEL": "gpt-5.3-codex"},
                 clear=False,
             ):
                 asyncio.run(
@@ -206,8 +205,8 @@ class TestHarborExternalAgent(unittest.TestCase):
             path.unlink(missing_ok=True)
 
         run_call = environment.calls[-1]
-        self.assertIn("--agent qwen", run_call["command"])
-        self.assertIn("--model gpt-5.3-codex", run_call["command"])
+        run_env = run_call["env"]
+        self.assertEqual(run_env["CFG_MODEL"], "gpt-5.3-codex")
         self.assertEqual(context.result and context.result["exit_code"], 0)
 
     def test_run_populates_failure_result(self) -> None:
@@ -238,7 +237,7 @@ class TestHarborExternalAgent(unittest.TestCase):
         self.assertEqual(context.result["exit_code"], 3)
         self.assertEqual(context.result["stderr"], "failure")
 
-    def test_run_reports_unknown_agent_override(self) -> None:
+    def test_run_reports_unknown_model_override(self) -> None:
         config = self._minimal_config()
         path = self._write_config(config)
         try:
@@ -247,9 +246,7 @@ class TestHarborExternalAgent(unittest.TestCase):
             agent = SmallAgentHarborAgent(config_path=str(path))
             with patch.dict(
                 "os.environ",
-                {
-                    "SMALL_AGENT_HARBOR_AGENT": "missing-agent",
-                },
+                {"SMALL_AGENT_HARBOR_MODEL": "missing-model"},
                 clear=False,
             ):
                 asyncio.run(
@@ -265,7 +262,7 @@ class TestHarborExternalAgent(unittest.TestCase):
         self.assertIsNotNone(context.result)
         assert context.result is not None
         self.assertFalse(context.result["success"])
-        self.assertIn("Unknown Harbor agent override", context.result["stderr"])
+        self.assertIn("Unknown Harbor model override", context.result["stderr"])
 
 
 if __name__ == "__main__":

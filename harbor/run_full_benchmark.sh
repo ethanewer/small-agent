@@ -10,13 +10,13 @@ N_CONCURRENT=16
 main() {
   if ! parse_common_args "$@"; then
     cat <<'EOF'
-Usage: ./harbor/run_full_benchmark.sh [--model <key>] [--agent <key>] [--dry-run]
+Usage: ./harbor/run_full_benchmark.sh [--model <key>] [--dry-run]
 Runs all 89 tasks from terminal-bench@2.0.
 EOF
     usage_common
     exit 0
   fi
-  resolve_model_and_agent
+  resolve_model
   build_harbor_dataset_command "${DATASET_REF}" "${N_CONCURRENT}"
   run_or_echo
 }

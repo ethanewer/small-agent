@@ -54,18 +54,17 @@ def discover_repo_root(*, start_path: Path) -> Path:
 
 
 def load_workspace_agent(*, workspace_root: Path) -> object:
-    agent_dir = workspace_root / "agent"
-    module_path = agent_dir / "agent.py"
+    module_path = workspace_root / "orchestrator.py"
     if not module_path.exists():
         raise RuntimeError(f"Workspace agent not found at {module_path}")
-    with workspace_imports(agent_dir=agent_dir):
+    with workspace_imports(workspace_dir=workspace_root):
         module = _load_module(
             module_name=f"workspace_agent_{abs(hash(module_path.resolve()))}",
             module_path=module_path,
         )
         agent_cls = getattr(module, "WorkspaceAgent", None)
         if agent_cls is None:
-            raise RuntimeError("agent/agent.py must define WorkspaceAgent.")
+            raise RuntimeError("orchestrator.py must define WorkspaceAgent.")
         return agent_cls()
 
 
@@ -199,11 +198,12 @@ def stage_remote_bundle(
     workspace_root: Path,
     repo_root: Path,
 ) -> Path:
-    agent_dir = workspace_root / "agent"
-    if not agent_dir.exists():
-        raise FileNotFoundError(f"Workspace agent directory not found: {agent_dir}")
     staging = Path(tempfile.mkdtemp(prefix="agent-evolve-v3-bundle-"))
-    shutil.copytree(src=agent_dir, dst=staging / "agent", symlinks=True)
+    for entry in workspace_root.iterdir():
+        if entry.name == "__pycache__" or entry.name.startswith("."):
+            continue
+        if entry.is_file() and entry.suffix == ".py":
+            shutil.copy2(src=entry, dst=staging / entry.name)
     shutil.copy2(
         src=repo_root / "agent_evolve_v3" / "services" / "remote_runner.py",
         dst=staging / "remote_runner.py",
@@ -242,25 +242,24 @@ def resolve_env_value(*, env_name: str) -> str | None:
 
 
 @contextmanager
-def workspace_imports(*, agent_dir: Path) -> Iterator[None]:
-    module_prefixes = _workspace_module_prefixes(agent_dir=agent_dir)
+def workspace_imports(*, workspace_dir: Path) -> Iterator[None]:
+    module_prefixes = _workspace_module_prefixes(workspace_dir=workspace_dir)
     for prefix in module_prefixes:
         _purge_module_prefix(prefix=prefix)
-    sys.path.insert(0, str(agent_dir))
+    sys.path.insert(0, str(workspace_dir))
     try:
         yield
     finally:
-        if sys.path and sys.path[0] == str(agent_dir):
+        if sys.path and sys.path[0] == str(workspace_dir):
             sys.path.pop(0)
 
 
 def _load_runtime_types_module(*, workspace_root: Path) -> ModuleType:
-    agent_dir = workspace_root / "agent"
-    module_path = agent_dir / "runtime_types.py"
+    module_path = workspace_root / "agent_types.py"
     if not module_path.exists():
-        raise RuntimeError(f"Workspace runtime types not found at {module_path}")
-    with workspace_imports(agent_dir=agent_dir):
-        return _load_module(module_name="runtime_types", module_path=module_path)
+        raise RuntimeError(f"Workspace types not found at {module_path}")
+    with workspace_imports(workspace_dir=workspace_root):
+        return _load_module(module_name="workspace_types", module_path=module_path)
 
 
 def _load_module(*, module_name: str, module_path: Path) -> ModuleType:
@@ -276,17 +275,23 @@ def _load_module(*, module_name: str, module_path: Path) -> ModuleType:
     return module
 
 
-def _workspace_module_prefixes(*, agent_dir: Path) -> list[str]:
-    prefixes = ["runtime_types"]
-    for entry in agent_dir.iterdir():
+_STDLIB_MODULE_NAMES = frozenset({"types", "typing", "collections", "dataclasses"})
+
+
+def _workspace_module_prefixes(*, workspace_dir: Path) -> list[str]:
+    prefixes: list[str] = []
+    for entry in workspace_dir.iterdir():
         if entry.name == "__pycache__":
             continue
         if entry.is_dir() and (entry / "__init__.py").exists():
             prefixes.append(entry.name)
         elif entry.is_file() and entry.suffix == ".py":
-            prefixes.append(entry.stem)
+            stem = entry.stem
+            if stem not in _STDLIB_MODULE_NAMES:
+                prefixes.append(stem)
+
     ordered = []
-    seen = set()
+    seen: set[str] = set()
     for prefix in prefixes:
         if prefix not in seen:
             ordered.append(prefix)

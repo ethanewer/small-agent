@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import importlib
 import inspect
 import json
@@ -9,9 +10,6 @@ from pathlib import Path
 import shlex
 import sys
 from typing import Any
-
-from rich.console import Console  # pyright: ignore[reportMissingImports]
-
 
 _base_agent_cls: type[object] = object
 try:  # pragma: no cover - Harbor is optional in local tests.
@@ -31,13 +29,13 @@ if str(_CLI_ROOT) not in sys.path:
 from harbor_config import (  # noqa: E402
     CONFIG_PATH,
     _env_var_name,
-    build_runtime_config,
+    build_config,
     load_config,
 )
 
 _MODEL_ENV_NAME = "SMALL_AGENT_HARBOR_MODEL"
-_AGENT_ENV_NAME = "SMALL_AGENT_HARBOR_AGENT"
-_REMOTE_CLI_ROOT = "/tmp/small-agent-cli"
+_REMOTE_AGENT_ROOT = "/tmp/small-agent"
+_RUNNER_FILENAME = "runner.py"
 
 
 def _safe_setattr(obj: Any, name: str, value: Any) -> None:
@@ -287,6 +285,8 @@ _UPLOAD_EXCLUDE_DIRS: set[str] = {
     "node_modules",
     "config",
     "agent_evolve",
+    "agent_evolve_v3",
+    "tests",
 }
 
 _UPLOAD_EXCLUDE_FILES: set[str] = {
@@ -311,6 +311,12 @@ def _stage_upload_dir(source_dir: Path) -> Path:
             shutil.copytree(src=entry, dst=dest, symlinks=True)
         else:
             shutil.copy2(src=entry, dst=dest)
+
+    runner_src = source_dir / "harbor" / _RUNNER_FILENAME
+    if runner_src.is_file():
+        harbor_dest = staging / "harbor"
+        harbor_dest.mkdir(exist_ok=True)
+        shutil.copy2(src=runner_src, dst=harbor_dest / _RUNNER_FILENAME)
 
     return staging
 
@@ -345,12 +351,31 @@ async def _environment_upload_dir(
         shutil.rmtree(path=staged, ignore_errors=True)
 
 
+def _build_config_env(config: Any) -> dict[str, str]:
+    """Build environment variables from a Config object for runner.py."""
+    env: dict[str, str] = {
+        "CFG_MODEL": config.model,
+        "CFG_API_BASE": config.api_base,
+        "CFG_API_KEY": config.api_key,
+        "CFG_MAX_TURNS": str(config.max_turns),
+        "CFG_MAX_WAIT_SECONDS": str(config.max_wait_seconds),
+        "CFG_FINAL_MESSAGE": "1" if config.final_message_enabled else "0",
+    }
+    if config.temperature is not None:
+        env["CFG_TEMPERATURE"] = str(config.temperature)
+    if config.context_length is not None:
+        env["CFG_CONTEXT_LENGTH"] = str(config.context_length)
+    if config.extra_params is not None:
+        encoded = base64.b64encode(json.dumps(config.extra_params).encode()).decode()
+        env["CFG_EXTRA_PARAMS_B64"] = encoded
+    return env
+
+
 class SmallAgentHarborAgent(HarborBaseAgent):
     def __init__(
         self,
         *,
         config_path: str | None = None,
-        agent_key: str | None = None,
         model_key: str | None = None,
         model_name: str | None = None,
         logs_dir: str | Path | None = None,
@@ -365,7 +390,6 @@ class SmallAgentHarborAgent(HarborBaseAgent):
                 base_init_kwargs["model_name"] = model_name
             super().__init__(**base_init_kwargs)
         except TypeError:
-            # Local tests may run without Harbor's BaseAgent implementation.
             try:
                 super().__init__()
             except Exception:
@@ -377,7 +401,6 @@ class SmallAgentHarborAgent(HarborBaseAgent):
         self._config_path = (
             Path(config_path).resolve() if config_path else Path(CONFIG_PATH).resolve()
         )
-        self._forced_agent_key = agent_key
         self._forced_model_key = model_key or model_name
 
     @staticmethod
@@ -387,12 +410,10 @@ class SmallAgentHarborAgent(HarborBaseAgent):
     def version(self) -> str | None:
         return "0.1.0"
 
-    def _select_keys(self) -> tuple[str | None, str | None]:
-        selected_agent = self._forced_agent_key or os.getenv(_AGENT_ENV_NAME) or None
-        selected_model = self._forced_model_key or os.getenv(_MODEL_ENV_NAME) or None
-        return selected_agent, selected_model
+    def _select_model_key(self) -> str | None:
+        return self._forced_model_key or os.getenv(_MODEL_ENV_NAME) or None
 
-    async def _ensure_cli_available(
+    async def _ensure_agent_available(
         self,
         *,
         environment: Any,
@@ -400,48 +421,50 @@ class SmallAgentHarborAgent(HarborBaseAgent):
     ) -> None:
         _record_setup_stage(
             context=context,
-            stage="check_remote_cli_dir",
+            stage="check_remote_agent_dir",
             status="started",
         )
-        cli_present = await _environment_is_dir(
+        agent_present = await _environment_is_dir(
             environment=environment,
-            path=_REMOTE_CLI_ROOT,
+            path=_REMOTE_AGENT_ROOT,
         )
         _record_setup_stage(
             context=context,
-            stage="check_remote_cli_dir",
+            stage="check_remote_agent_dir",
             status="ok",
-            details=f"exists={cli_present}",
+            details=f"exists={agent_present}",
         )
-        if not cli_present:
+        if not agent_present:
             _record_setup_stage(
                 context=context,
-                stage="upload_cli_bundle",
+                stage="upload_agent_bundle",
                 status="started",
             )
             await _environment_upload_dir(
                 environment=environment,
                 source_dir=_CLI_ROOT,
-                target_dir=_REMOTE_CLI_ROOT,
+                target_dir=_REMOTE_AGENT_ROOT,
             )
             _record_setup_stage(
                 context=context,
-                stage="upload_cli_bundle",
+                stage="upload_agent_bundle",
                 status="ok",
             )
 
+        runner_path = f"{_REMOTE_AGENT_ROOT}/harbor/{_RUNNER_FILENAME}"
+        agents_path = f"{_REMOTE_AGENT_ROOT}/agents/__init__.py"
         setup_command = (
-            f"if [ -f {shlex.quote(_REMOTE_CLI_ROOT + '/cli.py')} ] && "
-            f"[ -f {shlex.quote(_REMOTE_CLI_ROOT + '/config.json')} ]; then "
-            "echo 'small-agent cli bundle is available'; "
+            f"if [ -f {shlex.quote(runner_path)} ] && "
+            f"[ -f {shlex.quote(agents_path)} ]; then "
+            "echo 'small-agent bundle is available'; "
             "else "
-            "echo 'small-agent cli bundle is missing required files' >&2; "
+            "echo 'small-agent bundle is missing required files' >&2; "
             "exit 1; "
             "fi"
         )
         _record_setup_stage(
             context=context,
-            stage="preflight_cli_bundle",
+            stage="preflight_agent_bundle",
             status="started",
         )
         setup_result = await _environment_exec(
@@ -457,7 +480,7 @@ class SmallAgentHarborAgent(HarborBaseAgent):
         )
         _record_setup_stage(
             context=context,
-            stage="preflight_cli_bundle",
+            stage="preflight_agent_bundle",
             status="ok",
         )
         bootstrap_command = (
@@ -504,7 +527,7 @@ class SmallAgentHarborAgent(HarborBaseAgent):
         bootstrap_result = await _environment_exec(
             environment=environment,
             command=bootstrap_command,
-            cwd=_REMOTE_CLI_ROOT,
+            cwd=_REMOTE_AGENT_ROOT,
             env=None,
             timeout_sec=300,
         )
@@ -522,7 +545,7 @@ class SmallAgentHarborAgent(HarborBaseAgent):
         max_retries = 3
         for attempt in range(max_retries + 1):
             try:
-                await self._ensure_cli_available(
+                await self._ensure_agent_available(
                     environment=environment,
                     context=None,
                 )
@@ -538,7 +561,6 @@ class SmallAgentHarborAgent(HarborBaseAgent):
         environment: Any,
         context: Any,
     ) -> None:
-        console = Console(record=True)
         instruction_clean = instruction.strip()
         if not instruction_clean:
             _set_context_result(
@@ -549,31 +571,15 @@ class SmallAgentHarborAgent(HarborBaseAgent):
                 stderr="Instruction is required.",
             )
             return
-        await self._ensure_cli_available(
+
+        await self._ensure_agent_available(
             environment=environment,
             context=context,
         )
 
         loaded_config = load_config(path=self._config_path)
-        selected_agent, selected_model = self._select_keys()
-        active_agent_key = selected_agent or loaded_config.default_agent
+        selected_model = self._select_model_key()
         active_model_key = selected_model or loaded_config.default_model
-
-        if active_agent_key not in loaded_config.agents:
-            known = ", ".join(sorted(loaded_config.agents.keys()))
-            error_message = (
-                f"Unknown Harbor agent override '{active_agent_key}'. "
-                f"Known config agent keys: {known}"
-            )
-            _append_context_message(context=context, message=error_message)
-            _set_context_result(
-                context=context,
-                success=False,
-                exit_code=1,
-                stdout="",
-                stderr=error_message,
-            )
-            return
 
         if active_model_key not in loaded_config.models:
             known = ", ".join(sorted(loaded_config.models.keys()))
@@ -591,35 +597,29 @@ class SmallAgentHarborAgent(HarborBaseAgent):
             )
             return
 
-        runtime_cfg = build_runtime_config(
-            config=loaded_config,
-            agent_key=active_agent_key,
+        config = build_config(
+            loaded_config=loaded_config,
             model_key=active_model_key,
             allow_shell_lookup=True,
         )
+        config.final_message_enabled = False
+
         _append_context_message(
             context=context,
-            message=(
-                "Starting small-agent Harbor run "
-                f"(agent={active_agent_key}, model={active_model_key})."
-            ),
+            message=f"Starting small-agent Harbor run (model={active_model_key}).",
         )
-        env_overrides = {
-            "OPENAI_MODEL": runtime_cfg.model.model,
-            "OPENAI_BASE_URL": runtime_cfg.model.api_base,
-            "OPENAI_API_KEY": runtime_cfg.model.api_key,
-        }
+
+        env_overrides = _build_config_env(config=config)
         model_env_name = _env_var_name(
             config_api_key=loaded_config.models[active_model_key].api_key,
         )
         if model_env_name:
-            env_overrides[model_env_name] = runtime_cfg.model.api_key
+            env_overrides[model_env_name] = config.api_key
+
+        runner_path = f"{_REMOTE_AGENT_ROOT}/harbor/{_RUNNER_FILENAME}"
         run_command = (
-            f"python3 {shlex.quote(_REMOTE_CLI_ROOT + '/cli.py')} "
-            f"--config {shlex.quote(_REMOTE_CLI_ROOT + '/config.json')} "
-            f"--agent {shlex.quote(active_agent_key)} "
-            f"--model {shlex.quote(active_model_key)} "
-            f"--no-final-message "
+            f"PYTHONPATH={shlex.quote(_REMOTE_AGENT_ROOT)} "
+            f"python3 {shlex.quote(runner_path)} "
             f"{shlex.quote(instruction_clean)}"
         )
         exec_result = await _environment_exec(
@@ -627,18 +627,16 @@ class SmallAgentHarborAgent(HarborBaseAgent):
             command=run_command,
             cwd=None,
             env=env_overrides,
-            timeout_sec=int(loaded_config.max_wait_seconds * loaded_config.max_turns),
+            timeout_sec=int(config.max_wait_seconds * config.max_turns),
         )
         exit_code, stdout, stderr = _extract_exec_fields(exec_result=exec_result)
         _append_context_message(
             context=context,
-            message=(f"small-agent Harbor run completed with exit_code={exit_code}."),
+            message=f"small-agent Harbor run completed with exit_code={exit_code}.",
         )
         metadata_payload = {
-            "agent_key": active_agent_key,
             "model_key": active_model_key,
             "run_command": run_command,
-            "captured_console": console.export_text(),
         }
         _safe_setattr(obj=context, name="small_agent_metadata", value=metadata_payload)
         metadata = getattr(context, "metadata", None)

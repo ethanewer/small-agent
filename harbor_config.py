@@ -8,7 +8,7 @@ import re
 import subprocess
 from typing import Any
 
-from agents.interface import AgentModelConfig, AgentRuntimeConfig
+from agents.agent_types import Config
 
 CONFIG_PATH = Path(__file__).with_name("config.json")
 ENV_NAME_PATTERN = re.compile(r"^[A-Z_][A-Z0-9_]*$")
@@ -192,14 +192,13 @@ def load_config(path: Path) -> LoadedConfig:
     )
 
 
-def build_runtime_config(
+def build_config(
     *,
-    config: LoadedConfig,
-    agent_key: str,
+    loaded_config: LoadedConfig,
     model_key: str,
     allow_shell_lookup: bool = True,
-) -> AgentRuntimeConfig:
-    selected = config.models[model_key]
+) -> Config:
+    selected = loaded_config.models[model_key]
     resolved_api_key = resolve_api_key(
         config_api_key=selected.api_key,
         allow_shell_lookup=allow_shell_lookup,
@@ -207,21 +206,13 @@ def build_runtime_config(
     if not resolved_api_key:
         raise ValueError("Missing API key for selected model.")
 
-    agent_options = {
-        "verbosity": config.verbosity,
-        "max_turns": config.max_turns,
-        "max_wait_seconds": config.max_wait_seconds,
-        **dict(config.agents.get(agent_key, {})),
-    }
-    return AgentRuntimeConfig(
-        agent_key=agent_key,
-        model=AgentModelConfig(
-            model=selected.model,
-            api_base=selected.api_base,
-            api_key=resolved_api_key,
-            temperature=selected.temperature,
-            context_length=selected.context_length,
-            extra_params=selected.extra_params,
-        ),
-        agent_config=agent_options,
+    return Config(
+        model=selected.model,
+        api_base=selected.api_base,
+        api_key=resolved_api_key,
+        temperature=selected.temperature,
+        context_length=selected.context_length,
+        extra_params=selected.extra_params,
+        max_turns=loaded_config.max_turns,
+        max_wait_seconds=loaded_config.max_wait_seconds,
     )

@@ -185,13 +185,13 @@ class TestParseArgs(unittest.TestCase):
                 "--cursor-model",
                 "claude-4",
                 "--agent-key",
-                "qwen",
+                "terminus-2",
             ]
         )
         self.assertEqual(args.iterations, 10)
         self.assertEqual(args.model_key, "gpt-5")
         self.assertEqual(args.cursor_model, "claude-4")
-        self.assertEqual(args.agent_key, "qwen")
+        self.assertEqual(args.agent_key, "terminus-2")
 
 
 # ---------------------------------------------------------------------------

@@ -14,13 +14,13 @@ SMOKE_TASKS=(
 main() {
   if ! parse_common_args "$@"; then
     cat <<'EOF'
-Usage: ./harbor/run_smoke.sh [--model <key>] [--agent <key>] [--dry-run]
+Usage: ./harbor/run_smoke.sh [--model <key>] [--dry-run]
 Runs a single easy task as a quick smoke test.
 EOF
     usage_common
     exit 0
   fi
-  resolve_model_and_agent
+  resolve_model
   build_harbor_dataset_command "${DATASET_REF}" "${N_CONCURRENT}"
   append_task_name_filters "${SMOKE_TASKS[@]}"
   run_or_echo

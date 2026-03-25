@@ -38,13 +38,13 @@ BENCHMARK_TASKS=(
 main() {
   if ! parse_common_args "$@"; then
     cat <<'EOF'
-Usage: ./harbor/run_short_benchmark.sh [--model <key>] [--agent <key>] [--dry-run]
+Usage: ./harbor/run_small_benchmark.sh [--model <key>] [--dry-run]
 Runs 25 tasks from terminal-bench@2.0.
 EOF
     usage_common
     exit 0
   fi
-  resolve_model_and_agent
+  resolve_model
   build_harbor_dataset_command "${DATASET_REF}" "${N_CONCURRENT}"
   append_task_name_filters "${BENCHMARK_TASKS[@]}"
   run_or_echo

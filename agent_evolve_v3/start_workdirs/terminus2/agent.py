@@ -8,6 +8,8 @@ import time
 from dataclasses import dataclass
 from typing import Any, Callable
 
+from agent_types import Config, Logger, RunResult
+
 import litellm
 from litellm.utils import get_max_tokens, token_counter
 from tenacity import retry, stop_after_attempt
@@ -98,25 +100,6 @@ Here is the current state of the terminal:
 
 
 @dataclass
-class ModelConfig:
-    model: str
-    api_base: str
-    api_key: str | None = None
-    temperature: float | None = None
-    context_length: int | None = None
-    extra_params: dict[str, Any] | None = None
-
-
-@dataclass
-class Config:
-    active_model_key: str
-    active_model: ModelConfig
-    verbosity: int = 1
-    max_turns: int = 50
-    max_wait_seconds: float = 60.0
-
-
-@dataclass
 class ModelResult:
     content: str
     prompt_tokens: int
@@ -135,16 +118,6 @@ class ParsedResponse:
     plan: str
     commands: list[Command]
     task_complete: bool
-
-
-@dataclass
-class AgentCallbacks:
-    on_reasoning: Callable[[int, ParsedResponse], None] | None = None
-    on_command_output: Callable[[Command, str], None] | None = None
-    on_issue: Callable[[str, str], None] | None = None
-    on_done: Callable[[str], None] | None = None
-    on_stopped: Callable[[int], None] | None = None
-    on_compaction: Callable[[str], None] | None = None
 
 
 def limit_output_length(output: str, max_bytes: int = MAX_OUTPUT_BYTES) -> str:
@@ -465,23 +438,20 @@ def call_model(
     cfg: Config,
     prompt: str,
     history: list[dict[str, str]],
-    api_key: str,
 ) -> ModelResult:
-    model_name = _litellm_model_name(
-        model=cfg.active_model.model, api_base=cfg.active_model.api_base
-    )
+    model_name = _litellm_model_name(model=cfg.model, api_base=cfg.api_base)
     completion_kwargs: dict[str, Any] = {
         "model": model_name,
         "messages": [*history, {"role": "user", "content": prompt}],
-        "api_base": cfg.active_model.api_base,
-        "api_key": api_key,
+        "api_base": cfg.api_base,
+        "api_key": cfg.api_key,
     }
 
-    if cfg.active_model.temperature is not None:
-        completion_kwargs["temperature"] = cfg.active_model.temperature
+    if cfg.temperature is not None:
+        completion_kwargs["temperature"] = cfg.temperature
 
-    if cfg.active_model.extra_params:
-        for k, v in cfg.active_model.extra_params.items():
+    if cfg.extra_params:
+        for k, v in cfg.extra_params.items():
             completion_kwargs[k] = v
 
     try:
@@ -525,10 +495,9 @@ def _query_model(
     cfg: Config,
     prompt: str,
     history: list[dict[str, str]],
-    api_key: str,
     original_instruction: str,
     terminal_state: str,
-    callbacks: AgentCallbacks | None = None,
+    logger: Logger | None = None,
 ) -> ModelResult:
     last_error: Exception | None = None
     current_prompt = prompt
@@ -539,7 +508,6 @@ def _query_model(
                 cfg=cfg,
                 prompt=current_prompt,
                 history=history,
-                api_key=api_key,
             )
             _append_turn_history(
                 history=history,
@@ -583,13 +551,15 @@ def _query_model(
                     call_model_fn=call_model,
                     cfg=cfg,
                     history=history,
-                    api_key=api_key,
                     original_instruction=original_instruction,
                     terminal_state=terminal_state,
                 )
                 current_prompt = f"{summarized}\n\n{current_prompt}"
-                if callbacks and callbacks.on_compaction:
-                    callbacks.on_compaction("reactive")
+                if logger:
+                    logger.log(
+                        event_type="compaction",
+                        payload={"kind": "reactive"},
+                    )
                 continue
 
             raise
@@ -647,14 +617,12 @@ def _count_total_tokens(model: str, messages: list[dict[str, str]]) -> int:
 
 
 def _litellm_model_for_cfg(cfg: Config) -> str:
-    return _litellm_model_name(
-        model=cfg.active_model.model, api_base=cfg.active_model.api_base
-    )
+    return _litellm_model_name(model=cfg.model, api_base=cfg.api_base)
 
 
 def _get_model_context_limit(cfg: Config) -> int:
-    if cfg.active_model.context_length and cfg.active_model.context_length > 0:
-        return cfg.active_model.context_length
+    if cfg.context_length and cfg.context_length > 0:
+        return cfg.context_length
 
     try:
         limit = get_max_tokens(_litellm_model_for_cfg(cfg))
@@ -689,7 +657,6 @@ def _summarize_history(
     call_model_fn: Callable[..., ModelResult],
     cfg: Config,
     history: list[dict[str, str]],
-    api_key: str,
     original_instruction: str,
     terminal_state: str,
 ) -> str:
@@ -713,7 +680,6 @@ def _summarize_history(
         cfg=cfg,
         prompt=summary_prompt,
         history=history,
-        api_key=api_key,
     )
 
     question_prompt = (
@@ -731,7 +697,6 @@ def _summarize_history(
         cfg=cfg,
         prompt=question_prompt,
         history=[],
-        api_key=api_key,
     )
 
     answers_result = call_model_fn(
@@ -741,7 +706,6 @@ def _summarize_history(
             "of them one by one in detail:\n\n" + questions_result.content
         ),
         history=history,
-        api_key=api_key,
     )
 
     first_message = history[0] if history else None
@@ -773,7 +737,6 @@ def _check_proactive_summarization(
     call_model_fn: Callable[..., ModelResult],
     cfg: Config,
     history: list[dict[str, str]],
-    api_key: str,
     original_instruction: str,
     terminal_state: str,
 ) -> str | None:
@@ -788,7 +751,6 @@ def _check_proactive_summarization(
             call_model_fn=call_model_fn,
             cfg=cfg,
             history=history,
-            api_key=api_key,
             original_instruction=original_instruction,
             terminal_state=terminal_state,
         )
@@ -800,7 +762,7 @@ def _execute_turn_commands(
     session: TmuxSession,
     parsed: ParsedResponse,
     max_wait_seconds: float,
-    callbacks: AgentCallbacks,
+    logger: Logger | None,
 ) -> str:
     for cmd in parsed.commands:
         normalized_duration = min(max(cmd.duration, 0.0), 60.0)
@@ -821,31 +783,39 @@ def _execute_turn_commands(
                 command=command.keystrokes,
                 terminal_state=terminal_output,
             )
-            if callbacks.on_command_output:
-                callbacks.on_command_output(command, timeout_msg)
+            if logger:
+                logger.log(
+                    event_type="command_output",
+                    payload={
+                        "keystrokes": command.keystrokes,
+                        "duration": command.duration,
+                        "output": timeout_msg,
+                    },
+                )
             return timeout_msg
 
     terminal_output = session.get_incremental_output()
-    if callbacks.on_command_output and parsed.commands:
+    if logger and parsed.commands:
         last_cmd = parsed.commands[-1]
-        callbacks.on_command_output(
-            Command(
-                keystrokes=last_cmd.keystrokes,
-                duration=min(max(last_cmd.duration, 0.0), 60.0),
-            ),
-            terminal_output,
+        logger.log(
+            event_type="command_output",
+            payload={
+                "keystrokes": last_cmd.keystrokes,
+                "duration": min(max(last_cmd.duration, 0.0), 60.0),
+                "output": terminal_output,
+            },
         )
 
     return limit_output_length(terminal_output)
 
 
-def run_agent(
+def run(
+    *,
     instruction: str,
-    cfg: Config,
-    api_key: str,
-    callbacks: AgentCallbacks | None = None,
-) -> int:
-    callbacks = callbacks or AgentCallbacks()
+    config: Config,
+    logger: Logger | None = None,
+) -> RunResult:
+    cfg = config
     session = start_session()
     history: list[dict[str, str]] = []
     pending_completion = False
@@ -865,30 +835,34 @@ def run_agent(
                 call_model_fn=call_model,
                 cfg=cfg,
                 history=history,
-                api_key=api_key,
                 original_instruction=instruction,
                 terminal_state=terminal_state,
             )
             if summarized is not None:
                 prompt = summarized
-                if callbacks.on_compaction:
-                    callbacks.on_compaction("proactive")
+                if logger:
+                    logger.log(
+                        event_type="compaction",
+                        payload={"kind": "proactive"},
+                    )
 
             try:
                 model_result = _query_model(
                     cfg=cfg,
                     prompt=prompt,
                     history=history,
-                    api_key=api_key,
                     original_instruction=instruction,
                     terminal_state=terminal_state,
-                    callbacks=callbacks,
+                    logger=logger,
                 )
             except Exception as err:
-                if callbacks.on_issue:
-                    callbacks.on_issue("model", str(err))
+                if logger:
+                    logger.log(
+                        event_type="issue",
+                        payload={"kind": "model", "message": str(err)},
+                    )
 
-                return 1
+                return RunResult(exit_code=1, success=False)
 
             result = parse_response(model_result.content)
 
@@ -907,31 +881,41 @@ def run_agent(
                     f"Previous response had parsing errors:\n{feedback}\n\n"
                     "Please fix these issues and provide a proper JSON response."
                 )
-                if callbacks.on_issue:
-                    callbacks.on_issue("parser", result.error)
+                if logger:
+                    logger.log(
+                        event_type="issue",
+                        payload={"kind": "parser", "message": result.error},
+                    )
 
                 continue
 
             parsed = result.parsed
             assert parsed is not None
 
-            if callbacks.on_reasoning:
-                callbacks.on_reasoning(turn, parsed)
+            if logger:
+                logger.log(
+                    event_type="reasoning",
+                    payload={"analysis": parsed.analysis, "plan": parsed.plan},
+                    turn=turn,
+                )
 
             terminal_output = _execute_turn_commands(
                 session=session,
                 parsed=parsed,
                 max_wait_seconds=cfg.max_wait_seconds,
-                callbacks=callbacks,
+                logger=logger,
             )
             terminal_state = terminal_output
 
             if parsed.task_complete:
                 if pending_completion:
-                    if callbacks.on_done:
-                        callbacks.on_done("Task marked complete.")
+                    if logger:
+                        logger.log(
+                            event_type="done",
+                            payload={"message": "Task marked complete."},
+                        )
 
-                    return 0
+                    return RunResult(exit_code=0, success=True)
 
                 pending_completion = True
                 prompt = completion_confirmation_message(terminal_output)
@@ -945,9 +929,12 @@ def run_agent(
                 else:
                     prompt = terminal_output
 
-        if callbacks.on_stopped:
-            callbacks.on_stopped(cfg.max_turns)
+        if logger:
+            logger.log(
+                event_type="stopped",
+                payload={"max_turns": cfg.max_turns},
+            )
 
-        return 1
+        return RunResult(exit_code=1, success=False)
     finally:
         session.close()

@@ -9,7 +9,7 @@ from typing import Any
 from unittest.mock import patch
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-CORE_PATH = PROJECT_ROOT / "agents" / "terminus2" / "core_agent.py"
+CORE_PATH = PROJECT_ROOT / "agents" / "terminus2" / "agent.py"
 CLI_PATH = PROJECT_ROOT / "cli.py"
 PROMPT_FIXTURE_PATH = PROJECT_ROOT / "tests" / "fixtures" / "terminus-json-plain.txt"
 
@@ -233,8 +233,9 @@ class TestExecutionAndLoop(unittest.TestCase):
         self,
     ) -> None:
         cfg = core_agent.Config(
-            active_model_key="test",
-            active_model=core_agent.ModelConfig(model="x", api_base="y"),
+            model="x",
+            api_base="y",
+            api_key="k",
             max_turns=6,
         )
         session = FakeSession()
@@ -252,9 +253,8 @@ class TestExecutionAndLoop(unittest.TestCase):
             cfg: Any,
             prompt: str,
             history: list[dict[str, str]],
-            api_key: str,
         ) -> Any:
-            del cfg, history, api_key
+            del cfg, history
             prompts.append(prompt)
             return final_summary.ModelResult(
                 content=next(responses),
@@ -266,13 +266,12 @@ class TestExecutionAndLoop(unittest.TestCase):
             patch.object(core_agent, "start_session", return_value=session),
             patch.object(core_agent, "call_model", side_effect=fake_call_model),
         ):
-            exit_code = core_agent.run_agent(
+            result = core_agent.run(
                 instruction="do thing",
-                cfg=cfg,
-                api_key="k",
+                config=cfg,
             )
 
-        self.assertEqual(exit_code, 0)
+        self.assertEqual(result.exit_code, 0)
         self.assertGreaterEqual(len(prompts), 4)
         self.assertIn(
             "Please fix these issues and provide a proper JSON response.", prompts[1]
@@ -286,8 +285,9 @@ class TestExecutionAndLoop(unittest.TestCase):
 
     def test_run_agent_skips_final_summary_prompt_when_disabled(self) -> None:
         cfg = core_agent.Config(
-            active_model_key="test",
-            active_model=core_agent.ModelConfig(model="x", api_base="y"),
+            model="x",
+            api_base="y",
+            api_key="k",
             max_turns=4,
             final_message_enabled=False,
         )
@@ -305,9 +305,8 @@ class TestExecutionAndLoop(unittest.TestCase):
             cfg: Any,
             prompt: str,
             history: list[dict[str, str]],
-            api_key: str,
         ) -> Any:
-            del cfg, history, api_key
+            del cfg, history
             prompts.append(prompt)
             return final_summary.ModelResult(
                 content=next(responses),
@@ -315,21 +314,29 @@ class TestExecutionAndLoop(unittest.TestCase):
                 completion_tokens=0,
             )
 
-        callbacks = core_agent.AgentCallbacks(
-            on_done=lambda done_text: done_messages.append(done_text)
-        )
+        class _DoneLogger:
+            def log(
+                self,
+                *,
+                event_type: str,
+                payload: dict[str, Any],
+                turn: int | None = None,
+            ) -> None:
+                del turn
+                if event_type == "done":
+                    done_messages.append(payload["message"])
+
         with (
             patch.object(core_agent, "start_session", return_value=session),
             patch.object(core_agent, "call_model", side_effect=fake_call_model),
         ):
-            exit_code = core_agent.run_agent(
+            result = core_agent.run(
                 instruction="do thing",
-                cfg=cfg,
-                api_key="k",
-                callbacks=callbacks,
+                config=cfg,
+                logger=_DoneLogger(),  # pyright: ignore[reportArgumentType]
             )
 
-        self.assertEqual(exit_code, 0)
+        self.assertEqual(result.exit_code, 0)
         self.assertEqual(len(prompts), 2)
         incremental = session.get_incremental_output()
         self.assertEqual(
@@ -431,6 +438,30 @@ class TestModelSelection(unittest.TestCase):
                 config=loaded, cli_model_key="missing", selected_model_key=None
             )
 
+    def test_resolve_model_key_falls_back_to_default(self) -> None:
+        loaded = cli.LoadedConfig(
+            default_model="a",
+            models={
+                "a": cli.ConfigModelEntry(
+                    model="model-a",
+                    api_base="https://example.com/v1",
+                    api_key="KEY_A",
+                    temperature=0.7,
+                ),
+            },
+            default_agent="terminus-2",
+            agents={"terminus-2": {}},
+            verbosity=1,
+            max_turns=5,
+            max_wait_seconds=10.0,
+        )
+        self.assertEqual(
+            cli.resolve_model_key(
+                config=loaded, cli_model_key=None, selected_model_key=None
+            ),
+            "a",
+        )
+
 
 class TestInteractiveCommands(unittest.TestCase):
     def _loaded_config(self) -> Any:
@@ -445,7 +476,7 @@ class TestInteractiveCommands(unittest.TestCase):
                 )
             },
             default_agent="terminus-2",
-            agents={"terminus-2": {}, "qwen": {}},
+            agents={"terminus-2": {}},
             verbosity=1,
             max_turns=5,
             max_wait_seconds=10.0,
@@ -516,69 +547,6 @@ class TestInteractiveCommands(unittest.TestCase):
         )
         self.assertTrue(result.handled)
         self.assertEqual(result.instruction, "")
-
-    def test_parse_interactive_command_sets_agent(self) -> None:
-        loaded = self._loaded_config()
-        result = cli.parse_interactive_command(
-            console=cli.Console(record=True),
-            instruction="/agent qwen",
-            config=loaded,
-        )
-        self.assertTrue(result.handled)
-        self.assertEqual(result.selected_agent, "qwen")
-
-    def test_parse_interactive_command_prompts_for_missing_agent(self) -> None:
-        loaded = self._loaded_config()
-        with patch.object(cli.Prompt, "ask", return_value="2"):
-            result = cli.parse_interactive_command(
-                console=cli.Console(record=True),
-                instruction="/agent",
-                config=loaded,
-            )
-        self.assertTrue(result.handled)
-        self.assertEqual(result.selected_agent, "qwen")
-
-
-class TestAgentSelection(unittest.TestCase):
-    def _loaded_config(self) -> Any:
-        return cli.LoadedConfig(
-            default_model="a",
-            models={
-                "a": cli.ConfigModelEntry(
-                    model="model-a",
-                    api_base="https://example.com/v1",
-                    api_key="KEY_A",
-                    temperature=0.7,
-                )
-            },
-            default_agent="terminus-2",
-            agents={"terminus-2": {}, "qwen": {}},
-            verbosity=1,
-            max_turns=5,
-            max_wait_seconds=10.0,
-        )
-
-    def test_resolve_agent_key_uses_cli_override(self) -> None:
-        loaded = self._loaded_config()
-        self.assertEqual(
-            cli.resolve_agent_key(
-                config=loaded,
-                cli_agent_key="qwen",
-                selected_agent_key=None,
-            ),
-            "qwen",
-        )
-
-    def test_resolve_agent_key_uses_selected_when_no_cli(self) -> None:
-        loaded = self._loaded_config()
-        self.assertEqual(
-            cli.resolve_agent_key(
-                config=loaded,
-                cli_agent_key=None,
-                selected_agent_key="qwen",
-            ),
-            "qwen",
-        )
 
 
 class TestLoadConfigValidation(unittest.TestCase):
@@ -682,33 +650,6 @@ class TestLoadConfigValidation(unittest.TestCase):
                 cli.load_config(path)
         finally:
             path.unlink(missing_ok=True)
-
-    def test_resolve_agent_key_error_is_actionable_for_removed_agents(self) -> None:
-        loaded = cli.LoadedConfig(
-            default_model="qwen3-coder-next",
-            models={
-                "qwen3-coder-next": cli.ConfigModelEntry(
-                    model="qwen/qwen3-coder-next",
-                    api_base="https://openrouter.ai/api/v1",
-                    api_key="OPENROUTER_API_KEY",
-                    temperature=None,
-                )
-            },
-            default_agent="terminus-2",
-            agents={"terminus-2": {}, "qwen": {}},
-            verbosity=0,
-            max_turns=50,
-            max_wait_seconds=60.0,
-        )
-        with self.assertRaisesRegex(
-            ValueError,
-            "Unknown agent key 'claude'. Available agent keys: terminus-2, qwen",
-        ):
-            cli.resolve_agent_key(
-                config=loaded,
-                cli_agent_key="claude",
-                selected_agent_key=None,
-            )
 
 
 if __name__ == "__main__":

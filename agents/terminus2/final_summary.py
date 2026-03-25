@@ -19,7 +19,6 @@ class CallModelFn(Protocol):
         cfg: Any,
         prompt: str,
         history: list[dict[str, str]],
-        api_key: str,
     ) -> ModelResult: ...
 
 
@@ -39,7 +38,6 @@ def build_done_text(
     call_model_fn: CallModelFn,
     cfg: Any,
     history: list[dict[str, str]],
-    api_key: str,
     pending_final_message: str | None,
 ) -> str:
     response: str | None = None
@@ -48,7 +46,6 @@ def build_done_text(
             cfg=cfg,
             prompt=post_run_summary_prompt(),
             history=history,
-            api_key=api_key,
         )
         response = result.content
     except Exception:
