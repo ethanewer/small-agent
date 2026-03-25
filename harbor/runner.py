@@ -51,7 +51,6 @@ def main() -> int:
         extra_params=_maybe_json(os.environ.get("CFG_EXTRA_PARAMS_B64")),
         max_turns=int(os.environ.get("CFG_MAX_TURNS", "50")),
         max_wait_seconds=float(os.environ.get("CFG_MAX_WAIT_SECONDS", "60")),
-        final_message_enabled=os.environ.get("CFG_FINAL_MESSAGE", "1") == "1",
     )
     instruction = sys.argv[1]
     result = run(instruction=instruction, config=config)

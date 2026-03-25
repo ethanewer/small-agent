@@ -256,12 +256,6 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         default=None,
         help="Model key from config.models to run with.",
     )
-    parser.add_argument(
-        "--no-final-message",
-        action="store_true",
-        default=False,
-        help="Disable the final summary message (used by benchmarks).",
-    )
     return parser.parse_args(argv)
 
 
@@ -594,9 +588,6 @@ def main() -> None:
             )
         )
         raise SystemExit(1) from None
-
-    if args.no_final_message:
-        config.final_message_enabled = False
 
     cwd = os.getcwd()
     if args.verbosity == 0:

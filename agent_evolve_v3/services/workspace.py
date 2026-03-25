@@ -37,7 +37,6 @@ class ResolvedAgentConfig:
     verbosity: int
     max_turns: int
     max_wait_seconds: float
-    final_message: bool
 
 
 def discover_repo_root(*, start_path: Path) -> Path:
@@ -73,13 +72,9 @@ def build_runtime_config(
     workspace_root: Path,
     repo_root: Path,
     model_key: str,
-    final_message_enabled: bool,
 ) -> object:
     model_cfg = resolve_model_config(repo_root=repo_root, model_key=model_key)
-    agent_cfg = resolve_agent_config(
-        repo_root=repo_root,
-        final_message_enabled=final_message_enabled,
-    )
+    agent_cfg = resolve_agent_config(repo_root=repo_root)
     runtime_types = _load_runtime_types_module(workspace_root=workspace_root)
     return runtime_types.WorkspaceRuntimeConfig(
         model=runtime_types.WorkspaceModelConfig(
@@ -94,7 +89,6 @@ def build_runtime_config(
             "verbosity": agent_cfg.verbosity,
             "max_turns": agent_cfg.max_turns,
             "max_wait_seconds": agent_cfg.max_wait_seconds,
-            "final_message": agent_cfg.final_message,
         },
     )
 
@@ -110,7 +104,6 @@ def smoke_test_workspace(
         workspace_root=workspace_root,
         repo_root=repo_root,
         model_key=model_key,
-        final_message_enabled=True,
     )
     return {
         "workspace": str(workspace_root),
@@ -147,17 +140,12 @@ def resolve_model_config(
     )
 
 
-def resolve_agent_config(
-    *,
-    repo_root: Path,
-    final_message_enabled: bool,
-) -> ResolvedAgentConfig:
+def resolve_agent_config(*, repo_root: Path) -> ResolvedAgentConfig:
     catalog = json.loads((repo_root / "config.json").read_text(encoding="utf-8"))
     return ResolvedAgentConfig(
         verbosity=int(catalog.get("verbosity", 0)),
         max_turns=int(catalog.get("max_turns", 250)),
         max_wait_seconds=float(catalog.get("max_wait_seconds", 120.0)),
-        final_message=final_message_enabled,
     )
 
 
@@ -165,13 +153,9 @@ def build_runtime_env_payload(
     *,
     repo_root: Path,
     model_key: str,
-    final_message_enabled: bool,
 ) -> dict[str, str]:
     model_cfg = resolve_model_config(repo_root=repo_root, model_key=model_key)
-    agent_cfg = resolve_agent_config(
-        repo_root=repo_root,
-        final_message_enabled=final_message_enabled,
-    )
+    agent_cfg = resolve_agent_config(repo_root=repo_root)
     env = {
         "WORKSPACE_CFG_MODEL": model_cfg.model,
         "WORKSPACE_CFG_API_BASE": model_cfg.api_base,
@@ -179,7 +163,6 @@ def build_runtime_env_payload(
         "WORKSPACE_CFG_VERBOSITY": str(agent_cfg.verbosity),
         "WORKSPACE_CFG_MAX_TURNS": str(agent_cfg.max_turns),
         "WORKSPACE_CFG_MAX_WAIT_SECONDS": str(agent_cfg.max_wait_seconds),
-        "WORKSPACE_CFG_FINAL_MESSAGE": "1" if agent_cfg.final_message else "0",
     }
     if model_cfg.extra_params is not None:
         extra_params_json = json.dumps(model_cfg.extra_params, ensure_ascii=True)
@@ -204,6 +187,8 @@ def stage_remote_bundle(
             continue
         if entry.is_file() and entry.suffix == ".py":
             shutil.copy2(src=entry, dst=staging / entry.name)
+        elif entry.is_dir() and entry.name != "__pycache__":
+            shutil.copytree(src=entry, dst=staging / entry.name)
     shutil.copy2(
         src=repo_root / "agent_evolve_v3" / "services" / "remote_runner.py",
         dst=staging / "remote_runner.py",

@@ -16,14 +16,12 @@ class Config:
     extra_params: dict[str, Any] | None = None
     max_turns: int = 50
     max_wait_seconds: float = 60.0
-    final_message_enabled: bool = True
 
 
 @dataclass
 class RunResult:
     exit_code: int
     success: bool
-    final_message: str | None = None
 
 
 class ReasoningPayload(TypedDict):
@@ -125,6 +123,18 @@ class Logger(Protocol):
         payload: dict[str, Any],
         turn: int | None = None,
     ) -> None: ...
+
+
+class RunFn(Protocol):
+    def __call__(
+        self,
+        *,
+        instruction: str,
+        config: Config,
+        logger: Logger | None = None,
+        system_prompt_template: str = ...,
+        **kwargs: Any,
+    ) -> RunResult: ...
 
 
 @dataclass(frozen=True)

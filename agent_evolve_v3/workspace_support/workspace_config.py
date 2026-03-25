@@ -41,7 +41,6 @@ def build_runtime_config(
     *,
     workspace_root: Path,
     model_key: str,
-    final_message_enabled: bool,
 ) -> WorkspaceRuntimeConfig:
     catalog = json.loads(
         (workspace_root / "model_catalog.json").read_text(encoding="utf-8")
@@ -62,7 +61,6 @@ def build_runtime_config(
         "verbosity": int(catalog.get("verbosity", 0)),
         "max_turns": int(catalog.get("max_turns", 250)),
         "max_wait_seconds": float(catalog.get("max_wait_seconds", 120.0)),
-        "final_message": final_message_enabled,
     }
     return WorkspaceRuntimeConfig(
         model=WorkspaceModelConfig(

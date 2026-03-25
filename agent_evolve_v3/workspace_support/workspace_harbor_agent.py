@@ -223,7 +223,6 @@ class WorkspaceHarborAgent(HarborBaseAgent):
         env_overrides = build_runtime_env_payload(
             repo_root=repo_root,
             model_key=model_key,
-            final_message_enabled=False,
         )
         for key in (
             "OPENROUTER_API_KEY",

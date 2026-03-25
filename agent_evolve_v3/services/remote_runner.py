@@ -69,9 +69,6 @@ def _build_runtime_config(*, workspace_root: Path) -> object:
                 "max_wait_seconds": float(
                     os.environ.get("WORKSPACE_CFG_MAX_WAIT_SECONDS", "120.0")
                 ),
-                "final_message": (
-                    os.environ.get("WORKSPACE_CFG_FINAL_MESSAGE", "1") == "1"
-                ),
             },
         )
 

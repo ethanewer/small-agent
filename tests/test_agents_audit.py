@@ -20,7 +20,6 @@ def _test_config(**overrides: Any) -> Config:
         "api_key": "test-key",
         "max_turns": 2,
         "max_wait_seconds": 1.0,
-        "final_message_enabled": False,
     }
     defaults.update(overrides)
     return Config(**defaults)
@@ -60,7 +59,6 @@ class TestRunFunction(unittest.TestCase):
             temperature=0.0,
             max_turns=9,
             max_wait_seconds=7.5,
-            final_message_enabled=False,
         )
         captured_kwargs: dict[str, object] = {}
 
@@ -75,7 +73,6 @@ class TestRunFunction(unittest.TestCase):
         cfg = cast(Config, captured_kwargs["config"])
         self.assertEqual(cfg.max_turns, 9)
         self.assertEqual(cfg.max_wait_seconds, 7.5)
-        self.assertFalse(cfg.final_message_enabled)
         self.assertEqual(cfg.model, "qwen/qwen3-coder-next")
         self.assertEqual(cfg.api_key, "test-key")
 

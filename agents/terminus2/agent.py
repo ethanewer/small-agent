@@ -4,6 +4,7 @@ import json
 import re
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Callable
 
 from agents.agent_types import Config, Logger, RunResult
@@ -12,7 +13,6 @@ import litellm
 from litellm.utils import get_max_tokens, token_counter
 from tenacity import retry, stop_after_attempt
 
-from agents.terminus2.final_summary import ModelResult, build_done_text
 from agents.terminus2.tmux_session import TmuxSession, start_session
 
 litellm.suppress_debug_info = True
@@ -27,75 +27,16 @@ class OutputLengthExceededError(Exception):
 
 
 MAX_OUTPUT_BYTES = 10_000
-SYSTEM_PROMPT = """You are an AI assistant tasked with solving command-line tasks in a Linux environment. You will be given a task description and the output from previously executed commands. Your goal is to solve the task by providing batches of shell commands.
+_TEMPLATES_DIR = Path(__file__).resolve().parent / "prompt_templates"
+DEFAULT_SYSTEM_PROMPT_TEMPLATE = (_TEMPLATES_DIR / "system_prompt.txt").read_text()
+_TIMEOUT_TEMPLATE = (_TEMPLATES_DIR / "timeout.txt").read_text()
 
-Format your response as JSON with the following structure:
 
-{{
-  "analysis": "Analyze the current state based on the terminal output provided. What do you see? What has been accomplished? What still needs to be done?",
-  "plan": "Describe your plan for the next steps. What commands will you run and why? Be specific about what you expect each command to accomplish.",
-  "commands": [
-    {{
-      "keystrokes": "ls -la\\n",
-      "duration": 0.1
-    }},
-    {{
-      "keystrokes": "cd project\\n",
-      "duration": 0.1
-    }}
-  ],
-  "task_complete": true
-}}
-
-Required fields:
-- "analysis": Your analysis of the current situation
-- "plan": Your plan for the next steps
-- "commands": Array of command objects to execute
-
-Optional fields:
-- "task_complete": Boolean indicating if the task is complete (defaults to false if not present)
-
-Command object structure:
-- "keystrokes": String containing the exact keystrokes to send to the terminal (required)
-- "duration": Number of seconds to wait for the command to complete before the next command will be executed (defaults to 1.0 if not present)
-
-IMPORTANT: The text inside "keystrokes" will be used completely verbatim as keystrokes. Write commands exactly as you want them sent to the terminal:
-- Most bash commands should end with a newline (\\n) to cause them to execute
-- For special key sequences, use tmux-style escape sequences:
-  - C-c for Ctrl+C
-  - C-d for Ctrl+D
-
-The "duration" attribute specifies the number of seconds to wait for the command to complete (default: 1.0) before the next command will be executed. On immediate tasks (e.g., cd, ls, echo, cat) set a duration of 0.1 seconds. On commands (e.g., gcc, find, rustc) set a duration of 1.0 seconds. On slow commands (e.g., make, python3 [long running script], wget [file]) set an appropriate duration as you determine necessary.
-
-It is better to set a smaller duration than a longer duration. It is always possible to wait again if the prior output has not finished, by running {{"keystrokes": "", "duration": 10.0}} on subsequent requests to wait longer. Never wait longer than 60 seconds; prefer to poll to see intermediate result status.
-
-Important notes:
-- Each command's keystrokes are sent exactly as written to the terminal
-- Do not include extra whitespace before or after the keystrokes unless it's part of the intended command
-- Extra text before or after the JSON will generate warnings but be tolerated
-- The JSON must be valid - use proper escaping for quotes and special characters within strings
-- Commands array can be empty if you want to wait without taking action
-
-Task Description:
-{instruction}
-
-Current terminal state:
-{terminal_state}
-"""
-
-_TIMEOUT_TEMPLATE = """\
-Previous command:
-{command}
-
-The previous command timed out after {timeout_sec} seconds
-
-It is possible that the command is not yet finished executing. If that is the case, \
-then do nothing. It is also possible that you have entered an interactive shell and \
-should continue sending keystrokes as normal.
-
-Here is the current state of the terminal:
-
-{terminal_state}"""
+@dataclass
+class ModelResult:
+    content: str
+    prompt_tokens: int
+    completion_tokens: int
 
 
 @dataclass
@@ -110,7 +51,6 @@ class ParsedResponse:
     plan: str
     commands: list[Command]
     task_complete: bool
-    final_message: str | None
 
 
 def limit_output_length(output: str, max_bytes: int = MAX_OUTPUT_BYTES) -> str:
@@ -346,22 +286,12 @@ def _try_parse_response(response: str) -> ParseResult:
                 warning=_format_warnings(warnings),
             )
 
-    try:
-        final_message = _normalized_final_message(data.get("final_message"))
-    except ValueError as exc:
-        return ParseResult(
-            parsed=None,
-            error=str(exc),
-            warning=_format_warnings(warnings),
-        )
-
     return ParseResult(
         parsed=ParsedResponse(
             analysis=str(data["analysis"]),
             plan=str(data["plan"]),
             commands=commands,
             task_complete=task_complete,
-            final_message=final_message,
         ),
         error="",
         warning=_format_warnings(warnings),
@@ -418,19 +348,16 @@ def _coerce_task_complete(value: Any) -> bool:
     return False
 
 
-def _normalized_final_message(value: Any) -> str | None:
-    if value is None:
-        return None
-
-    if isinstance(value, str):
-        return value
-
-    raise ValueError("'final_message' must be a string when provided")
-
-
-def build_prompt(instruction: str, terminal_state: str, max_wait_seconds: float) -> str:
+def build_prompt(
+    instruction: str,
+    terminal_state: str,
+    max_wait_seconds: float,
+    system_prompt_template: str = DEFAULT_SYSTEM_PROMPT_TEMPLATE,
+) -> str:
     del max_wait_seconds
-    return SYSTEM_PROMPT.format(instruction=instruction, terminal_state=terminal_state)
+    return system_prompt_template.format(
+        instruction=instruction, terminal_state=terminal_state
+    )
 
 
 def _litellm_model_name(model: str, api_base: str) -> str:
@@ -827,17 +754,18 @@ def run(
     instruction: str,
     config: Config,
     logger: Logger | None = None,
+    system_prompt_template: str = DEFAULT_SYSTEM_PROMPT_TEMPLATE,
 ) -> RunResult:
     cfg = config
     session = start_session()
     history: list[dict[str, str]] = []
     pending_completion = False
-    pending_final_message: str | None = None
     terminal_state = session.get_incremental_output()
     prompt = build_prompt(
         instruction=instruction,
         terminal_state=terminal_state,
         max_wait_seconds=cfg.max_wait_seconds,
+        system_prompt_template=system_prompt_template,
     )
 
     try:
@@ -922,22 +850,12 @@ def run(
             terminal_state = terminal_output
 
             if parsed.task_complete:
-                if parsed.final_message and parsed.final_message.strip():
-                    pending_final_message = parsed.final_message.strip()
-
                 if pending_completion:
-                    if cfg.final_message_enabled:
-                        done_text = build_done_text(
-                            call_model_fn=call_model,
-                            cfg=cfg,
-                            history=history,
-                            pending_final_message=pending_final_message,
+                    if logger:
+                        logger.log(
+                            event_type="done",
+                            payload={"message": "Task marked complete."},
                         )
-                        if logger:
-                            logger.log(
-                                event_type="done",
-                                payload={"message": done_text},
-                            )
 
                     return RunResult(exit_code=0, success=True)
 
@@ -945,7 +863,6 @@ def run(
                 prompt = completion_confirmation_message(terminal_output)
             else:
                 pending_completion = False
-                pending_final_message = None
                 if feedback:
                     prompt = (
                         f"Previous response had warnings:\n{feedback}\n\n"

@@ -359,7 +359,6 @@ def _build_config_env(config: Any) -> dict[str, str]:
         "CFG_API_KEY": config.api_key,
         "CFG_MAX_TURNS": str(config.max_turns),
         "CFG_MAX_WAIT_SECONDS": str(config.max_wait_seconds),
-        "CFG_FINAL_MESSAGE": "1" if config.final_message_enabled else "0",
     }
     if config.temperature is not None:
         env["CFG_TEMPERATURE"] = str(config.temperature)
@@ -602,8 +601,6 @@ class SmallAgentHarborAgent(HarborBaseAgent):
             model_key=active_model_key,
             allow_shell_lookup=True,
         )
-        config.final_message_enabled = False
-
         _append_context_message(
             context=context,
             message=f"Starting small-agent Harbor run (model={active_model_key}).",

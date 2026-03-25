@@ -19,14 +19,6 @@ core_agent = importlib.util.module_from_spec(core_spec)
 sys.modules["core_agent"] = core_agent
 core_spec.loader.exec_module(core_agent)
 
-summary_spec = importlib.util.spec_from_file_location(
-    "final_summary", PROJECT_ROOT / "agents" / "terminus2" / "final_summary.py"
-)
-assert summary_spec and summary_spec.loader
-final_summary = importlib.util.module_from_spec(summary_spec)
-sys.modules["final_summary"] = final_summary
-summary_spec.loader.exec_module(final_summary)
-
 cli_spec = importlib.util.spec_from_file_location("cli", CLI_PATH)
 assert cli_spec and cli_spec.loader
 cli = importlib.util.module_from_spec(cli_spec)
@@ -72,7 +64,7 @@ def _as_any(value: object) -> Any:
 class TestPromptParity(unittest.TestCase):
     def test_system_prompt_matches_terminus2_template(self) -> None:
         expected = PROMPT_FIXTURE_PATH.read_text()
-        self.assertEqual(core_agent.SYSTEM_PROMPT, expected)
+        self.assertEqual(core_agent.DEFAULT_SYSTEM_PROMPT_TEMPLATE, expected)
 
     def test_build_prompt_matches_rendered_reference_template(self) -> None:
         expected_template = PROMPT_FIXTURE_PATH.read_text()
@@ -169,18 +161,6 @@ class TestParserParity(unittest.TestCase):
         self.assertTrue(result.parsed.task_complete)
         self.assertEqual(result.parsed.commands, [])
 
-    def test_parse_response_rejects_invalid_final_message_type(self) -> None:
-        text = """
-        {
-          "analysis": "a",
-          "plan": "p",
-          "commands": [{"keystrokes": "ls\\n"}],
-          "final_message": 42
-        }
-        """
-        result = core_agent.parse_response(text)
-        self.assertNotEqual(result.error, "")
-
     def test_parse_response_auto_fixes_incomplete_json(self) -> None:
         text = '{"analysis":"a","plan":"p","commands":[{"keystrokes":"ls\\n","duration":0.1}]'
         result = core_agent.parse_response(text)
@@ -245,7 +225,6 @@ class TestExecutionAndLoop(unittest.TestCase):
                 "not json",
                 '{"analysis":"a","plan":"p","commands":[],"task_complete":true}',
                 '{"analysis":"a2","plan":"p2","commands":[],"task_complete":true}',
-                "post-run summary",
             ]
         )
 
@@ -256,7 +235,7 @@ class TestExecutionAndLoop(unittest.TestCase):
         ) -> Any:
             del cfg, history
             prompts.append(prompt)
-            return final_summary.ModelResult(
+            return core_agent.ModelResult(
                 content=next(responses),
                 prompt_tokens=0,
                 completion_tokens=0,
@@ -272,7 +251,7 @@ class TestExecutionAndLoop(unittest.TestCase):
             )
 
         self.assertEqual(result.exit_code, 0)
-        self.assertGreaterEqual(len(prompts), 4)
+        self.assertEqual(len(prompts), 3)
         self.assertIn(
             "Please fix these issues and provide a proper JSON response.", prompts[1]
         )
@@ -280,84 +259,7 @@ class TestExecutionAndLoop(unittest.TestCase):
         self.assertEqual(
             prompts[2], core_agent.completion_confirmation_message(incremental)
         )
-        self.assertEqual(prompts[3], final_summary.post_run_summary_prompt())
         self.assertTrue(session.closed)
-
-    def test_run_agent_skips_final_summary_prompt_when_disabled(self) -> None:
-        cfg = core_agent.Config(
-            model="x",
-            api_base="y",
-            api_key="k",
-            max_turns=4,
-            final_message_enabled=False,
-        )
-        session = FakeSession()
-        prompts: list[str] = []
-        done_messages: list[str] = []
-        responses = iter(
-            [
-                '{"analysis":"a","plan":"p","commands":[],"task_complete":true}',
-                '{"analysis":"a2","plan":"p2","commands":[],"task_complete":true}',
-            ]
-        )
-
-        def fake_call_model(
-            cfg: Any,
-            prompt: str,
-            history: list[dict[str, str]],
-        ) -> Any:
-            del cfg, history
-            prompts.append(prompt)
-            return final_summary.ModelResult(
-                content=next(responses),
-                prompt_tokens=0,
-                completion_tokens=0,
-            )
-
-        class _DoneLogger:
-            def log(
-                self,
-                *,
-                event_type: str,
-                payload: dict[str, Any],
-                turn: int | None = None,
-            ) -> None:
-                del turn
-                if event_type == "done":
-                    done_messages.append(payload["message"])
-
-        with (
-            patch.object(core_agent, "start_session", return_value=session),
-            patch.object(core_agent, "call_model", side_effect=fake_call_model),
-        ):
-            result = core_agent.run(
-                instruction="do thing",
-                config=cfg,
-                logger=_DoneLogger(),  # pyright: ignore[reportArgumentType]
-            )
-
-        self.assertEqual(result.exit_code, 0)
-        self.assertEqual(len(prompts), 2)
-        incremental = session.get_incremental_output()
-        self.assertEqual(
-            prompts[1], core_agent.completion_confirmation_message(incremental)
-        )
-        self.assertEqual(done_messages, [])
-        self.assertTrue(session.closed)
-
-
-class TestFinalSummaryNormalization(unittest.TestCase):
-    def test_normalize_summary_response_prefers_final_message_from_json(self) -> None:
-        normalized = final_summary.normalize_summary_response(
-            '{"analysis":"a","plan":"p","commands":[],"final_message":"Done cleanly."}'
-        )
-        self.assertEqual(normalized, "Done cleanly.")
-
-    def test_normalize_summary_response_strips_code_fences(self) -> None:
-        normalized = final_summary.normalize_summary_response(
-            "```markdown\nCompleted successfully.\n```"
-        )
-        self.assertEqual(normalized, "Completed successfully.")
 
 
 class TestResolveApiKey(unittest.TestCase):

@@ -74,10 +74,8 @@ class TestWorkspaceContract(unittest.TestCase):
             cfg = build_runtime_config(
                 workspace_root=self.workspace_root,
                 model_key=first_model_key,
-                final_message_enabled=False,
             )
         self.assertEqual(cfg.model.api_key, "test-key")
-        self.assertFalse(cfg.agent_config["final_message"])
 
     def test_benchmark_command_uses_workspace_harbor_agent(self) -> None:
         dataset_ref, task_count = _load_benchmark_expectations(
