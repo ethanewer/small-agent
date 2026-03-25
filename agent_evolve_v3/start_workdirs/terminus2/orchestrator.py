@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 from agent import run
 from agent_types import Config, WorkspaceRunResult, WorkspaceRuntimeConfig
 
@@ -27,7 +29,11 @@ class WorkspaceAgent:
             max_turns=int(cfg.agent_config.get("max_turns", 50)),
             max_wait_seconds=float(cfg.agent_config.get("max_wait_seconds", 60.0)),
         )
+
         result = run(instruction=instruction, config=config)
+
+        print(f"<agent_history>{json.dumps(result.history, indent=2)}</agent_history>")
+
         return WorkspaceRunResult(
             exit_code=result.exit_code,
             success=result.success,

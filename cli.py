@@ -34,6 +34,7 @@ class ConsoleLogger:
         self._console = console
         self._verbosity = verbosity
         self._compaction_counts: dict[str, int] = {"proactive": 0, "reactive": 0}
+        self._has_printed_output = False
 
     def log(
         self,
@@ -48,10 +49,6 @@ class ConsoleLogger:
             self._render_command_output(payload=payload)
         elif event_type == "issue":
             self._render_issue(payload=payload)
-        elif event_type == "done":
-            self._console.print(
-                Panel(payload["message"], title="Done", border_style="green")
-            )
         elif event_type == "stopped":
             self._console.print(
                 Panel(
@@ -107,7 +104,9 @@ class ConsoleLogger:
             in_prefix = "in: "
             out_prefix = "out: "
             response_preview = output_text.replace("\n", " ")
-            self._console.print(Text("─" * width, style="dim"))
+            if self._has_printed_output:
+                self._console.print(Text("─" * width, style="dim"))
+            self._has_printed_output = True
             in_line = Text(in_prefix, style="cyan")
             in_line.append(
                 _fit_line(
@@ -130,7 +129,9 @@ class ConsoleLogger:
             self._console.print(out_line)
             return
 
-        self._console.print(Text("─" * width, style="dim"))
+        if self._has_printed_output:
+            self._console.print(Text("─" * width, style="dim"))
+        self._has_printed_output = True
         _render_labeled_fixed(
             console=self._console,
             width=width,
@@ -165,7 +166,9 @@ class ConsoleLogger:
         if not wrapped:
             wrapped = [""]
 
-        self._console.print(Text("─" * width, style="dim"))
+        if self._has_printed_output:
+            self._console.print(Text("─" * width, style="dim"))
+        self._has_printed_output = True
         error_line = Text("error: ", style="red")
         error_line.append(kind, style="white")
         error_line.append(
