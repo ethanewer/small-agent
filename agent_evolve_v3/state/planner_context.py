@@ -1,8 +1,9 @@
-# pyright: reportAny=false, reportUnknownVariableType=false, reportUnknownArgumentType=false
+# pyright: reportAny=false, reportUnknownVariableType=false, reportUnknownArgumentType=false, reportUnusedCallResult=false, reportUnknownMemberType=false
 
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 import re
 
@@ -363,3 +364,178 @@ def _problem_trial_ids(*, result: BenchmarkSummary) -> list[str]:
         seen.add(trial_id)
         ordered.append(trial_id)
     return ordered
+
+
+def _extract_task_name_from_trial_id(*, trial_id: str) -> str:
+    parts = trial_id.split("__")
+    return parts[0] if parts else trial_id
+
+
+def classify_task_volatility(
+    *, states: list[AgentState]
+) -> tuple[set[str], set[str], set[str]]:
+    task_pass: dict[str, int] = {}
+    task_total: dict[str, int] = {}
+    for state in states:
+        result = state.result
+        if result is None:
+            continue
+        for trial_id in result.passed_trials:
+            name = _extract_task_name_from_trial_id(trial_id=trial_id)
+            task_pass[name] = task_pass.get(name, 0) + 1
+            task_total[name] = task_total.get(name, 0) + 1
+
+        for trial_id in result.failed_trials:
+            name = _extract_task_name_from_trial_id(trial_id=trial_id)
+            task_total[name] = task_total.get(name, 0) + 1
+
+        for trial_ids in result.exception_types.values():
+            for trial_id in trial_ids:
+                name = _extract_task_name_from_trial_id(trial_id=trial_id)
+                if name not in task_pass:
+                    task_pass.setdefault(name, 0)
+                task_total[name] = task_total.get(name, 0) + 1
+
+    always_pass: set[str] = set()
+    always_fail: set[str] = set()
+    volatile: set[str] = set()
+    for name, total in task_total.items():
+        passes = task_pass.get(name, 0)
+        if total == 0:
+            continue
+        rate = passes / total
+        if rate >= 1.0:
+            always_pass.add(name)
+        elif rate <= 0.0:
+            always_fail.add(name)
+        else:
+            volatile.add(name)
+
+    return always_pass, always_fail, volatile
+
+
+def build_task_pass_rate_table(*, states: list[AgentState]) -> str:
+    task_pass: dict[str, int] = {}
+    task_fail: dict[str, int] = {}
+    task_error: dict[str, int] = {}
+    for state in states:
+        result = state.result
+        if result is None:
+            continue
+        for trial_id in result.passed_trials:
+            name = _extract_task_name_from_trial_id(trial_id=trial_id)
+            task_pass[name] = task_pass.get(name, 0) + 1
+
+        for trial_id in result.failed_trials:
+            name = _extract_task_name_from_trial_id(trial_id=trial_id)
+            task_fail[name] = task_fail.get(name, 0) + 1
+
+        error_trial_ids: set[str] = set()
+        for trial_ids in result.exception_types.values():
+            for trial_id in trial_ids:
+                error_trial_ids.add(trial_id)
+        for trial_id in error_trial_ids:
+            name = _extract_task_name_from_trial_id(trial_id=trial_id)
+            task_error[name] = task_error.get(name, 0) + 1
+
+    all_tasks = sorted(
+        set(task_pass) | set(task_fail) | set(task_error),
+    )
+    if not all_tasks:
+        return "No task data available."
+
+    always_pass, always_fail, _volatile = classify_task_volatility(states=states)
+
+    rows: list[tuple[str, float, int, int, int, str]] = []
+    for name in all_tasks:
+        passes = task_pass.get(name, 0)
+        fails = task_fail.get(name, 0)
+        errors = task_error.get(name, 0)
+        total = passes + fails + errors
+        rate = passes / total if total > 0 else 0.0
+        if name in always_pass:
+            stability = "always-pass"
+        elif name in always_fail:
+            stability = "always-fail"
+        else:
+            stability = "volatile"
+        rows.append((name, rate, passes, fails, errors, stability))
+
+    rows.sort(key=lambda r: r[1], reverse=True)
+
+    lines = [
+        "| Task | Pass Rate | Passes | Fails | Errors | Stability |",
+        "|------|-----------|--------|-------|--------|-----------|",
+    ]
+    for name, rate, passes, fails, errors, stability in rows:
+        lines.append(
+            f"| {name} | {rate:.0%} | {passes} | {fails} | {errors} | {stability} |"
+        )
+    return "\n".join(lines)
+
+
+def compute_noise_stats(*, states: list[AgentState]) -> str:
+    rewards: list[float] = []
+    for state in states:
+        result = state.result
+        if result is None or result.reward_mean is None:
+            continue
+        rewards.append(result.reward_mean)
+
+    if len(rewards) < 2:
+        return "Insufficient data to estimate noise (need at least 2 completed iterations)."
+
+    mean = sum(rewards) / len(rewards)
+    variance = sum((r - mean) ** 2 for r in rewards) / (len(rewards) - 1)
+    std = math.sqrt(variance)
+    threshold = 2 * std
+    return (
+        f"Noise estimate across {len(rewards)} iterations: "
+        f"mean reward = {mean:.3f}, std = {std:.3f}. "
+        f"Single-run differences <= {threshold:.3f} are likely stochastic."
+    )
+
+
+def format_failure_analyses(*, state: AgentState) -> str:
+    analyses = state.failure_analyses
+    if not analyses:
+        return "No failure analyses available for this iteration."
+
+    lines = [
+        "| Task | Failure Reason | Consistency | Explanation | Fix Category |",
+        "|------|----------------|-------------|-------------|--------------|",
+    ]
+    for a in analyses:
+        explanation = a.task_specific_explanation.replace("|", "/")
+        lines.append(
+            f"| {a.task_name} | {a.general_failure_reason} | {a.consistency} | {explanation} | {a.suggested_fix_category} |"
+        )
+
+    reason_counts: dict[str, int] = {}
+    systematic_counts: dict[str, int] = {}
+    stochastic_counts: dict[str, int] = {}
+    for a in analyses:
+        reason = a.general_failure_reason
+        reason_counts[reason] = reason_counts.get(reason, 0) + 1
+        if a.consistency == "both_same_failure":
+            systematic_counts[reason] = systematic_counts.get(reason, 0) + 1
+        else:
+            stochastic_counts[reason] = stochastic_counts.get(reason, 0) + 1
+
+    summary_parts: list[str] = []
+    for reason, count in sorted(
+        reason_counts.items(), key=lambda x: x[1], reverse=True
+    ):
+        sys_count = systematic_counts.get(reason, 0)
+        sto_count = stochastic_counts.get(reason, 0)
+        parts = []
+        if sys_count:
+            parts.append(f"{sys_count} systematic")
+        if sto_count:
+            parts.append(f"{sto_count} stochastic")
+        detail = f" ({', '.join(parts)})" if parts else ""
+        summary_parts.append(f"{count} {reason}{detail}")
+
+    lines.append("")
+    lines.append(f"Summary: {'; '.join(summary_parts)}")
+    return "\n".join(lines)

@@ -17,7 +17,7 @@ Your job this cycle: implement exactly one change in the current workspace accor
 
 ## Required steps
 
-1. Read `README.md`, then the copied benchmark artifacts under `outputs/` if the plan references prior failure modes.
+1. Read `AGENTS.md` (if it exists) and `README.md`, then the copied benchmark artifacts under `outputs/` if the plan references prior failure modes. The `AGENTS.md` file contains architecture constraints that must be followed.
 2. Implement the plan. Edit only the local `agent/` harness code.
 3. Run the validation command described in `README.md`.
 4. Optionally run the smoke benchmark command from `README.md` if you need a quick local check.

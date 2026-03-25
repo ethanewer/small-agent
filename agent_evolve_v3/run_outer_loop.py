@@ -7,27 +7,36 @@ from datetime import UTC, datetime
 import json
 from pathlib import Path
 import shutil
+import subprocess
 import sys
 import time
 
 from agent_evolve_v3.config import RunSpec, load_runs_config
-from agent_evolve_v3.prompts import load_implementation_prompt, load_planning_prompt
+from agent_evolve_v3.prompts import (
+    load_failure_investigation_prompt,
+    load_implementation_prompt,
+    load_planning_prompt,
+)
 from agent_evolve_v3.services.benchmark import (
-    load_workspace_benchmark_result,
     prepull_task_images,
-    run_workspace_benchmark,
+    run_n_sample_benchmark,
 )
 from agent_evolve_v3.services.runtime import (
     record_completed_process,
+    run_failure_investigation_agent,
     run_implementation_agent,
     run_planner_agent,
     run_workspace_validation,
 )
 from agent_evolve_v3.state import AgentState, PlanningOutput
+from agent_evolve_v3.state.types import BenchmarkSummary, FailureAnalysis
 from agent_evolve_v3.state.manager import StateManager
 from agent_evolve_v3.state.planner_context import (
     PLANNER_NOTES_FILE_NAME,
+    build_task_pass_rate_table,
     classify_state_status,
+    compute_noise_stats,
+    format_failure_analyses,
     latest_iteration_header,
     latest_iteration_section,
     latest_run_artifact_map,
@@ -40,9 +49,36 @@ from agent_evolve_v3.state.planner_context import (
 )
 
 
+def _merge_exception_types(
+    summaries: list[BenchmarkSummary],
+) -> dict[str, list[str]]:
+    merged: dict[str, list[str]] = {}
+    for s in summaries:
+        for exc_type, trial_ids in s.exception_types.items():
+            merged.setdefault(exc_type, []).extend(trial_ids)
+    return merged
+
+
 def _log(msg: str) -> None:
     timestamp = datetime.now(UTC).strftime("%H:%M:%S")
     print(f"[{timestamp}] {msg}", flush=True)
+
+
+def _cleanup_docker_resources() -> None:
+    """Stop leftover containers and prune unused networks to avoid address pool exhaustion."""
+    try:
+        subprocess.run(
+            ["docker", "container", "prune", "-f"],
+            capture_output=True,
+            check=False,
+        )
+        subprocess.run(
+            ["docker", "network", "prune", "-f"],
+            capture_output=True,
+            check=False,
+        )
+    except FileNotFoundError:
+        pass
 
 
 def _format_elapsed(start: float) -> str:
@@ -89,6 +125,13 @@ def main(argv: list[str]) -> int:
             benchmark_tasks=tuple(
                 str(task_name) for task_name in manifest.get("benchmark_tasks", [])
             ),
+            train_small_tasks=tuple(
+                str(task_name) for task_name in manifest.get("train_small_tasks", [])
+            ),
+            n_samples=int(manifest.get("n_samples", 2)),
+            failure_investigation_model=str(
+                manifest.get("failure_investigation_model", "gemini-3-flash")
+            ),
         )
         _log(f"Resuming run '{run_spec.name}' from {run_root.name}")
     else:
@@ -103,13 +146,18 @@ def main(argv: list[str]) -> int:
                 iterations=max(1, args.iterations),
                 random_seed=run_spec.random_seed,
                 benchmark_tasks=run_spec.benchmark_tasks,
+                train_small_tasks=run_spec.train_small_tasks,
+                n_samples=run_spec.n_samples,
+                failure_investigation_model=run_spec.failure_investigation_model,
             )
         run_root = _create_run_root(outputs_root=outputs_root, run_spec=run_spec)
         _log(f"Starting new run '{run_spec.name}' at {run_root.name}")
 
     _log(
         f"Config: model={run_spec.model_key}, cursor={run_spec.cursor_model}, "
-        f"iterations={run_spec.iterations}, tasks={len(run_spec.benchmark_tasks)}"
+        f"iterations={run_spec.iterations}, tasks={len(run_spec.benchmark_tasks)}, "
+        f"train_small={len(run_spec.train_small_tasks)}, n_samples={run_spec.n_samples}, "
+        f"failure_inv_model={run_spec.failure_investigation_model}"
     )
 
     manager = StateManager(
@@ -141,7 +189,7 @@ def main(argv: list[str]) -> int:
             manager=manager,
             run_root=run_root,
             state=root_state,
-            model_key=run_spec.model_key,
+            run_spec=run_spec,
             seed_refiner_outputs=True,
         )
     except SystemExit as exc:
@@ -151,6 +199,22 @@ def main(argv: list[str]) -> int:
             state=root_state,
         )
         return _system_exit_code(exc=exc)
+    _cleanup_docker_resources()
+
+    root_result = root_state.result
+    if root_result and root_result.harbor_job_dir and not root_state.failure_analyses:
+        _log("Running failure investigations for root state...")
+        t0 = time.monotonic()
+        root_state.failure_analyses = _run_failure_investigations(
+            state=root_state,
+            run_spec=run_spec,
+            benchmark_summary=root_result,
+        )
+        _log(
+            f"Failure investigation done ({_format_elapsed(t0)}): "
+            f"{len(root_state.failure_analyses)} reports"
+        )
+
     root_state.save()
     _write_scoreboard(run_root=run_root, states=manager.states)
 
@@ -187,12 +251,19 @@ def main(argv: list[str]) -> int:
             benchmark_model_key=run_spec.model_key,
             candidate_state_count=len(manager.completed_states),
             iteration_count=len(states),
+            completed_states=manager.completed_states,
+            baseline=run_spec.baseline,
         )
         planner_prompt_path = artifacts_dir / "planner_prompt.txt"
         planner_prompt_path.write_text(planner_prompt_text, encoding="utf-8")
 
         _log("Running planner agent...")
         t0 = time.monotonic()
+        planner_succeeded = False
+        planning_output: PlanningOutput | None = None
+        parent_state: AgentState | None = None
+        planner_output_path = artifacts_dir / "planner_output.json"
+
         with manager.planning_environment(
             planner_notes_path=planner_notes_path,
         ) as (planning_workspace, candidate_states):
@@ -200,46 +271,83 @@ def main(argv: list[str]) -> int:
                 planning_workspace=planning_workspace,
                 artifacts_dir=artifacts_dir,
             )
-            planner_completed = run_planner_agent(
-                workspace_path=planning_workspace,
-                prompt_text=planner_prompt_text,
-                cursor_model=run_spec.cursor_model,
-            )
-            record_completed_process(
-                output_path=artifacts_dir / "planner_step.json",
-                completed=planner_completed,
-            )
-            if planner_completed.returncode != 0:
+            planner_notes_snapshot = (
+                planning_workspace / PLANNER_NOTES_FILE_NAME
+            ).read_text(encoding="utf-8")
+
+            for planner_attempt in range(1, _MAX_PLANNER_ATTEMPTS + 1):
+                if planner_attempt > 1:
+                    (planning_workspace / PLANNER_NOTES_FILE_NAME).write_text(
+                        planner_notes_snapshot, encoding="utf-8"
+                    )
+                    (planning_workspace / "output.json").unlink(missing_ok=True)
+
+                planner_completed = run_planner_agent(
+                    workspace_path=planning_workspace,
+                    prompt_text=planner_prompt_text,
+                    cursor_model=run_spec.cursor_model,
+                )
+                record_completed_process(
+                    output_path=artifacts_dir / "planner_step.json",
+                    completed=planner_completed,
+                )
+                if planner_completed.returncode != 0:
+                    _log(
+                        f"Planner FAILED (rc={planner_completed.returncode}, "
+                        f"{_format_elapsed(t0)})"
+                    )
+                    _sync_planner_notes(
+                        run_root=run_root,
+                        planning_workspace=planning_workspace,
+                        artifacts_dir=artifacts_dir,
+                    )
+                    print(planner_completed.stdout, flush=True)
+                    print(planner_completed.stderr, file=sys.stderr, flush=True)
+                    return planner_completed.returncode
+
+                _log(f"Planner completed ({_format_elapsed(t0)})")
+
+                planner_output_source = planning_workspace / "output.json"
+                if planner_output_source.exists():
+                    shutil.copy2(src=planner_output_source, dst=planner_output_path)
+                    _sync_planner_notes(
+                        run_root=run_root,
+                        planning_workspace=planning_workspace,
+                        artifacts_dir=artifacts_dir,
+                    )
+                    planning_output = PlanningOutput.load(path=planner_output_path)
+
+                    if (
+                        not 0
+                        <= planning_output.selected_state_index
+                        < len(candidate_states)
+                    ):
+                        raise ValueError(
+                            f"Planner selected an out-of-range state index: "
+                            f"{planning_output.selected_state_index}"
+                        )
+                    parent_state = candidate_states[
+                        planning_output.selected_state_index
+                    ]
+                    planner_succeeded = True
+                    break
+
                 _log(
-                    f"Planner FAILED (rc={planner_completed.returncode}, {_format_elapsed(t0)})"
+                    f"Planner did not produce output.json "
+                    f"(attempt {planner_attempt}/{_MAX_PLANNER_ATTEMPTS})"
                 )
-                _sync_planner_notes(
-                    run_root=run_root,
-                    planning_workspace=planning_workspace,
-                    artifacts_dir=artifacts_dir,
-                )
-                print(planner_completed.stdout, flush=True)
-                print(planner_completed.stderr, file=sys.stderr, flush=True)
-                return planner_completed.returncode
 
-            _log(f"Planner completed ({_format_elapsed(t0)})")
-
-            planner_output_source = planning_workspace / "output.json"
-            planner_output_path = artifacts_dir / "planner_output.json"
-            shutil.copy2(src=planner_output_source, dst=planner_output_path)
-            _sync_planner_notes(
-                run_root=run_root,
-                planning_workspace=planning_workspace,
-                artifacts_dir=artifacts_dir,
+        if not planner_succeeded:
+            _log(
+                "All planner attempts exhausted without output.json, skipping iteration"
             )
-            planning_output = PlanningOutput.load(path=planner_output_path)
+            if artifacts_dir.exists():
+                shutil.rmtree(artifacts_dir)
+            next_iteration += 1
+            continue
 
-            if not 0 <= planning_output.selected_state_index < len(candidate_states):
-                raise ValueError(
-                    f"Planner selected an out-of-range state index: {planning_output.selected_state_index}"
-                )
-            parent_state = candidate_states[planning_output.selected_state_index]
-
+        assert planning_output is not None
+        assert parent_state is not None
         _log(
             f"Planner selected parent iteration {parent_state.iteration} "
             f"(index {planning_output.selected_state_index})"
@@ -259,6 +367,7 @@ def main(argv: list[str]) -> int:
         implementation_prompt_text = _render_implementation_prompt(
             parent_state=parent_state,
             plan=planning_output.plan,
+            baseline=run_spec.baseline,
         )
         implementation_prompt_path = artifacts_dir / "implementation_prompt.txt"
         implementation_prompt_path.write_text(
@@ -321,7 +430,7 @@ def main(argv: list[str]) -> int:
                 manager=manager,
                 run_root=run_root,
                 state=state,
-                model_key=run_spec.model_key,
+                run_spec=run_spec,
                 seed_refiner_outputs=False,
             )
         except SystemExit as exc:
@@ -342,6 +451,21 @@ def main(argv: list[str]) -> int:
             f"Benchmark done ({_format_elapsed(t0)}): "
             f"reward={reward}, passed={passed}, failed={failed}, errors={errors}"
         )
+
+        _cleanup_docker_resources()
+
+        if result and result.harbor_job_dir:
+            _log("Running failure investigations...")
+            t0 = time.monotonic()
+            state.failure_analyses = _run_failure_investigations(
+                state=state,
+                run_spec=run_spec,
+                benchmark_summary=result,
+            )
+            _log(
+                f"Failure investigation done ({_format_elapsed(t0)}): "
+                f"{len(state.failure_analyses)} reports"
+            )
 
         state.save()
         _write_scoreboard(run_root=run_root, states=manager.states)
@@ -373,6 +497,9 @@ def _write_manifest(*, run_root: Path, run_spec: RunSpec) -> None:
         "iterations": run_spec.iterations,
         "random_seed": run_spec.random_seed,
         "benchmark_tasks": list(run_spec.benchmark_tasks),
+        "train_small_tasks": list(run_spec.train_small_tasks),
+        "n_samples": run_spec.n_samples,
+        "failure_investigation_model": run_spec.failure_investigation_model,
     }
     (run_root / "run_manifest.json").write_text(
         json.dumps(payload, indent=2, ensure_ascii=True) + "\n",
@@ -385,73 +512,381 @@ def _ensure_state_evaluated(
     manager: StateManager,
     run_root: Path,
     state: AgentState,
-    model_key: str,
+    run_spec: RunSpec,
     seed_refiner_outputs: bool,
 ) -> None:
     if state.result is None or state.official_benchmark is None:
-        _benchmark_state(
+        _benchmark_state_two_tier(
             run_root=run_root,
             state=state,
-            model_key=model_key,
+            run_spec=run_spec,
+            completed_states=manager.completed_states,
         )
     if seed_refiner_outputs:
         manager.seed_refiner_outputs(state=state)
 
 
-def _benchmark_state(
+def _benchmark_state_two_tier(
     *,
     run_root: Path,
     state: AgentState,
-    model_key: str,
+    run_spec: RunSpec,
+    completed_states: list[AgentState],
 ) -> None:
     iteration_artifacts = run_root / "artifacts" / f"iteration-{state.iteration:04d}"
     iteration_artifacts.mkdir(parents=True, exist_ok=True)
-    benchmark_artifacts_dir = iteration_artifacts / "official_benchmark"
-    benchmark_result_path = iteration_artifacts / "benchmark_result.json"
-    benchmark_completed = run_workspace_benchmark(
+
+    is_root = state.iteration == 0
+    all_tasks = list(run_spec.benchmark_tasks)
+    small_tasks = list(run_spec.train_small_tasks)
+    remaining_tasks = [t for t in all_tasks if t not in set(small_tasks)]
+    n_samples = run_spec.n_samples
+
+    if is_root:
+        _log("  Running train/full benchmark (iteration 0 baseline)...")
+        _run_full_benchmark(
+            state=state,
+            iteration_artifacts=iteration_artifacts,
+            run_spec=run_spec,
+            all_tasks=all_tasks,
+            small_tasks=small_tasks,
+            n_samples=n_samples,
+        )
+    else:
+        _log(
+            f"  Running train/small benchmark ({len(small_tasks)} tasks, N={n_samples})..."
+        )
+        small_run, small_summary = run_n_sample_benchmark(
+            workspace_path=Path(state.refiner_workspace_path),
+            model_key=run_spec.model_key,
+            task_names=small_tasks,
+            artifacts_dir=iteration_artifacts / "train_small",
+            n_samples=n_samples,
+        )
+        small_reward = small_summary.reward_mean or 0.0
+        _log(f"  train/small reward: {small_reward:.3f}")
+
+        best_small_reward = _best_train_small_reward(states=completed_states)
+        promoted = small_reward > best_small_reward
+        _log(
+            f"  Promotion check (window={_PROMOTION_WINDOW}): {small_reward:.3f} > "
+            f"{best_small_reward:.3f} -> "
+            f"{'PROMOTED' if promoted else 'not promoted'}"
+        )
+
+        if promoted:
+            _log(f"  Running remaining {len(remaining_tasks)} tasks (N={n_samples})...")
+            remaining_run, remaining_summary = run_n_sample_benchmark(
+                workspace_path=Path(state.refiner_workspace_path),
+                model_key=run_spec.model_key,
+                task_names=remaining_tasks,
+                artifacts_dir=iteration_artifacts / "train_remaining",
+                n_samples=n_samples,
+            )
+            total_passes = small_summary.pass_count + remaining_summary.pass_count
+            full_reward = total_passes / (n_samples * len(all_tasks))
+            _log(f"  train/full reward: {full_reward:.3f}")
+
+            state.result = BenchmarkSummary(
+                created_at_utc=remaining_run.created_at_utc,
+                aggregate_result_path=remaining_run.aggregate_result_path,
+                harbor_job_dir=remaining_run.harbor_job_dir,
+                reward_mean=full_reward,
+                n_trials=small_summary.n_trials + remaining_summary.n_trials,
+                pass_count=total_passes,
+                failure_count=small_summary.failure_count
+                + remaining_summary.failure_count,
+                error_count=small_summary.error_count + remaining_summary.error_count,
+                passed_trials=small_summary.passed_trials
+                + remaining_summary.passed_trials,
+                failed_trials=small_summary.failed_trials
+                + remaining_summary.failed_trials,
+                exception_types=_merge_exception_types(
+                    [small_summary, remaining_summary]
+                ),
+                train_small_reward_mean=small_reward,
+                train_small_n_samples=n_samples,
+                train_full_reward_mean=full_reward,
+                train_full_n_samples=n_samples,
+            )
+            state.official_benchmark = remaining_run
+        else:
+            state.result = BenchmarkSummary(
+                created_at_utc=small_run.created_at_utc,
+                aggregate_result_path=small_run.aggregate_result_path,
+                harbor_job_dir=small_run.harbor_job_dir,
+                reward_mean=small_reward,
+                n_trials=small_summary.n_trials,
+                pass_count=small_summary.pass_count,
+                failure_count=small_summary.failure_count,
+                error_count=small_summary.error_count,
+                passed_trials=small_summary.passed_trials,
+                failed_trials=small_summary.failed_trials,
+                exception_types=small_summary.exception_types,
+                train_small_reward_mean=small_reward,
+                train_small_n_samples=n_samples,
+            )
+            state.official_benchmark = small_run
+
+
+def _run_full_benchmark(
+    *,
+    state: AgentState,
+    iteration_artifacts: Path,
+    run_spec: RunSpec,
+    all_tasks: list[str],
+    small_tasks: list[str],
+    n_samples: int,
+) -> None:
+    full_run, full_summary = run_n_sample_benchmark(
         workspace_path=Path(state.refiner_workspace_path),
-        model_key=model_key,
-        result_json_out=benchmark_result_path,
-        record_visible=False,
-        request_label="official",
-        artifacts_dir=benchmark_artifacts_dir,
+        model_key=run_spec.model_key,
+        task_names=all_tasks,
+        artifacts_dir=iteration_artifacts / "train_full",
+        n_samples=n_samples,
     )
-    record_completed_process(
-        output_path=iteration_artifacts / "benchmark_step.json",
-        completed=benchmark_completed,
+    full_reward = full_summary.reward_mean or 0.0
+
+    small_task_set = set(small_tasks)
+    small_passes = sum(
+        1 for tid in full_summary.passed_trials if tid.split("__")[0] in small_task_set
     )
-    if benchmark_completed.returncode != 0:
-        print(benchmark_completed.stdout)
-        print(benchmark_completed.stderr, file=sys.stderr)
-        raise SystemExit(benchmark_completed.returncode)
-    official_benchmark, benchmark_summary = load_workspace_benchmark_result(
-        result_json_path=benchmark_result_path,
+    small_reward = small_passes / (n_samples * len(small_tasks)) if small_tasks else 0.0
+    _log(
+        f"  train/full reward: {full_reward:.3f}, train/small reward: {small_reward:.3f}"
     )
-    state.official_benchmark = official_benchmark
-    state.result = benchmark_summary
+
+    state.result = BenchmarkSummary(
+        created_at_utc=full_run.created_at_utc,
+        aggregate_result_path=full_run.aggregate_result_path,
+        harbor_job_dir=full_run.harbor_job_dir,
+        reward_mean=full_reward,
+        n_trials=full_summary.n_trials,
+        pass_count=full_summary.pass_count,
+        failure_count=full_summary.failure_count,
+        error_count=full_summary.error_count,
+        passed_trials=full_summary.passed_trials,
+        failed_trials=full_summary.failed_trials,
+        exception_types=full_summary.exception_types,
+        train_small_reward_mean=small_reward,
+        train_small_n_samples=n_samples,
+        train_full_reward_mean=full_reward,
+        train_full_n_samples=n_samples,
+    )
+    state.official_benchmark = full_run
+
+
+_PROMOTION_WINDOW = 5
+_MAX_PLANNER_ATTEMPTS = 5
+
+
+def _best_train_small_reward(
+    *, states: list[AgentState], window: int = _PROMOTION_WINDOW
+) -> float:
+    scored = [
+        s
+        for s in states
+        if s.result is not None and s.result.train_small_reward_mean is not None
+    ]
+    scored.sort(key=lambda s: s.iteration)
+    recent = scored[-window:] if window > 0 else scored
+
+    best = 0.0
+    for state in recent:
+        result = state.result
+        if result is not None and result.train_small_reward_mean is not None:
+            best = max(best, result.train_small_reward_mean)
+
+    return best
+
+
+def _run_failure_investigations(
+    *,
+    state: AgentState,
+    run_spec: RunSpec,
+    benchmark_summary: BenchmarkSummary,
+) -> list[FailureAnalysis]:
+    harbor_dirs: list[Path] = []
+    if benchmark_summary.sample_results:
+        for s in benchmark_summary.sample_results:
+            d = Path(s.harbor_job_dir)
+            if d.is_dir():
+                harbor_dirs.append(d)
+
+    if not harbor_dirs:
+        d = Path(benchmark_summary.harbor_job_dir)
+        if d.is_dir():
+            harbor_dirs.append(d)
+
+    if not harbor_dirs:
+        return []
+
+    passed_set = set(benchmark_summary.passed_trials)
+
+    task_trials: dict[str, list[Path]] = {}
+    for harbor_dir in harbor_dirs:
+        for child in sorted(harbor_dir.iterdir()):
+            if not child.is_dir() or "__" not in child.name:
+                continue
+            task_name = child.name.split("__")[0]
+            task_trials.setdefault(task_name, []).append(child)
+
+    reward_by_task: dict[str, list[float]] = {}
+    log_by_task: dict[str, list[str]] = {}
+    verifier_by_task: dict[str, list[str]] = {}
+    exception_by_task: dict[str, list[str]] = {}
+
+    for task_name, trial_dirs in task_trials.items():
+        rewards: list[float] = []
+        logs: list[str] = []
+        verifiers: list[str] = []
+        exceptions: list[str] = []
+
+        for trial_dir in trial_dirs:
+            rewards.append(1.0 if trial_dir.name in passed_set else 0.0)
+
+            stdout = ""
+            result_path = trial_dir / "result.json"
+            if result_path.exists():
+                try:
+                    trial_result = json.loads(result_path.read_text(encoding="utf-8"))
+                    agent_result = trial_result.get("agent_result", {})
+                    metadata = (
+                        agent_result.get("metadata", {})
+                        if isinstance(agent_result, dict)
+                        else {}
+                    )
+                    workspace_agent = (
+                        metadata.get("workspace_agent", {})
+                        if isinstance(metadata, dict)
+                        else {}
+                    )
+                    stdout = (
+                        str(workspace_agent.get("stdout", ""))
+                        if isinstance(workspace_agent, dict)
+                        else ""
+                    )
+                    if not stdout and isinstance(metadata, dict):
+                        stdout = str(metadata.get("stdout", ""))
+                except (json.JSONDecodeError, OSError):
+                    pass
+            logs.append(stdout[-10000:] if len(stdout) > 10000 else stdout)
+
+            exc_content = ""
+            exception_path = trial_dir / "exception.txt"
+            if exception_path.exists():
+                try:
+                    exc_content = exception_path.read_text(
+                        encoding="utf-8", errors="replace"
+                    )
+                except OSError:
+                    pass
+            exceptions.append(
+                exc_content[-3000:] if len(exc_content) > 3000 else exc_content
+            )
+
+            verifier_content = ""
+            verifier_path = trial_dir / "verifier" / "test-stdout.txt"
+            if verifier_path.exists():
+                try:
+                    verifier_content = verifier_path.read_text(
+                        encoding="utf-8", errors="replace"
+                    )
+                except OSError:
+                    pass
+            verifiers.append(
+                verifier_content[-5000:]
+                if len(verifier_content) > 5000
+                else verifier_content
+            )
+
+        reward_by_task[task_name] = rewards
+        log_by_task[task_name] = logs
+        verifier_by_task[task_name] = verifiers
+        exception_by_task[task_name] = exceptions
+
+    core_agent_path = Path(state.refiner_workspace_path) / "agent" / "core_agent.py"
+    core_agent_source = ""
+    if core_agent_path.exists():
+        try:
+            core_agent_source = core_agent_path.read_text(encoding="utf-8")
+        except OSError:
+            pass
+
+    investigation_template = load_failure_investigation_prompt()
+    analyses: list[FailureAnalysis] = []
+
+    for task_name in sorted(task_trials):
+        rewards = reward_by_task.get(task_name, [])
+        if all(r == 1.0 for r in rewards):
+            continue
+
+        _log(f"    Investigating: {task_name}")
+        logs = log_by_task.get(task_name, ["", ""])
+        verifiers = verifier_by_task.get(task_name, ["", ""])
+        exceptions = exception_by_task.get(task_name, ["", ""])
+
+        prompt_text = investigation_template.format(
+            task_name=task_name,
+            run_0_reward=rewards[0] if len(rewards) > 0 else 0.0,
+            run_1_reward=rewards[1] if len(rewards) > 1 else 0.0,
+        )
+
+        result = run_failure_investigation_agent(
+            prompt_text=prompt_text,
+            cursor_model=run_spec.failure_investigation_model,
+            run_0_agent_log=logs[0] if len(logs) > 0 else "",
+            run_1_agent_log=logs[1] if len(logs) > 1 else "",
+            run_0_verifier=verifiers[0] if len(verifiers) > 0 else "",
+            run_1_verifier=verifiers[1] if len(verifiers) > 1 else "",
+            run_0_exception=exceptions[0] if len(exceptions) > 0 else "",
+            run_1_exception=exceptions[1] if len(exceptions) > 1 else "",
+            core_agent_source=core_agent_source,
+        )
+
+        analyses.append(
+            FailureAnalysis(
+                task_name=result.get("task_name", task_name),
+                general_failure_reason=result.get(
+                    "general_failure_reason", "infrastructure_error"
+                ),
+                task_specific_explanation=result.get("task_specific_explanation", ""),
+                consistency=result.get("consistency", "both_same_failure"),
+                suggested_fix_category=result.get(
+                    "suggested_fix_category", "not_fixable_by_agent"
+                ),
+            )
+        )
+
+    return analyses
 
 
 def _build_scoreboard(*, states: list[AgentState]) -> str:
     lines = [
         "## Scoreboard",
         "",
-        "| Iter | Baseline | Reward | Passed | Failed | Errors | Parent |",
-        "|------|----------|--------|--------|--------|--------|--------|",
+        "| Iter | Baseline | Small (N=2) | Full (N=2) | Passed | Failed | Errors | Parent |",
+        "|------|----------|-------------|------------|--------|--------|--------|--------|",
     ]
     for state in states:
         parent = "root"
         if state.prev_path:
             parent = Path(state.prev_path).stem.replace("iteration-", "")
-        reward = (
-            f"{state.result.reward_mean:.3f}"
-            if state.result and state.result.reward_mean is not None
+        small_reward = (
+            f"{state.result.train_small_reward_mean:.3f}"
+            if state.result and state.result.train_small_reward_mean is not None
+            else "N/A"
+        )
+        full_reward = (
+            f"{state.result.train_full_reward_mean:.3f}"
+            if state.result and state.result.train_full_reward_mean is not None
             else "N/A"
         )
         passed = state.result.pass_count if state.result else "N/A"
         failed = state.result.failure_count if state.result else "N/A"
         errors = state.result.error_count if state.result else "N/A"
         lines.append(
-            f"| {state.iteration} | {state.baseline} | {reward} | {passed} | {failed} | {errors} | {parent} |"
+            f"| {state.iteration} | {state.baseline} | {small_reward} | {full_reward} | {passed} | {failed} | {errors} | {parent} |"
         )
     return "\n".join(lines)
 
@@ -465,11 +900,14 @@ def _select_best_completed_state(*, states: list[AgentState]) -> AgentState | No
     if not completed:
         return None
 
-    def _sort_key(state: AgentState) -> tuple[float, int, int, int, int]:
+    def _sort_key(state: AgentState) -> tuple[float, float, int, int, int, int]:
         assert state.result is not None
         assert state.result.reward_mean is not None
+        full_reward = state.result.train_full_reward_mean or 0.0
+        small_reward = state.result.train_small_reward_mean or state.result.reward_mean
         return (
-            state.result.reward_mean,
+            full_reward,
+            small_reward,
             state.result.pass_count,
             -state.result.error_count,
             -state.result.failure_count,
@@ -498,8 +936,10 @@ def _render_planner_prompt(
     benchmark_model_key: str,
     candidate_state_count: int,
     iteration_count: int,
+    completed_states: list[AgentState],
+    baseline: str,
 ) -> str:
-    template = load_planning_prompt()
+    template = load_planning_prompt(baseline=baseline)
     latest_result = latest_state.result if latest_state else None
     latest_artifacts = latest_run_artifact_map(
         state=latest_state,
@@ -559,6 +999,13 @@ def _render_planner_prompt(
         best_failed=best_result.failure_count if best_result else "N/A",
         best_errors=best_result.error_count if best_result else "N/A",
         scoreboard=scoreboard_text,
+        noise_context=compute_noise_stats(states=completed_states),
+        task_pass_rate_table=build_task_pass_rate_table(states=completed_states),
+        failure_analysis_summary=(
+            format_failure_analyses(state=latest_state)
+            if latest_state
+            else "No failure analyses available."
+        ),
     )
 
 
@@ -566,8 +1013,9 @@ def _render_implementation_prompt(
     *,
     parent_state: AgentState,
     plan: str,
+    baseline: str,
 ) -> str:
-    template = load_implementation_prompt()
+    template = load_implementation_prompt(baseline=baseline)
     parent_result = parent_state.result
     parent_benchmark = parent_state.official_benchmark
     return template.format(
