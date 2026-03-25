@@ -1231,7 +1231,7 @@ dependencies = [
 requires-dist = [
     { name = "fastapi", specifier = ">=0.135.1" },
     { name = "httpx" },
-    { name = "litellm", specifier = ">=1.82.4" },
+    { name = "litellm", specifier = ">=1.82.4,<=1.82.6" },
     { name = "openai" },
     { name = "pytest", specifier = ">=9.0.2" },
     { name = "rich" },
