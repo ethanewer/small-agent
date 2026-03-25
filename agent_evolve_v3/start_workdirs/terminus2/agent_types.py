@@ -22,6 +22,7 @@ class Config:
 class RunResult:
     exit_code: int
     success: bool
+    history: list[dict[str, str]] | None = None
 
 
 class ReasoningPayload(TypedDict):
@@ -125,15 +126,13 @@ class Logger(Protocol):
     ) -> None: ...
 
 
-class RunFn(Protocol):
+class AgentRunner(Protocol):
     def __call__(
         self,
         *,
         instruction: str,
         config: Config,
         logger: Logger | None = None,
-        system_prompt_template: str = ...,
-        **kwargs: Any,
     ) -> RunResult: ...
 
 

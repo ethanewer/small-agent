@@ -40,7 +40,7 @@ def _maybe_json(value: str | None) -> dict[str, object] | None:
 
 
 def main() -> int:
-    from agents import Config, run
+    from agents import Config, get_agent
 
     config = Config(
         model=os.environ["CFG_MODEL"],
@@ -53,6 +53,7 @@ def main() -> int:
         max_wait_seconds=float(os.environ.get("CFG_MAX_WAIT_SECONDS", "60")),
     )
     instruction = sys.argv[1]
+    run = get_agent("terminus2")
     result = run(instruction=instruction, config=config)
     return result.exit_code
 

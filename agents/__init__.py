@@ -1,12 +1,12 @@
 """CLI agent implementations and runtime interfaces."""
 
-from agents.terminus2.agent import run
-from agents.agent_types import Config, Logger, RunFn, RunResult
+from agents.agent_types import AgentRunner, Config, Logger, RunResult
+from agents.registry import get_agent
 
 __all__ = [
+    "AgentRunner",
     "Config",
     "Logger",
-    "RunFn",
     "RunResult",
-    "run",
+    "get_agent",
 ]

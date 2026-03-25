@@ -9,7 +9,7 @@ from unittest.mock import patch
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-import agents  # noqa: E402
+import agents.registry  # noqa: E402
 from agents.agent_types import Config, Logger, RunResult  # noqa: E402
 
 
@@ -39,15 +39,23 @@ class _RecordingLogger:
         self.events.append({"event_type": event_type, "payload": payload, "turn": turn})
 
 
+class TestGetAgent(unittest.TestCase):
+    def test_get_agent_returns_callable(self) -> None:
+        run = agents.registry.get_agent("terminus2")
+        self.assertTrue(callable(run))
+
+    def test_get_agent_unknown_raises(self) -> None:
+        with self.assertRaises(KeyError):
+            agents.registry.get_agent("nonexistent")
+
+
 class TestRunFunction(unittest.TestCase):
     def test_run_returns_run_result(self) -> None:
         config = _test_config()
-        with patch.object(
-            agents,
-            "run",
-            return_value=RunResult(exit_code=0, success=True),
-        ):
-            result = agents.run(instruction="inspect", config=config)
+        fake_run = lambda **kwargs: RunResult(exit_code=0, success=True)  # noqa: E731
+        with patch.object(agents.registry, "get_agent", return_value=fake_run):
+            run = agents.registry.get_agent("terminus2")
+            result = run(instruction="inspect", config=config)
         self.assertEqual(result.exit_code, 0)
         self.assertTrue(result.success)
 
@@ -66,8 +74,9 @@ class TestRunFunction(unittest.TestCase):
             captured_kwargs.update(kwargs)
             return RunResult(exit_code=0, success=True)
 
-        with patch.object(agents, "run", side_effect=fake_run_agent):
-            result = agents.run(instruction="inspect config", config=config)
+        with patch.object(agents.registry, "get_agent", return_value=fake_run_agent):
+            run = agents.registry.get_agent("terminus2")
+            result = run(instruction="inspect config", config=config)
 
         self.assertTrue(result.success)
         cfg = cast(Config, captured_kwargs["config"])
@@ -101,8 +110,9 @@ class TestRunFunction(unittest.TestCase):
             log.log(event_type="stopped", payload={"max_turns": 2})
             return RunResult(exit_code=0, success=True)
 
-        with patch.object(agents, "run", side_effect=fake_run_agent):
-            result = agents.run(
+        with patch.object(agents.registry, "get_agent", return_value=fake_run_agent):
+            run = agents.registry.get_agent("terminus2")
+            result = run(
                 instruction="emit events",
                 config=config,
                 logger=logger,  # pyright: ignore[reportArgumentType]

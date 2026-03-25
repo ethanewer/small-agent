@@ -806,7 +806,7 @@ def run(
                         payload={"kind": "model", "message": str(err)},
                     )
 
-                return RunResult(exit_code=1, success=False)
+                return RunResult(exit_code=1, success=False, history=history)
 
             result = parse_response(model_result.content)
 
@@ -859,7 +859,7 @@ def run(
                             payload={"message": "Task marked complete."},
                         )
 
-                    return RunResult(exit_code=0, success=True)
+                    return RunResult(exit_code=0, success=True, history=history)
 
                 pending_completion = True
                 prompt = completion_confirmation_message(terminal_output)
@@ -879,6 +879,6 @@ def run(
                 payload={"max_turns": cfg.max_turns},
             )
 
-        return RunResult(exit_code=1, success=False)
+        return RunResult(exit_code=1, success=False, history=history)
     finally:
         session.close()

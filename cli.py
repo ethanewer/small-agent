@@ -8,7 +8,8 @@ import sys
 import textwrap
 from typing import Any
 
-from agents import run
+from agents import get_agent
+from agents.registry import AVAILABLE_AGENTS
 from harbor_config import (
     CONFIG_PATH,
     ConfigModelEntry,  # noqa: F401 -- re-exported for tests
@@ -255,6 +256,12 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         type=str,
         default=None,
         help="Model key from config.models to run with.",
+    )
+    parser.add_argument(
+        "--agent",
+        type=str,
+        default="terminus2",
+        help=f"Agent to use. Available: {', '.join(AVAILABLE_AGENTS)}",
     )
     return parser.parse_args(argv)
 
@@ -615,6 +622,7 @@ def main() -> None:
     )
 
     logger = ConsoleLogger(console=console, verbosity=args.verbosity)
+    run = get_agent(args.agent)
     result = run(
         instruction=instruction,
         config=config,
