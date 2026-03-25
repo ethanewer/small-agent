@@ -51,3 +51,7 @@ backup*
 *.DS_Store
 .DS_store
 .DS_Store
+*node_modules*
+bun.lock
+package.json
+agent_evolve_v3/start_workdirs/opencode/outputs*
