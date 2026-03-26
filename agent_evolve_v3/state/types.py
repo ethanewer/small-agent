@@ -35,7 +35,8 @@ class FailureAnalysis:
     general_failure_reason: str
     task_specific_explanation: str
     consistency: str
-    suggested_fix_category: str
+    code_references: str
+    progress_pct: int = 0
 
 
 @dataclass
@@ -276,7 +277,13 @@ def _parse_failure_analyses(*, raw: object) -> list[FailureAnalysis]:
                     item.get("task_specific_explanation", "")
                 ),
                 consistency=str(item.get("consistency", "")),
-                suggested_fix_category=str(item.get("suggested_fix_category", "")),
+                code_references=str(
+                    item.get(
+                        "code_references",
+                        item.get("suggested_fix_category", ""),
+                    )
+                ),
+                progress_pct=int(item.get("progress_pct", 0)),
             )
         )
     return analyses

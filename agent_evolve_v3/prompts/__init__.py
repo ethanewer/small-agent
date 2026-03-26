@@ -22,5 +22,5 @@ def load_implementation_prompt(*, baseline: str | None = None) -> str:
     return _load_prompt(name="implementation.md", baseline=baseline)
 
 
-def load_failure_investigation_prompt() -> str:
-    return (_PROMPTS_DIR / "failure_investigation.md").read_text(encoding="utf-8")
+def load_failure_investigation_prompt(*, baseline: str | None = None) -> str:
+    return _load_prompt(name="failure_investigation.md", baseline=baseline)

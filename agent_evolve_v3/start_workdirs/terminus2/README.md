@@ -4,9 +4,11 @@ This workspace was seeded from the `{baseline}` baseline harness.
 
 ## Layout
 
-- `agent/` contains the entire editable harness.
-- `agent/agent.py` is the main agent entrypoint.
-- `agent/runtime_types.py` defines the runtime contract used by the hidden services.
+- `agent.py` is the main agent entrypoint.
+- `agent_types.py` defines the runtime contract used by the hidden services.
+- `tmux_session.py` provides the tmux session wrapper.
+- `orchestrator.py` adapts the runtime config to the local agent.
+- `prompt_templates/` contains the agent's prompt templates.
 - `test_agent.sh` smoke-tests the local harness against the hidden validation service.
 - `run_smoke_benchmark.sh` runs the single-task smoke benchmark for quick checks.
 - `outputs/` holds the copied official benchmark artifacts from the selected parent state.

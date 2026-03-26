@@ -6,6 +6,7 @@ import argparse
 from datetime import UTC, datetime
 import json
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -809,15 +810,27 @@ def _run_failure_investigations(
         verifier_by_task[task_name] = verifiers
         exception_by_task[task_name] = exceptions
 
-    core_agent_path = Path(state.refiner_workspace_path) / "agent" / "core_agent.py"
-    core_agent_source = ""
-    if core_agent_path.exists():
+    workspace_root = Path(state.refiner_workspace_path)
+
+    agent_source = ""
+    agent_path = workspace_root / "agent.py"
+    if agent_path.exists():
         try:
-            core_agent_source = core_agent_path.read_text(encoding="utf-8")
+            agent_source = agent_path.read_text(encoding="utf-8")
         except OSError:
             pass
 
-    investigation_template = load_failure_investigation_prompt()
+    orchestrator_source = ""
+    orchestrator_path = workspace_root / "orchestrator.py"
+    if orchestrator_path.exists():
+        try:
+            orchestrator_source = orchestrator_path.read_text(encoding="utf-8")
+        except OSError:
+            pass
+
+    investigation_template = load_failure_investigation_prompt(
+        baseline=run_spec.baseline,
+    )
     analyses: list[FailureAnalysis] = []
 
     for task_name in sorted(task_trials):
@@ -845,7 +858,8 @@ def _run_failure_investigations(
             run_1_verifier=verifiers[1] if len(verifiers) > 1 else "",
             run_0_exception=exceptions[0] if len(exceptions) > 0 else "",
             run_1_exception=exceptions[1] if len(exceptions) > 1 else "",
-            core_agent_source=core_agent_source,
+            agent_source=agent_source,
+            orchestrator_source=orchestrator_source,
         )
 
         analyses.append(
@@ -856,13 +870,22 @@ def _run_failure_investigations(
                 ),
                 task_specific_explanation=result.get("task_specific_explanation", ""),
                 consistency=result.get("consistency", "both_same_failure"),
-                suggested_fix_category=result.get(
-                    "suggested_fix_category", "not_fixable_by_agent"
-                ),
+                code_references=result.get("code_references", ""),
+                progress_pct=_safe_int(result.get("progress_pct", "0")),
             )
         )
 
     return analyses
+
+
+def _safe_int(value: str | None) -> int:
+    if not value:
+        return 0
+
+    try:
+        return int(re.sub(r"[^0-9\-]", "", value) or "0")
+    except ValueError:
+        return 0
 
 
 def _build_scoreboard(*, states: list[AgentState]) -> str:

@@ -640,7 +640,8 @@ def _load_single_run(*, run_dir: Path) -> dict[str, Any] | None:
                 "general_failure_reason": fa.general_failure_reason,
                 "task_specific_explanation": fa.task_specific_explanation,
                 "consistency": fa.consistency,
-                "suggested_fix_category": fa.suggested_fix_category,
+                "code_references": fa.code_references,
+                "progress_pct": fa.progress_pct,
             }
             for fa in state.failure_analyses
         ]
@@ -1131,13 +1132,14 @@ function renderFailureAnalyses(run, id) {
       '<td class="fa-reason">' + fa.general_failure_reason + '</td>' +
       '<td class="fa-explanation">' + fa.task_specific_explanation + '</td>' +
       '<td><span class="fa-consistency ' + consistencyClass(fa.consistency) + '">' + consistencyLabel(fa.consistency) + '</span></td>' +
-      '<td><span class="fa-category">' + fa.suggested_fix_category + '</span></td>' +
+      '<td>' + (fa.progress_pct != null ? fa.progress_pct + '%' : '') + '</td>' +
+      '<td class="fa-category">' + (fa.code_references || '') + '</td>' +
       '</tr>';
   }
 
   return '<div class="iter-select"><select onchange="changeFaIter(\\''+id+'\\', parseInt(this.value))">' + options + '</select></div>' +
     '<div class="table-scroll"><table class="fa-table"><thead><tr>' +
-    '<th>Task</th><th>Failure Reason</th><th>Explanation</th><th>Consistency</th><th>Fix Category</th>' +
+    '<th>Task</th><th>Failure Reason</th><th>Explanation</th><th>Consistency</th><th>Progress</th><th>Code References</th>' +
     '</tr></thead><tbody>' + rows + '</tbody></table></div>';
 }
 

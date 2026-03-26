@@ -122,7 +122,8 @@ def run_failure_investigation_agent(
     run_1_verifier: str,
     run_0_exception: str = "",
     run_1_exception: str = "",
-    core_agent_source: str,
+    agent_source: str,
+    orchestrator_source: str = "",
 ) -> dict[str, str]:
     with tempfile.TemporaryDirectory(prefix="agent-evolve-v3-failure-inv-") as tmpdir:
         work_dir = Path(tmpdir)
@@ -132,7 +133,8 @@ def run_failure_investigation_agent(
         (work_dir / "run_1_verifier.txt").write_text(run_1_verifier, encoding="utf-8")
         (work_dir / "run_0_exception.txt").write_text(run_0_exception, encoding="utf-8")
         (work_dir / "run_1_exception.txt").write_text(run_1_exception, encoding="utf-8")
-        (work_dir / "core_agent.py").write_text(core_agent_source, encoding="utf-8")
+        (work_dir / "agent.py").write_text(agent_source, encoding="utf-8")
+        (work_dir / "orchestrator.py").write_text(orchestrator_source, encoding="utf-8")
 
         completed = run_cursor_agent(
             workspace_path=work_dir,
@@ -154,5 +156,6 @@ def run_failure_investigation_agent(
             "general_failure_reason": "infrastructure_error",
             "task_specific_explanation": f"Investigation agent failed (rc={completed.returncode})",
             "consistency": "both_same_failure",
-            "suggested_fix_category": "not_fixable_by_agent",
+            "code_references": "",
+            "progress_pct": "0",
         }

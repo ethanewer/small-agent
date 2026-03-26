@@ -535,16 +535,6 @@ def format_failure_analyses(*, state: AgentState) -> str:
     if not analyses:
         return "No failure analyses available for this iteration."
 
-    lines = [
-        "| Task | Failure Reason | Consistency | Explanation | Fix Category |",
-        "|------|----------------|-------------|-------------|--------------|",
-    ]
-    for a in analyses:
-        explanation = a.task_specific_explanation.replace("|", "/")
-        lines.append(
-            f"| {a.task_name} | {a.general_failure_reason} | {a.consistency} | {explanation} | {a.suggested_fix_category} |"
-        )
-
     reason_counts: dict[str, int] = {}
     systematic_counts: dict[str, int] = {}
     stochastic_counts: dict[str, int] = {}
@@ -572,6 +562,14 @@ def format_failure_analyses(*, state: AgentState) -> str:
         detail = f" ({', '.join(parts)})" if parts else ""
         summary_parts.append(f"{count} {reason}{detail}")
 
-    lines.append("")
-    lines.append(f"Summary: {'; '.join(summary_parts)}")
+    lines = [f"summary: {'; '.join(summary_parts)}", "tasks:"]
+    for a in analyses:
+        lines.append(f"  - task: {a.task_name}")
+        lines.append(f"    failure_reason: {a.general_failure_reason}")
+        lines.append(f"    consistency: {a.consistency}")
+        lines.append(f"    progress_pct: {a.progress_pct}")
+        lines.append(f"    explanation: {a.task_specific_explanation}")
+        if a.code_references:
+            lines.append(f"    code_references: {a.code_references}")
+
     return "\n".join(lines)
